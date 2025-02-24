@@ -309,18 +309,19 @@ func (replayer *WalReplayer) applyReplayTxnLoop(
 				zap.Int("apply-count", replayer.applyCount),
 				zap.Uint64("max-lsn", replayer.maxLSN.Load()),
 			)
-		case txnCmd := <-receiver:
-			if txnCmd.IsEnd() {
-				break
-			}
-			t0 := time.Now()
-			replayer.OnReplayTxn(txnCmd, txnCmd.Lsn)
-			if txnCmd.Lsn > replayer.maxLSN.Load() {
-				replayer.maxLSN.Store(txnCmd.Lsn)
-			}
-			txnCmd.Close()
-			replayer.applyDuration += time.Since(t0)
+		default:
 		}
+		txnCmd := <-receiver
+		if txnCmd.IsEnd() {
+			break
+		}
+		t0 := time.Now()
+		replayer.OnReplayTxn(txnCmd, txnCmd.Lsn)
+		if txnCmd.Lsn > replayer.maxLSN.Load() {
+			replayer.maxLSN.Store(txnCmd.Lsn)
+		}
+		txnCmd.Close()
+		replayer.applyDuration += time.Since(t0)
 	}
 }
 func (replayer *WalReplayer) GetMaxTS() types.TS {
