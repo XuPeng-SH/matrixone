@@ -294,19 +294,33 @@ func (replayer *WalReplayer) applyReplayTxnLoop(
 	receiver <-chan *txnbase.TxnCmd,
 	wg *sync.WaitGroup,
 ) {
+	var (
+		start  = time.Now()
+		ticker = time.NewTicker(time.Second * 10)
+	)
 	defer wg.Done()
 	for {
-		txnCmd := <-receiver
-		if txnCmd.IsEnd() {
-			break
+		select {
+		case <-ticker.C:
+			logutil.Info(
+				"Wal-Replay-Info",
+				zap.Duration("running-time", time.Since(start)),
+				zap.Int("read-count", replayer.readCount),
+				zap.Int("apply-count", replayer.applyCount),
+				zap.Uint64("max-lsn", replayer.maxLSN.Load()),
+			)
+		case txnCmd := <-receiver:
+			if txnCmd.IsEnd() {
+				break
+			}
+			t0 := time.Now()
+			replayer.OnReplayTxn(txnCmd, txnCmd.Lsn)
+			if txnCmd.Lsn > replayer.maxLSN.Load() {
+				replayer.maxLSN.Store(txnCmd.Lsn)
+			}
+			txnCmd.Close()
+			replayer.applyDuration += time.Since(t0)
 		}
-		t0 := time.Now()
-		replayer.OnReplayTxn(txnCmd, txnCmd.Lsn)
-		if txnCmd.Lsn > replayer.maxLSN.Load() {
-			replayer.maxLSN.Store(txnCmd.Lsn)
-		}
-		txnCmd.Close()
-		replayer.applyDuration += time.Since(t0)
 	}
 }
 func (replayer *WalReplayer) GetMaxTS() types.TS {
