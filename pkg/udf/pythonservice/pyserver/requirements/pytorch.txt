@@ -2,8 +2,9 @@
 
 requests>2.20
 networkx>=2.6
-jinja2>=2.8.1
+jinja2>=2.10.1
 sympy>=1.12
+pytest-cov>=2.0.0
 
 torch>=2.2.0
 torchvision==0.16.0
