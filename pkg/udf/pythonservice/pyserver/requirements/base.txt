@@ -1,6 +1,11 @@
 #-i https://pypi.org/simple
 -i https://mirrors.aliyun.com/pypi/simple
 
+setuptools>=70.0.0
+joblib>=1.2.0
+pymysql>=1.1.1
+pillow>=9.0.1
+
 grpcio==1.59.0
 protobuf==4.24.4
 
@@ -9,4 +14,4 @@ scipy==1.11.3
 pandas==2.1.1
 scikit-learn==1.3.1
 tensorflow-cpu==2.14.0
-onnx==1.14.1
+onnx==1.16.2
