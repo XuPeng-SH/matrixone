@@ -274,7 +274,7 @@ static-check: config err-check
 fmtErrs := $(shell grep -onr 'fmt.Errorf' pkg/ --exclude-dir=.git --exclude-dir=vendor \
 				--exclude=*.pb.go --exclude=system_vars.go --exclude=Makefile)
 errNews := $(shell grep -onr 'errors.New' pkg/ --exclude-dir=.git --exclude-dir=vendor \
-				--exclude=*.pb.go --exclude=system_vars.go --exclude=Makefile)
+				--exclude=*.pb.go --exclude=*.wasm --exclude=system_vars.go --exclude=Makefile)
 withTimeout := $(shell grep -onr 'context.WithTimeout' pkg/ --exclude-dir=.git --exclude-dir=vendor \
 				--exclude=*.pb.go --exclude=*_test.go --exclude=system_vars.go --exclude=Makefile)
 withDeadline := $(shell grep -onr 'context.WithDeadline' pkg/ --exclude-dir=.git --exclude-dir=vendor \
