@@ -206,7 +206,11 @@ func (s *BlockInfoSlice) GetAllBytes() []byte {
 func (s *BlockInfoSlice) String() string {
 	var buf bytes.Buffer
 	buf.WriteString(fmt.Sprintf("BlockInfoSlice[Len=%d]:\n", s.Len()))
-	for i := 0; i < s.Len(); i++ {
+	pLen := s.Len()
+	if pLen >= 100 {
+		pLen = 100
+	}
+	for i := 0; i < pLen; i++ {
 		buf.WriteString(s.Get(i).BlockID.String())
 		buf.WriteByte('\n')
 	}
