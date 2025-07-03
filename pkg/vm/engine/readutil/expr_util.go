@@ -71,17 +71,15 @@ func getColDefByName(expr *plan.Expr, name string, colPos int32, tableDef *plan.
 	} else {
 		pos = tableDef.Name2ColIndex[name]
 	}
-	common.DoIfDebugEnabled(func() {
-		if name != tableDef.Cols[colPos].Name {
-			logutil.Error(
-				"Bad-ColExpr",
-				zap.String("col-name", name),
-				zap.Int32("col-actual-pos", colPos),
-				zap.Int32("col-expected-pos", pos),
-				zap.String("col-expr", plan2.FormatExpr(expr, plan2.FormatOption{})),
-			)
-		}
-	})
+	if name == "" {
+		logutil.Error(
+			"Bad-ColExpr",
+			zap.String("col-name", name),
+			zap.Int32("col-actual-pos", colPos),
+			zap.Int32("col-expected-pos", pos),
+			zap.String("col-expr", plan2.FormatExpr(expr, plan2.FormatOption{})),
+		)
+	}
 	return tableDef.Cols[pos]
 }
 
@@ -115,16 +113,14 @@ func evalValue(
 
 	colName := col.Col.Name
 
-	common.DoIfDebugEnabled(func() {
-		if colName == "" {
-			logutil.Error(
-				"Bad-ColExpr",
-				zap.String("col-name", colName),
-				zap.String("pk-name", pkName),
-				zap.String("col-expr", plan2.FormatExpr(expr, plan2.FormatOption{})),
-			)
-		}
-	})
+	if colName == "" {
+		logutil.Error(
+			"Bad-ColExpr",
+			zap.String("col-name", colName),
+			zap.String("pk-name", pkName),
+			zap.String("col-expr", plan2.FormatExpr(expr, plan2.FormatOption{})),
+		)
+	}
 	if !compPkCol(colName, pkName) {
 		return false, 0, nil
 	}
