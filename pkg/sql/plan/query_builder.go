@@ -351,11 +351,6 @@ func (builder *QueryBuilder) remapAllColRefs(nodeID int32, step int32, colRefCnt
 				if err != nil {
 					return nil, err
 				}
-
-				col := rfSpec.Expr.GetCol()
-				if len(col.Name) == 0 {
-					col.Name = node.TableDef.Cols[col.ColPos].Name
-				}
 			}
 		}
 
@@ -1355,34 +1350,37 @@ func (builder *QueryBuilder) remapAllColRefs(nodeID int32, step int32, colRefCnt
 				Expr: &plan.Expr_Lit{Lit: &plan.Literal{Value: &plan.Literal_I64Val{I64Val: 0}}},
 			})
 		} else {
-			tag := node.BindingTags[0]
-			newCols := make([]*plan.ColDef, 0, len(node.TableDef.Cols))
-			newData := make([]*plan.ColData, 0, len(node.RowsetData.Cols))
+			internalRemapping := &ColRefRemapping{
+				globalToLocal: make(map[[2]int32][2]int32),
+			}
 
-			for i, col := range node.TableDef.Cols {
+			tag := node.BindingTags[0]
+			for i := range node.TableDef.Cols {
 				globalRef := [2]int32{tag, int32(i)}
 				if colRefCnt[globalRef] == 0 {
 					continue
 				}
+				internalRemapping.addColRef(globalRef)
+			}
 
-				remapping.addColRef(globalRef)
+			for i, col := range node.TableDef.Cols {
+				if colRefCnt[internalRemapping.localToGlobal[i]] == 0 {
+					continue
+				}
 
-				newCols = append(newCols, node.TableDef.Cols[i])
-				newData = append(newData, node.RowsetData.Cols[i])
+				remapping.addColRef(internalRemapping.localToGlobal[i])
+
 				node.ProjectList = append(node.ProjectList, &plan.Expr{
 					Typ: col.Typ,
 					Expr: &plan.Expr_Col{
 						Col: &plan.ColRef{
 							RelPos: 0,
-							ColPos: int32(len(node.ProjectList)),
+							ColPos: int32(i),
 							Name:   col.Name,
 						},
 					},
 				})
 			}
-
-			node.TableDef.Cols = newCols
-			node.RowsetData.Cols = newData
 		}
 
 	case plan.Node_LOCK_OP:
@@ -3428,9 +3426,20 @@ func (builder *QueryBuilder) bindValues(
 		return
 	}
 
-	colCnt := len(valuesClause.Rows[0])
+	strTyp := plan.Type{
+		Id:          int32(types.T_text),
+		NotNullable: false,
+	}
+	strColTyp := makeTypeByPlan2Type(strTyp)
+	strColTargetTyp := &plan.Expr{
+		Typ: strTyp,
+		Expr: &plan.Expr_T{
+			T: &plan.TargetType{},
+		},
+	}
+	colCount := len(valuesClause.Rows[0])
 	for j := 1; j < rowCount; j++ {
-		if len(valuesClause.Rows[j]) != colCnt {
+		if len(valuesClause.Rows[j]) != colCount {
 			err = moerr.NewInternalError(builder.GetContext(), fmt.Sprintf("have different column count in row '%v'", j))
 			return
 		}
@@ -3438,16 +3447,28 @@ func (builder *QueryBuilder) bindValues(
 
 	ctx.hasSingleRow = rowCount == 1
 	rowSetData := &plan.RowsetData{
-		Cols: make([]*plan.ColData, colCnt),
+		Cols: make([]*plan.ColData, colCount),
 	}
 	tableDef := &plan.TableDef{
 		TblId: 0,
 		Name:  "",
-		Cols:  make([]*plan.ColDef, colCnt),
+		Cols:  make([]*plan.ColDef, colCount),
 	}
 	ctx.binder = NewWhereBinder(builder, ctx)
-	for i := 0; i < colCnt; i++ {
+	for i := 0; i < colCount; i++ {
 		rowSetData.Cols[i] = &plan.ColData{}
+		for j := 0; j < rowCount; j++ {
+			var planExpr *plan.Expr
+			if planExpr, err = ctx.binder.BindExpr(valuesClause.Rows[j][i], 0, true); err != nil {
+				return
+			}
+			if planExpr, err = forceCastExpr2(builder.GetContext(), planExpr, strColTyp, strColTargetTyp); err != nil {
+				return
+			}
+			rowSetData.Cols[i].Data = append(rowSetData.Cols[i].Data, &plan.RowsetExpr{
+				Expr: planExpr,
+			})
+		}
 
 		colName := fmt.Sprintf("column_%d", i) // like MySQL
 		selectList = append(selectList, tree.SelectExpr{
@@ -3458,18 +3479,7 @@ func (builder *QueryBuilder) bindValues(
 		tableDef.Cols[i] = &plan.ColDef{
 			ColId: 0,
 			Name:  colName,
-		}
-
-		for j := 0; j < rowCount; j++ {
-			var planExpr *plan.Expr
-			if planExpr, err = ctx.binder.BindExpr(valuesClause.Rows[j][i], 0, true); err != nil {
-				return
-			}
-
-			tableDef.Cols[i].Typ = planExpr.Typ
-			rowSetData.Cols[i].Data = append(rowSetData.Cols[i].Data, &plan.RowsetExpr{
-				Expr: planExpr,
-			})
+			Typ:   strTyp,
 		}
 	}
 	nodeUUID, _ := uuid.NewV7()

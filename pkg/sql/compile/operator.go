@@ -343,8 +343,7 @@ func dupOperator(sourceOp vm.Operator, index int, maxParallel int) vm.Operator {
 	case vm.Filter:
 		t := sourceOp.(*filter.Filter)
 		op := filter.NewArgument()
-		op.FilterExprs = t.FilterExprs
-		op.RuntimeFilterExprs = t.RuntimeFilterExprs
+		op.E = t.E
 		op.SetInfo(&info)
 		return op
 	case vm.Semi:
@@ -664,9 +663,9 @@ func dupOperator(sourceOp vm.Operator, index int, maxParallel int) vm.Operator {
 	panic(fmt.Sprintf("unexpected instruction type '%d' to dup", sourceOp.OpType()))
 }
 
-func constructRestrict(n *plan.Node, filterExprs []*plan.Expr) *filter.Filter {
+func constructRestrict(n *plan.Node, filterExpr *plan.Expr) *filter.Filter {
 	op := filter.NewArgument()
-	op.FilterExprs = filterExprs
+	op.E = filterExpr
 	op.IsEnd = n.IsEnd
 	return op
 }
