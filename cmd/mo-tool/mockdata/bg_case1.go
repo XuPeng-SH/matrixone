@@ -162,9 +162,7 @@ func insertCase1Batch(
 		default:
 		}
 
-		// log.Printf("xxx-%d-%d-start", batchID, i)
 		_, err := tx.Stmt(stmt).Exec(*values...)
-		// log.Printf("xxx-%d-%d-end: %v", batchID, i, err)
 		if err != nil {
 			tx.Rollback()
 			errChan <- fmt.Errorf("failed to insert row %d in batch %d: %v", i, batchID, err)
