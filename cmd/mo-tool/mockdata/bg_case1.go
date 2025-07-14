@@ -15,6 +15,7 @@
 package mockdata
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -121,6 +122,7 @@ func generateCase1_0_Data(values *[]any, id int64) {
 }
 
 func insertCase1Batch(
+	ctx context.Context,
 	db *sql.DB,
 	caseID int,
 	batchID int,
@@ -152,6 +154,13 @@ func insertCase1Batch(
 	for i := 0; i < batchSize; i++ {
 		*values = (*values)[:0]
 		generateMockData(values, caseID, startKey+int64(i))
+		select {
+		case <-ctx.Done():
+			tx.Rollback()
+			log.Printf("Batch %d cancelled", batchID)
+			return
+		default:
+		}
 
 		// log.Printf("xxx-%d-%d-start", batchID, i)
 		_, err := tx.Stmt(stmt).Exec(*values...)
@@ -212,14 +221,24 @@ func case1Main(cmd *cobra.Command, caseID int) {
 	errChan := make(chan error, parallel)
 	batchChan := make(chan int, parallel)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	for i := 0; i < parallel; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
 			values := make([]any, 0, 26)
 			for batchID := range batchChan {
+				select {
+				case <-ctx.Done():
+					log.Printf("Worker %d cancelled", workerID)
+					return
+				default:
+				}
+
 				values = values[:0]
-				insertCase1Batch(db, caseID, batchID, batchSize, &values, errChan)
+				insertCase1Batch(ctx, db, caseID, batchID, batchSize, &values, errChan)
 			}
 		}(i)
 	}
@@ -233,12 +252,15 @@ func case1Main(cmd *cobra.Command, caseID int) {
 		log.Printf("All batches sent to workers")
 	}()
 
+	go func() {
+		for err := range errChan {
+			log.Printf("Error: %v", err)
+			cancel()
+		}
+	}()
+
 	wg.Wait()
 	close(errChan)
-
-	for err := range errChan {
-		log.Printf("Error: %v", err)
-	}
 
 	log.Printf("Completed! Inserted %d batches with %d rows each (total: %d rows)",
 		totalBatches, batchSize, totalBatches*batchSize)
