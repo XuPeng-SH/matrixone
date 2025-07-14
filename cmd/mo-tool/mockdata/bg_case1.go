@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,15 +64,8 @@ var case1CreateTableSQL = []string{
 	)`,
 }
 
-var case1InsertSQL = []string{
-	`
-	INSERT INTO case1_table_0 (
-		id, col1, col2, col3, col4, col5, col6, col7, col8, col9, col10,
-		col11, col12, col13, col14, col15, col16, col17, col18, col19,
-		col20, col21, col22, col23, col24, col25
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-}
+// 移除原来的 case1InsertSQL，因为我们要动态生成批量插入SQL
+// var case1InsertSQL = []string{...}
 
 func dropCase1Table(db *sql.DB, idx int) error {
 	_, err := db.Exec(case1DropTableSQL[idx])
@@ -130,12 +124,24 @@ func insertCase1Batch(
 	values *[]any,
 	errChan chan error,
 ) {
-	if caseID < 0 || caseID >= len(case1InsertSQL) {
+	if caseID < 0 || caseID >= 1 { // 只有 case 0
 		errChan <- fmt.Errorf("invalid idx: %d", caseID)
 		return
 	}
 
-	insertSQL := case1InsertSQL[caseID]
+	// 动态生成批量插入SQL
+	var placeholders []string
+	for i := 0; i < batchSize; i++ {
+		placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	}
+
+	insertSQL := fmt.Sprintf(`
+	INSERT INTO case1_table_0 (
+		id, col1, col2, col3, col4, col5, col6, col7, col8, col9, col10,
+		col11, col12, col13, col14, col15, col16, col17, col18, col19,
+		col20, col21, col22, col23, col24, col25
+	) VALUES %s
+	`, strings.Join(placeholders, ", "))
 
 	stmt, err := db.Prepare(insertSQL)
 	if err != nil {
@@ -150,10 +156,12 @@ func insertCase1Batch(
 		return
 	}
 
+	// 复用 values slice，先清空
+	*values = (*values)[:0]
+
+	// 为批量插入准备所有参数
 	startKey := int64(batchID * batchSize)
 	for i := 0; i < batchSize; i++ {
-		*values = (*values)[:0]
-		generateMockData(values, caseID, startKey+int64(i))
 		select {
 		case <-ctx.Done():
 			tx.Rollback()
@@ -162,12 +170,16 @@ func insertCase1Batch(
 		default:
 		}
 
-		_, err := tx.Stmt(stmt).Exec(*values...)
-		if err != nil {
-			tx.Rollback()
-			errChan <- fmt.Errorf("failed to insert row %d in batch %d: %v", i, batchID, err)
-			return
-		}
+		// 直接生成数据到 values slice，复用内存
+		generateMockData(values, caseID, startKey+int64(i))
+	}
+
+	// 执行一次批量插入
+	_, err = tx.Stmt(stmt).Exec(*values...)
+	if err != nil {
+		tx.Rollback()
+		errChan <- fmt.Errorf("failed to insert batch %d: %v", batchID, err)
+		return
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -226,7 +238,8 @@ func case1Main(cmd *cobra.Command, caseID int) {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			values := make([]any, 0, 26)
+			// 预分配足够大的 slice 来容纳 batchSize * 26 个参数
+			values := make([]any, 0, batchSize*26)
 			for batchID := range batchChan {
 				select {
 				case <-ctx.Done():
@@ -235,7 +248,6 @@ func case1Main(cmd *cobra.Command, caseID int) {
 				default:
 				}
 
-				values = values[:0]
 				insertCase1Batch(ctx, db, caseID, batchID, batchSize, &values, errChan)
 			}
 		}(i)
