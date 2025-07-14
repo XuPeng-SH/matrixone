@@ -25,6 +25,43 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+func forceCheckPoint(
+	db *sql.DB,
+	verbose bool,
+) {
+	checkpointSql := "select mo_ctl('dn', 'checkpoint', '1');"
+	_, err := db.Exec(checkpointSql)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if verbose {
+		log.Println("force checkpoint done")
+	}
+}
+
+func forceCheckpointLoop(
+	ctx context.Context,
+	period time.Duration,
+	db *sql.DB,
+	verbose bool,
+	wg *sync.WaitGroup,
+) {
+	if wg != nil {
+		defer wg.Done()
+	}
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("force checkpoint loop done")
+			return
+		case <-ticker.C:
+			forceCheckPoint(db, verbose)
+		}
+	}
+}
+
 func forceFlush(
 	db *sql.DB,
 	dbName, tableName string,

@@ -33,6 +33,45 @@ func PrepareCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(forceFlushLoopCommand())
+	cmd.AddCommand(forceCheckpointLoopCommand())
+
+	return cmd
+}
+
+func forceCheckpointLoopCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "force-ckp",
+		Short: "Force checkpoint",
+		Long:  "Force checkpoint",
+	}
+
+	common.AddDBFlags(cmd)
+	cmd.Flags().Int("period", 5, "Period in second, default 5")
+	cmd.Flags().Bool("verbose", false, "Verbose, default false")
+
+	cmd.Run = func(cmd *cobra.Command, args []string) {
+		url, user, password, _, err := common.DBFlagValues(cmd)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fullUrl := common.GetDBUrl(url, user, password, "mo_catalog")
+
+		db, err := sql.Open("mysql", fullUrl)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer db.Close()
+
+		period, _ := cmd.Flags().GetInt("period")
+		verbose, _ := cmd.Flags().GetBool("verbose")
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go forceCheckpointLoop(cmd.Context(), time.Duration(period)*time.Second, db, verbose, &wg)
+
+		wg.Wait()
+		log.Println("force checkpoint loop done")
+	}
 
 	return cmd
 }
