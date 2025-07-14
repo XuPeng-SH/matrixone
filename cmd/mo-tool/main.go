@@ -20,6 +20,7 @@ import (
 	debug "github.com/matrixorigin/matrixone/cmd/mo-debug"
 	inspect "github.com/matrixorigin/matrixone/cmd/mo-inspect"
 	"github.com/matrixorigin/matrixone/cmd/mo-tool/controllers"
+	"github.com/matrixorigin/matrixone/cmd/mo-tool/mockdata"
 	"github.com/spf13/cobra"
 )
 
@@ -33,6 +34,7 @@ func main() {
 	rootCmd.AddCommand(debug.PrepareCommand())
 	rootCmd.AddCommand(inspect.PrepareCommand())
 	rootCmd.AddCommand(controllers.PrepareCommand())
+	rootCmd.AddCommand(mockdata.PrepareCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
