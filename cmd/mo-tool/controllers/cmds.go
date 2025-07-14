@@ -16,12 +16,12 @@ package controllers
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/matrixorigin/matrixone/cmd/mo-tool/common"
 	"github.com/spf13/cobra"
 )
 
@@ -44,26 +44,24 @@ func forceFlushLoopCommand() *cobra.Command {
 		Long:  "Force flush loop",
 	}
 
-	cmd.Flags().String("url", "127.0.0.1:6001", "Database url, default 127.0.0.1:6001")
-	cmd.Flags().String("user", "dump", "Database user, default dump")
-	cmd.Flags().String("password", "111", "Database password, default 111")
-	cmd.Flags().String("db", "", "Database name")
+	common.AddDBFlags(cmd)
 	cmd.Flags().String("table", "", "Table name")
 	cmd.Flags().Int("period", 5, "Period in second, default 5")
 	cmd.Flags().Bool("verbose", false, "Verbose, default false")
 	cmd.Flags().Bool("must-success", false, "Must success, default false")
 
 	cmd.Run = func(cmd *cobra.Command, args []string) {
-		dbUrl, _ := cmd.Flags().GetString("url")
-		dbUser, _ := cmd.Flags().GetString("user")
-		dbPassword, _ := cmd.Flags().GetString("password")
-		dbName, _ := cmd.Flags().GetString("db")
+		url, user, password, dbName, err := common.DBFlagValues(cmd)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fullUrl := common.GetDBUrl(url, user, password, dbName)
 		tableName, _ := cmd.Flags().GetString("table")
 		period, _ := cmd.Flags().GetInt("period")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		mustSuccess, _ := cmd.Flags().GetBool("must-success")
 
-		db, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s)/%s", dbUser, dbPassword, dbUrl, dbName))
+		db, err := sql.Open("mysql", fullUrl)
 		if err != nil {
 			log.Fatal(err)
 		}
