@@ -29,7 +29,7 @@ func forceCheckPoint(
 	db *sql.DB,
 	verbose bool,
 ) {
-	checkpointSql := "select mo_ctl('dn', 'checkpoint', '1');"
+	checkpointSql := "select mo_ctl('dn', 'checkpoint', '');"
 	_, err := db.Exec(checkpointSql)
 	if err != nil {
 		log.Fatal(err)
