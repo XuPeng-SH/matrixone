@@ -439,13 +439,13 @@ func NewVec(typ types.Type) *Vector {
 
 func NewOffHeapVecWithType(typ types.Type) *Vector {
 	vec := NewVec(typ)
-	vec.offHeap = true
+	vec.offHeap = false
 	return vec
 }
 
 func NewOffHeapVec() *Vector {
 	vec := NewVecFromReuse()
-	vec.offHeap = true
+	vec.offHeap = false
 	return vec
 }
 
