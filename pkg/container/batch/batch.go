@@ -37,13 +37,13 @@ func New(attrs []string) *Batch {
 
 func NewOffHeap(attrs []string) *Batch {
 	ret := New(attrs)
-	ret.offHeap = false
+	ret.offHeap = true
 	return ret
 }
 
 func NewOffHeapEmpty() *Batch {
 	return &Batch{
-		offHeap: false,
+		offHeap: true,
 	}
 }
 
@@ -56,13 +56,12 @@ func NewWithSize(n int) *Batch {
 
 func NewOffHeapWithSize(n int) *Batch {
 	ret := NewWithSize(n)
-	ret.offHeap = false
+	ret.offHeap = true
 	return ret
 }
 
 func NewWithSchema(offHeap bool, attrs []string, attTypes []types.Type) *Batch {
 	bat := New(attrs)
-	offHeap = false
 	for i, t := range attTypes {
 		if offHeap {
 			bat.Vecs[i] = vector.NewOffHeapVecWithType(t)
@@ -473,7 +472,6 @@ func (bat *Batch) String() string {
 }
 
 func (bat *Batch) Clone(mp *mpool.MPool, offHeap bool) (*Batch, error) {
-	offHeap = false
 	var err error
 
 	rbat := NewWithSize(len(bat.Vecs))
