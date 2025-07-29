@@ -572,9 +572,9 @@ func (dedupJoin *DedupJoin) resetRBat() {
 
 		for i, rp := range dedupJoin.Result {
 			if rp.Rel == 0 {
-				ctr.rbat.Vecs[i] = vector.NewOffHeapVecWithType(dedupJoin.LeftTypes[rp.Pos])
+				ctr.rbat.Vecs[i] = vector.NewVec(dedupJoin.LeftTypes[rp.Pos])
 			} else {
-				ctr.rbat.Vecs[i] = vector.NewOffHeapVecWithType(dedupJoin.RightTypes[rp.Pos])
+				ctr.rbat.Vecs[i] = vector.NewVec(dedupJoin.RightTypes[rp.Pos])
 			}
 		}
 	}
