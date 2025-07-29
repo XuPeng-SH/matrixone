@@ -537,7 +537,7 @@ func (fr *FunctionResult[T]) getConvenientParamList() []reusableParameterWrapper
 
 func (fr *FunctionResult[T]) PreExtendAndReset(targetSize int) error {
 	if fr.vec == nil {
-		fr.vec = NewOffHeapVecWithType(fr.typ)
+		fr.vec = NewVec(fr.typ)
 	}
 
 	oldLength := fr.vec.Length()

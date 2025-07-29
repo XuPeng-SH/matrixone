@@ -149,7 +149,7 @@ func (proc *Process) AllocVectorOfRows(typ types.Type, nele int, nsp *nulls.Null
 }
 
 func (proc *Process) NewBatchFromSrc(src *batch.Batch, preAllocSize int) (*batch.Batch, error) {
-	bat := batch.NewOffHeapWithSize(len(src.Vecs))
+	bat := batch.NewWithSize(len(src.Vecs))
 	bat.SetAttributes(src.Attrs)
 	bat.Recursive = src.Recursive
 	for i := range bat.Vecs {

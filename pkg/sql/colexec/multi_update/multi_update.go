@@ -304,7 +304,7 @@ func (update *MultiUpdate) updateFlushS3Info(proc *process.Process, analyzer pro
 		switch actionType(action) {
 		case actionDelete:
 			if batBufs[actionDelete] == nil {
-				batBufs[actionDelete] = batch.NewOffHeapEmpty()
+				batBufs[actionDelete] = batch.NewWithSize(0)
 			} else {
 				batBufs[actionDelete].CleanOnlyData()
 			}
@@ -327,7 +327,7 @@ func (update *MultiUpdate) updateFlushS3Info(proc *process.Process, analyzer pro
 
 		case actionInsert:
 			if batBufs[actionInsert] == nil {
-				batBufs[actionInsert] = batch.NewOffHeapEmpty()
+				batBufs[actionInsert] = batch.NewWithSize(0)
 			} else {
 				batBufs[actionInsert].CleanOnlyData()
 			}
@@ -350,7 +350,7 @@ func (update *MultiUpdate) updateFlushS3Info(proc *process.Process, analyzer pro
 
 		case actionUpdate:
 			if batBufs[actionUpdate] == nil {
-				batBufs[actionUpdate] = batch.NewOffHeapEmpty()
+				batBufs[actionUpdate] = batch.NewWithSize(0)
 			} else {
 				batBufs[actionUpdate].CleanOnlyData()
 			}
