@@ -17,7 +17,6 @@ package shuffle
 import (
 	"bytes"
 	"fmt"
-
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -52,15 +51,7 @@ func (shuffle *Shuffle) Prepare(proc *process.Process) error {
 		shuffle.ctr.sels = make([][]int32, shuffle.BucketNum)
 	}
 	if shuffle.GetShufflePool() == nil {
-		// 对于DEDUP JOIN，使用更大的maxHolders来避免probe端等待
-		maxHolders := int32(1)
-		if shuffle.BucketNum > 8 { // 如果bucket数量很大，可能是DEDUP JOIN场景
-			maxHolders = shuffle.BucketNum / 4 // 使用bucket数量的1/4作为maxHolders
-			if maxHolders < 1 {
-				maxHolders = 1
-			}
-		}
-		shuffle.SetShufflePool(NewShufflePool(shuffle.BucketNum, maxHolders))
+		shuffle.SetShufflePool(NewShufflePool(shuffle.BucketNum, 1))
 	}
 	shuffle.ctr.shufflePool.Hold()
 	shuffle.ctr.ending = false
