@@ -2370,6 +2370,25 @@ func (c *Compile) compileShuffleJoinV2(node, left, right *plan.Node, leftscopes,
 	if len(leftscopes) != len(rightscopes) {
 		panic("wrong scopes for shuffle join!")
 	}
+
+	// 检查是否需要强制merge probe端
+	needMergeProbe := false
+
+	// 检查下游是否有limit、lock等需要串行化的算子
+	if c.hasDownstreamLimitOrLock(node) {
+		needMergeProbe = true
+	}
+
+	// 如果probe端和build端并发度不匹配，也需要merge
+	if len(leftscopes) != len(rightscopes) {
+		needMergeProbe = true
+	}
+
+	// 如果需要merge，先合并probe端
+	if needMergeProbe {
+		leftscopes = c.mergeProbeScopesForShuffleJoinV2(leftscopes)
+	}
+
 	reuse := node.Stats.HashmapStats.ShuffleMethod == plan.ShuffleMethod_Reuse
 	bucketNum := len(c.cnList) * int(node.Stats.Dop)
 	for i := range leftscopes {
@@ -2394,6 +2413,40 @@ func (c *Compile) compileShuffleJoinV2(node, left, right *plan.Node, leftscopes,
 	}
 
 	return leftscopes
+}
+
+// hasDownstreamLimitOrLock 检查下游是否有limit、lock等需要串行化的算子
+func (c *Compile) hasDownstreamLimitOrLock(node *plan.Node) bool {
+	// 检查当前节点是否是limit或lock
+	if node.NodeType == plan.Node_LOCK_OP {
+		return true
+	}
+
+	// 检查是否有limit
+	if node.Limit != nil {
+		return true
+	}
+
+	// 递归检查子节点
+	for _, childID := range node.Children {
+		childNode := c.pn.GetQuery().Nodes[childID]
+		if c.hasDownstreamLimitOrLock(childNode) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// mergeProbeScopesForShuffleJoinV2 合并probe端的scopes，确保并发度为1
+func (c *Compile) mergeProbeScopesForShuffleJoinV2(probeScopes []*Scope) []*Scope {
+	if len(probeScopes) <= 1 {
+		return probeScopes
+	}
+
+	// 创建一个merge scope，把所有probe scopes作为PreScopes
+	mergeScope := c.newMergeScope(probeScopes)
+	return []*Scope{mergeScope}
 }
 
 func constructShuffleJoinOP(c *Compile, shuffleJoins []*Scope, node, left, right *plan.Node, shuffleV2 bool) {
