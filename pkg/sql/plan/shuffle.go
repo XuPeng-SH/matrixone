@@ -42,10 +42,6 @@ const (
 
 	overlapThreshold = 0.95
 	uniformThreshold = 0.3
-
-	// DEDUP JOIN优化相关常量
-	DedupJoinMaxDopRatio = 0.5 // DEDUP JOIN最大DOP比例
-	DedupJoinBucketRatio = 0.5 // DEDUP JOIN bucket数量比例
 )
 
 const (

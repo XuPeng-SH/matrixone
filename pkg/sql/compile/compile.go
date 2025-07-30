@@ -3987,19 +3987,7 @@ func (c *Compile) newShuffleJoinScopeList(probeScopes, buildScopes []*Scope, n *
 	}
 
 	dop := int(n.Stats.Dop)
-
-	// 对于DEDUP JOIN，优化bucket数量计算，避免过度并发
-	var bucketNum int
-	if n.JoinType == plan.Node_DEDUP {
-		// DEDUP JOIN使用较小的bucket数量，避免数据倾斜
-		bucketNum = int(float64(len(cnlist)) * float64(dop) * plan2.DedupJoinBucketRatio)
-		if bucketNum < len(cnlist) {
-			bucketNum = len(cnlist)
-		}
-	} else {
-		bucketNum = len(cnlist) * dop
-	}
-
+	bucketNum := len(cnlist) * dop
 	shuffleProbes := make([]*Scope, 0, bucketNum)
 	shuffleBuilds := make([]*Scope, 0, bucketNum)
 
@@ -4008,19 +3996,8 @@ func (c *Compile) newShuffleJoinScopeList(probeScopes, buildScopes []*Scope, n *
 
 	if !reuse {
 		for _, cn := range cnlist {
-			// 对于DEDUP JOIN，减少每个CN的并发度
-			var cnDop int
-			if n.JoinType == plan.Node_DEDUP {
-				cnDop = int(float64(dop) * plan2.DedupJoinBucketRatio)
-				if cnDop < 1 {
-					cnDop = 1
-				}
-			} else {
-				cnDop = dop
-			}
-
-			probes := make([]*Scope, cnDop)
-			builds := make([]*Scope, cnDop)
+			probes := make([]*Scope, dop)
+			builds := make([]*Scope, dop)
 			for i := range probes {
 				probes[i] = newScope(Remote)
 				probes[i].NodeInfo.Addr = cn.Addr

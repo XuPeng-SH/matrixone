@@ -42,12 +42,7 @@ func NewShufflePool(bucketNum int32, maxHolders int32) *ShufflePool {
 	sp.finished = 0
 	sp.batches = make([]*batch.CompactBatchs, sp.bucketNum)
 	for i := range sp.batches {
-		// 对于DEDUP JOIN，使用较小的batch大小，避免内存占用过高
-		batchSize := objectio.BlockMaxRows
-		if maxHolders > 8 { // 如果并发度较高，可能是DEDUP JOIN
-			batchSize = objectio.BlockMaxRows / 2
-		}
-		sp.batches[i] = batch.NewCompactBatchs(batchSize)
+		sp.batches[i] = batch.NewCompactBatchs(objectio.BlockMaxRows)
 	}
 	sp.locks = make([]sync.Mutex, bucketNum)
 	sp.fullBatchIdx = make([]int, 0, bucketNum)
