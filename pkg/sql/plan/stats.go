@@ -1676,7 +1676,35 @@ func CalcNodeDOP(p *plan.Plan, rootID int32, ncpu int32, lencn int) {
 	}
 	if node.Stats.HashmapStats != nil && node.Stats.HashmapStats.Shuffle && node.NodeType != plan.Node_TABLE_SCAN {
 		if node.NodeType == plan.Node_JOIN && node.JoinType == plan.Node_DEDUP {
-			setNodeDOP(p, rootID, ncpu)
+			// 对于DEDUP JOIN，考虑子节点的DOP和数据分布
+			leftChild := qry.Nodes[node.Children[0]]
+			rightChild := qry.Nodes[node.Children[1]]
+
+			// 计算基于数据大小的DOP
+			dataBasedDop := int32(getShuffleDop(int(ncpu), lencn, node.Stats.HashmapStats.HashmapSize))
+
+			// 考虑子节点的DOP，避免probe端DOP过低
+			maxChildDop := leftChild.Stats.Dop
+			if rightChild.Stats.Dop > maxChildDop {
+				maxChildDop = rightChild.Stats.Dop
+			}
+
+			// 对于DEDUP JOIN，限制最大DOP为CPU数量的一定比例，避免过度并发
+			maxDop := int32(float64(ncpu) * DedupJoinMaxDopRatio)
+			if maxDop < 1 {
+				maxDop = 1
+			}
+
+			// 选择最小的DOP，确保probe和build端平衡
+			dop := dataBasedDop
+			if maxChildDop < dop {
+				dop = maxChildDop
+			}
+			if maxDop < dop {
+				dop = maxDop
+			}
+
+			setNodeDOP(p, rootID, dop)
 		} else {
 			dop := int32(getShuffleDop(int(ncpu), lencn, node.Stats.HashmapStats.HashmapSize))
 			childDop := qry.Nodes[node.Children[0]].Stats.Dop
