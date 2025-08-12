@@ -3254,7 +3254,7 @@ func (builder *QueryBuilder) bindProjection(
 
 	resultLen = len(ctx.projects)
 	for i, proj := range ctx.projects {
-		exprStr := proj.String()
+		exprStr := ExprHashKey(proj)
 		if _, ok := ctx.projectByExpr[exprStr]; !ok {
 			ctx.projectByExpr[exprStr] = int32(i)
 		}

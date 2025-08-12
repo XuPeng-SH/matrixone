@@ -132,7 +132,7 @@ func (b *OrderBinder) BindExpr(astExpr tree.Expr) (*plan.Expr, error) {
 	var colPos int32
 	var ok bool
 
-	exprStr := expr.String()
+	exprStr := ExprHashKey(expr)
 	if colPos, ok = b.ctx.projectByExpr[exprStr]; !ok {
 		if b.ctx.isDistinct {
 			return nil, moerr.NewSyntaxError(b.GetContext(), "for SELECT DISTINCT, ORDER BY expressions must appear in select list")
