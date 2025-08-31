@@ -19,6 +19,7 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 )
@@ -380,10 +381,7 @@ func BenchmarkMOSpan_if_vs_for(b *testing.B) {
 }
 
 func BenchmarkMOTracer_WithOpts_vs_WithoutOpts(b *testing.B) {
-	tracer := &MOTracer{
-		TracerConfig: trace.TracerConfig{Name: "motrace_test"},
-		provider:     defaultMOTracerProvider(),
-	}
+	tracer := newMOTracer("motrace_test", defaultMOTracerProvider())
 	tracer.provider.enable = true
 
 	trace.InitMOCtledSpan()
@@ -415,4 +413,24 @@ func BenchmarkMOTracer_WithOpts_vs_WithoutOpts(b *testing.B) {
 			span.End()
 		}
 	})
+}
+
+func BenchmarkMOTracer_IsEnable_WithPool(b *testing.B) {
+	// Test the optimized IsEnable method with sync.Pool
+	provider := &MOTracerProvider{
+		tracerProviderConfig: tracerProviderConfig{
+			enable: true,
+		},
+	}
+	tracer := newMOTracer("motrace_test", provider)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		// Simulate the IsEnable call with some options
+		tracer.IsEnable(
+			trace.WithLongTimeThreshold(time.Millisecond * 100),
+		)
+	}
 }

@@ -51,6 +51,39 @@ type MOTracer struct {
 
 	mux            sync.Mutex
 	profileBackOff map[string]BackOff
+	configPool     sync.Pool // Pool for reusing trace.SpanConfig objects
+}
+
+func newMOTracer(
+	instrumentationName string,
+	provider *MOTracerProvider,
+	opts ...trace.TracerOption,
+) *MOTracer {
+	tracer := &MOTracer{
+		TracerConfig: trace.TracerConfig{Name: instrumentationName},
+		provider:     provider,
+		// init mapper
+		profileBackOff: make(map[string]BackOff, 8),
+		// init config pool with a few pre-allocated objects
+		configPool: sync.Pool{
+			New: func() interface{} {
+				return &trace.SpanConfig{}
+			},
+		},
+	}
+	for _, opt := range opts {
+		opt.Apply(&tracer.TracerConfig)
+	}
+	return tracer
+}
+
+func (t *MOTracer) getSpanConfig() *trace.SpanConfig {
+	return t.configPool.Get().(*trace.SpanConfig)
+}
+
+func (t *MOTracer) putSpanConfig(cfg *trace.SpanConfig) {
+	cfg.Reset()
+	t.configPool.Put(cfg)
 }
 
 // Start starts a Span and returns it along with a context containing it.
@@ -109,9 +142,14 @@ func (t *MOTracer) Debug(ctx context.Context, name string, opts ...trace.SpanSta
 }
 
 func (t *MOTracer) IsEnable(opts ...trace.SpanStartOption) bool {
-	var cfg trace.SpanConfig
+	// Get a SpanConfig from the pool or create a new one
+	cfg := t.getSpanConfig()
+
+	// Ensure the config is returned to the pool when we're done
+	defer t.putSpanConfig(cfg)
+
 	for idx := range opts {
-		opts[idx].ApplySpanStart(&cfg)
+		opts[idx].ApplySpanStart(cfg)
 	}
 
 	enable := t.provider.IsEnable()

@@ -21,7 +21,9 @@
 
 package motrace
 
-import "github.com/matrixorigin/matrixone/pkg/util/trace"
+import (
+	"github.com/matrixorigin/matrixone/pkg/util/trace"
+)
 
 var _ trace.TracerProvider = &MOTracerProvider{}
 
@@ -53,19 +55,13 @@ func newMOTracerProvider(opts ...TracerProviderOption) *MOTracerProvider {
 	return pTracer
 }
 
-func (p *MOTracerProvider) Tracer(instrumentationName string, opts ...trace.TracerOption) trace.Tracer {
+func (p *MOTracerProvider) Tracer(
+	instrumentationName string,
+	opts ...trace.TracerOption,
+) trace.Tracer {
 	if !p.IsEnable() {
 		return trace.NoopTracer{}
 	}
 
-	tracer := &MOTracer{
-		TracerConfig: trace.TracerConfig{Name: instrumentationName},
-		provider:     p,
-		// init mapper
-		profileBackOff: make(map[string]BackOff, 8),
-	}
-	for _, opt := range opts {
-		opt.Apply(&tracer.TracerConfig)
-	}
-	return tracer
+	return newMOTracer(instrumentationName, p, opts...)
 }

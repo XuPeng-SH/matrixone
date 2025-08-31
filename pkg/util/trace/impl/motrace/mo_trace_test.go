@@ -132,10 +132,7 @@ func TestMOTracer_Start(t *testing.T) {
 			wantKind:         trace.SpanKindRemote,
 		},
 	}
-	tracer := &MOTracer{
-		TracerConfig: trace.TracerConfig{Name: "motrace_test"},
-		provider:     defaultMOTracerProvider(),
-	}
+	tracer := newMOTracer("motrace_test", defaultMOTracerProvider())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t1 *testing.T) {
 			tracer.provider.enable = tt.fields.Enable
@@ -225,10 +222,7 @@ func TestMOSpan_End(t *testing.T) {
 
 	ctx := context.TODO()
 	p := newMOTracerProvider(WithLongSpanTime(time.Hour), EnableTracer(true), EnableSpanProfile(true))
-	tracer := &MOTracer{
-		TracerConfig: trace.TracerConfig{Name: "test"},
-		provider:     p,
-	}
+	tracer := newMOTracer("test", p)
 
 	var WG sync.WaitGroup
 
@@ -712,11 +706,7 @@ func TestContextDeadlineAndCancel(t *testing.T) {
 }
 
 func TestMOTracer_FSSpanIsEnable(t *testing.T) {
-
-	tracer := &MOTracer{
-		TracerConfig: trace.TracerConfig{Name: "motrace_test"},
-		provider:     defaultMOTracerProvider(),
-	}
+	tracer := newMOTracer("motrace_test", defaultMOTracerProvider())
 	tracer.provider.enable = true
 
 	trace.InitMOCtledSpan()
@@ -743,10 +733,7 @@ func TestMOTracer_FSSpanIsEnable(t *testing.T) {
 }
 
 func TestMOSpan_NeedRecord(t *testing.T) {
-	tracer := &MOTracer{
-		TracerConfig: trace.TracerConfig{Name: "motrace_test"},
-		provider:     defaultMOTracerProvider(),
-	}
+	tracer := newMOTracer("motrace_test", defaultMOTracerProvider())
 
 	tracer.provider.enable = true
 	tracer.provider.longSpanTime = time.Millisecond * 20
@@ -813,10 +800,7 @@ func TestMOSpan_NeedRecord(t *testing.T) {
 }
 
 func TestMOCtledKindOverwrite(t *testing.T) {
-	tracer := &MOTracer{
-		TracerConfig: trace.TracerConfig{Name: "motrace_test"},
-		provider:     defaultMOTracerProvider(),
-	}
+	tracer := newMOTracer("motrace_test", defaultMOTracerProvider())
 	tracer.provider.enable = true
 
 	trace.InitMOCtledSpan()
@@ -835,10 +819,7 @@ func TestMOCtledKindOverwrite(t *testing.T) {
 }
 
 func TestMOCtledKindPassDown(t *testing.T) {
-	tracer := &MOTracer{
-		TracerConfig: trace.TracerConfig{Name: "motrace_test"},
-		provider:     defaultMOTracerProvider(),
-	}
+	tracer := newMOTracer("motrace_test", defaultMOTracerProvider())
 	tracer.provider.enable = true
 
 	trace.InitMOCtledSpan()
