@@ -17,6 +17,7 @@ package logtailreplay
 import (
 	"bytes"
 	"fmt"
+
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
@@ -27,7 +28,7 @@ import (
 type objectsIter struct {
 	onlyVisible bool
 	ts          types.TS
-	iter        btree.IterG[objectio.ObjectEntry]
+	iter        btree.IterG[*objectio.ObjectEntry]
 }
 
 var _ objectio.ObjectIter = new(objectsIter)
@@ -44,7 +45,7 @@ func (b *objectsIter) Next() bool {
 	return false
 }
 
-func (b *objectsIter) Entry() objectio.ObjectEntry {
+func (b *objectsIter) Entry() *objectio.ObjectEntry {
 	return b.iter.Item()
 }
 
@@ -82,7 +83,7 @@ func (p *PartitionState) newTombstoneObjectsIter(
 
 	iter := p.tombstoneObjectDTSIndex.Iter()
 	if onlyVisible {
-		pivot := objectio.ObjectEntry{
+		pivot := &objectio.ObjectEntry{
 			DeleteTime: snapshot,
 		}
 
@@ -164,13 +165,13 @@ func (p *PartitionState) HasTombstoneChanged(from, to types.TS) (exist bool) {
 	defer iter.Release()
 
 	// Created after from
-	if iter.Seek(objectio.ObjectEntry{CreateTime: from}) {
+	if iter.Seek(&objectio.ObjectEntry{CreateTime: from}) {
 		return true
 	}
 
 	iter.First()
 	// Deleted after from
-	ok := iter.Seek(objectio.ObjectEntry{DeleteTime: from})
+	ok := iter.Seek(&objectio.ObjectEntry{DeleteTime: from})
 	if ok {
 		item := iter.Item()
 		return !item.DeleteTime.IsEmpty()
@@ -221,7 +222,7 @@ func (p *PartitionState) BlockPersisted(blockID *types.Blockid) bool {
 	iter := p.dataObjectsNameIndex.Iter()
 	defer iter.Release()
 
-	pivot := objectio.ObjectEntry{}
+	pivot := &objectio.ObjectEntry{}
 	objectio.SetObjectStatsShortName(&pivot.ObjectStats, objectio.ShortName(blockID))
 	if ok := iter.Seek(pivot); ok {
 		e := iter.Item()
@@ -257,7 +258,7 @@ func (p *PartitionState) CollectObjectsBetween(
 		var ss objectio.ObjectStats
 		objectio.SetObjectStatsShortName(&ss, &entry.ShortObjName)
 
-		val, exist := nameIdx.Get(objectio.ObjectEntry{
+		val, exist := nameIdx.Get(&objectio.ObjectEntry{
 			ObjectStats: ss,
 		})
 
@@ -294,7 +295,7 @@ func (p *PartitionState) CheckIfObjectDeletedBeforeTS(
 	objId *objectio.ObjectId,
 ) bool {
 
-	var tree *btree.BTreeG[objectio.ObjectEntry]
+	var tree *btree.BTreeG[*objectio.ObjectEntry]
 	if isTombstone {
 		tree = p.tombstoneObjectsNameIndex
 	} else {
@@ -303,7 +304,7 @@ func (p *PartitionState) CheckIfObjectDeletedBeforeTS(
 
 	var stats objectio.ObjectStats
 	objectio.SetObjectStatsShortName(&stats, (*objectio.ObjectNameShort)(objId))
-	val, exist := tree.Get(objectio.ObjectEntry{
+	val, exist := tree.Get(&objectio.ObjectEntry{
 		ObjectStats: stats,
 	})
 
@@ -318,12 +319,12 @@ func (p *PartitionState) GetObject(name objectio.ObjectNameShort) (objectio.Obje
 	iter := p.dataObjectsNameIndex.Iter()
 	defer iter.Release()
 
-	pivot := objectio.ObjectEntry{}
+	pivot := &objectio.ObjectEntry{}
 	objectio.SetObjectStatsShortName(&pivot.ObjectStats, &name)
 	if ok := iter.Seek(pivot); ok {
 		e := iter.Item()
 		if bytes.Equal(e.ObjectShortName()[:], name[:]) {
-			return iter.Item(), true
+			return *iter.Item(), true
 		}
 	}
 	return objectio.ObjectEntry{}, false

@@ -64,14 +64,14 @@ type PartitionState struct {
 
 	// index
 
-	dataObjectsNameIndex      *btree.BTreeG[objectio.ObjectEntry]
-	tombstoneObjectsNameIndex *btree.BTreeG[objectio.ObjectEntry]
+	dataObjectsNameIndex      *btree.BTreeG[*objectio.ObjectEntry]
+	tombstoneObjectsNameIndex *btree.BTreeG[*objectio.ObjectEntry]
 
 	rowPrimaryKeyIndex       *btree.BTreeG[*PrimaryIndexEntry]
 	inMemTombstoneRowIdIndex *btree.BTreeG[*PrimaryIndexEntry]
 
 	dataObjectTSIndex       *btree.BTreeG[ObjectIndexByTSEntry]
-	tombstoneObjectDTSIndex *btree.BTreeG[objectio.ObjectEntry]
+	tombstoneObjectDTSIndex *btree.BTreeG[*objectio.ObjectEntry]
 
 	// noData indicates whether to retain data batch
 	// for primary key dedup, reading data is not required
@@ -142,7 +142,7 @@ func (p *PartitionState) handleDataObjectEntry(ctx context.Context, objEntry obj
 		return
 	}
 
-	old, exist := p.dataObjectsNameIndex.Get(objEntry)
+	old, exist := p.dataObjectsNameIndex.Get(&objEntry)
 	if exist {
 		// why check the deleteTime here? consider this situation:
 		// 		1. insert on an object, then these insert operations recorded into a CKP.
@@ -166,7 +166,7 @@ func (p *PartitionState) handleDataObjectEntry(ctx context.Context, objEntry obj
 		p.dataObjectTSIndex.Set(e)
 	}
 
-	p.dataObjectsNameIndex.Set(objEntry)
+	p.dataObjectsNameIndex.Set(&objEntry)
 
 	// Need to insert an ee in dataObjectTSIndex, when soft delete appendable object.
 	if !objEntry.DeleteTime.IsEmpty() {
@@ -261,7 +261,7 @@ func (p *PartitionState) handleTombstoneObjectEntry(ctx context.Context, objEntr
 		return
 	}
 
-	old, exist := p.tombstoneObjectsNameIndex.Get(objEntry)
+	old, exist := p.tombstoneObjectsNameIndex.Get(&objEntry)
 	if exist {
 		// why check the deleteTime here? consider this situation:
 		// 		1. insert on an object, then these insert operations recorded into a CKP.
@@ -277,13 +277,13 @@ func (p *PartitionState) handleTombstoneObjectEntry(ctx context.Context, objEntr
 		}
 	}
 
-	p.tombstoneObjectsNameIndex.Set(objEntry)
+	p.tombstoneObjectsNameIndex.Set(&objEntry)
 	{ // update or set DTSIndex for objEntry
 		tmpObj := objEntry
 		tmpObj.DeleteTime = types.TS{}
 		// if already exists, delete it first
-		p.tombstoneObjectDTSIndex.Delete(tmpObj)
-		p.tombstoneObjectDTSIndex.Set(objEntry)
+		p.tombstoneObjectDTSIndex.Delete(&tmpObj)
+		p.tombstoneObjectDTSIndex.Set(&objEntry)
 	}
 
 	// for appendable object, gc rows when delete object
@@ -425,7 +425,7 @@ func (p *PartitionState) HandleDataObjectList(
 			continue
 		}
 
-		old, exist := p.dataObjectsNameIndex.Get(objEntry)
+		old, exist := p.dataObjectsNameIndex.Get(&objEntry)
 		if exist {
 			// why check the deleteTime here? consider this situation:
 			// 		1. insert on an object, then these insert operations recorded into a CKP.
@@ -449,7 +449,7 @@ func (p *PartitionState) HandleDataObjectList(
 			p.dataObjectTSIndex.Set(e)
 		}
 
-		p.dataObjectsNameIndex.Set(objEntry)
+		p.dataObjectsNameIndex.Set(&objEntry)
 
 		//Need to insert an ee in dataObjectTSIndex, when soft delete appendable object.
 		if !deleteTSCol[idx].IsEmpty() {
@@ -575,7 +575,7 @@ func (p *PartitionState) HandleTombstoneObjectList(
 			continue
 		}
 
-		old, exist := p.tombstoneObjectsNameIndex.Get(objEntry)
+		old, exist := p.tombstoneObjectsNameIndex.Get(&objEntry)
 		if exist {
 			// why check the deleteTime here? consider this situation:
 			// 		1. insert on an object, then these insert operations recorded into a CKP.
@@ -591,13 +591,13 @@ func (p *PartitionState) HandleTombstoneObjectList(
 			}
 		}
 
-		p.tombstoneObjectsNameIndex.Set(objEntry)
+		p.tombstoneObjectsNameIndex.Set(&objEntry)
 		{ // update or set DTSIndex for objEntry
 			tmpObj := objEntry
 			tmpObj.DeleteTime = types.TS{}
 			// if already exists, delete it first
-			p.tombstoneObjectDTSIndex.Delete(tmpObj)
-			p.tombstoneObjectDTSIndex.Set(objEntry)
+			p.tombstoneObjectDTSIndex.Delete(&tmpObj)
+			p.tombstoneObjectDTSIndex.Set(&objEntry)
 		}
 
 		// for appendable object, gc rows when delete object
@@ -886,12 +886,12 @@ func NewPartitionState(
 		tid:                       tid,
 		noData:                    noData,
 		rows:                      btree.NewBTreeGOptions((*RowEntry).Less, opts),
-		dataObjectsNameIndex:      btree.NewBTreeGOptions(objectio.ObjectEntry.ObjectNameIndexLess, opts),
-		tombstoneObjectsNameIndex: btree.NewBTreeGOptions(objectio.ObjectEntry.ObjectNameIndexLess, opts),
+		dataObjectsNameIndex:      btree.NewBTreeGOptions((*objectio.ObjectEntry).ObjectNameIndexLess, opts),
+		tombstoneObjectsNameIndex: btree.NewBTreeGOptions((*objectio.ObjectEntry).ObjectNameIndexLess, opts),
 		rowPrimaryKeyIndex:        btree.NewBTreeGOptions((*PrimaryIndexEntry).Less, opts),
 		inMemTombstoneRowIdIndex:  btree.NewBTreeGOptions((*PrimaryIndexEntry).Less, opts),
 		dataObjectTSIndex:         btree.NewBTreeGOptions(ObjectIndexByTSEntry.Less, opts),
-		tombstoneObjectDTSIndex:   btree.NewBTreeGOptions(objectio.ObjectEntry.ObjectDTSIndexLess, opts),
+		tombstoneObjectDTSIndex:   btree.NewBTreeGOptions((*objectio.ObjectEntry).ObjectDTSIndexLess, opts),
 		shared:                    new(sharedStates),
 		start:                     types.MaxTs(),
 	}

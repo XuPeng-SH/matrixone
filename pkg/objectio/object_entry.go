@@ -34,7 +34,7 @@ type ObjectList interface {
 type ObjectIter interface {
 	Next() bool
 	Close() error
-	Entry() ObjectEntry
+	Entry() *ObjectEntry
 }
 
 type ObjectEntry struct {
@@ -55,8 +55,8 @@ func (o ObjectEntry) Location() Location {
 	return o.ObjectLocation()
 }
 
-func (o ObjectEntry) ObjectNameIndexLess(than ObjectEntry) bool {
-	return bytes.Compare((*o.ObjectShortName())[:], (*than.ObjectShortName())[:]) < 0
+func (o *ObjectEntry) ObjectNameIndexLess(than *ObjectEntry) bool {
+	return bytes.Compare((o.ObjectShortName())[:], (than.ObjectShortName())[:]) < 0
 }
 
 // ObjectDTSIndexLess has the order:
@@ -65,7 +65,7 @@ func (o ObjectEntry) ObjectNameIndexLess(than ObjectEntry) bool {
 // 3. ascending object with createts when same dts.
 //
 // sort by DELETE time and then CREATE time
-func (o ObjectEntry) ObjectDTSIndexLess(than ObjectEntry) bool {
+func (o *ObjectEntry) ObjectDTSIndexLess(than *ObjectEntry) bool {
 	// (c, d), (c, d), (c, d), (c, inf), (c, inf) ...
 	x, y := o.DeleteTime, than.DeleteTime
 	if x.IsEmpty() {

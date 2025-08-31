@@ -433,7 +433,7 @@ func ForeachCommittedObjects(
 
 func ForeachTombstoneObject(
 	ts types.TS,
-	onTombstone func(tombstone objectio.ObjectEntry) (next bool, err error),
+	onTombstone func(tombstone *objectio.ObjectEntry) (next bool, err error),
 	pState *logtailreplay.PartitionState,
 ) error {
 	iter, err := pState.NewObjectsIter(ts, true, true)
@@ -454,14 +454,14 @@ func ForeachTombstoneObject(
 
 func ForeachSnapshotObjects(
 	ts timestamp.Timestamp,
-	onObject func(obj objectio.ObjectEntry, isCommitted bool) error,
+	onObject func(obj *objectio.ObjectEntry, isCommitted bool) error,
 	tableSnapshot *logtailreplay.PartitionState,
 	extraCommitted []objectio.ObjectStats,
 	uncommitted ...objectio.ObjectStats,
 ) (err error) {
 	// process all uncommitted objects first
 	for _, obj := range uncommitted {
-		info := objectio.ObjectEntry{
+		info := &objectio.ObjectEntry{
 			ObjectStats: obj,
 		}
 		if err = onObject(info, false); err != nil {
@@ -470,7 +470,7 @@ func ForeachSnapshotObjects(
 	}
 	// process all uncommitted objects first
 	for _, obj := range extraCommitted {
-		info := objectio.ObjectEntry{
+		info := &objectio.ObjectEntry{
 			ObjectStats: obj,
 		}
 		if err = onObject(info, true); err != nil {

@@ -632,7 +632,7 @@ func updateInfoFromZoneMap(
 
 	var updateMu sync.Mutex
 	var init bool
-	onObjFn := func(obj objectio.ObjectEntry) error {
+	onObjFn := func(obj *objectio.ObjectEntry) error {
 		location := obj.Location()
 		objMeta, err := objectio.FastLoadObjectMeta(ctx, &location, false, fs)
 		if err != nil {

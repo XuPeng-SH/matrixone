@@ -520,7 +520,7 @@ func NewBaseHandler(state *PartitionState, changesHandle *ChangeHandler, start, 
 		skipTS:        make(map[types.TS]struct{}),
 		changesHandle: changesHandle,
 	}
-	var iter btree.IterG[objectio.ObjectEntry]
+	var iter btree.IterG[*objectio.ObjectEntry]
 	if tombstone {
 		iter = state.tombstoneObjectsNameIndex.Iter()
 	} else {
@@ -548,7 +548,7 @@ func (p *baseHandle) init(ctx context.Context, quick bool, mp *mpool.MPool) (err
 	err = p.inMemoryHandle.init(quick, mp)
 	return
 }
-func (p *baseHandle) fillInSkipTS(iter btree.IterG[objectio.ObjectEntry], start, end types.TS) {
+func (p *baseHandle) fillInSkipTS(iter btree.IterG[*objectio.ObjectEntry], start, end types.TS) {
 	for iter.Next() {
 		obj := iter.Item()
 		if !obj.DeleteTime.IsEmpty() {
@@ -671,7 +671,7 @@ func (p *baseHandle) getBatchesFromRowIterator(iter btree.IterG[*RowEntry], star
 	}
 	return
 }
-func (p *baseHandle) getObjectEntries(objIter btree.IterG[objectio.ObjectEntry], start, end types.TS) (aobj, cnObj []*objectio.ObjectEntry) {
+func (p *baseHandle) getObjectEntries(objIter btree.IterG[*objectio.ObjectEntry], start, end types.TS) (aobj, cnObj []*objectio.ObjectEntry) {
 	aobj = make([]*objectio.ObjectEntry, 0)
 	cnObj = make([]*objectio.ObjectEntry, 0)
 	for objIter.Next() {
@@ -683,7 +683,7 @@ func (p *baseHandle) getObjectEntries(objIter btree.IterG[objectio.ObjectEntry],
 			if !entry.DeleteTime.IsEmpty() && entry.DeleteTime.LT(&start) {
 				continue
 			}
-			aobj = append(aobj, &entry)
+			aobj = append(aobj, entry)
 		} else {
 			if !entry.ObjectStats.GetCNCreated() {
 				continue
@@ -691,7 +691,7 @@ func (p *baseHandle) getObjectEntries(objIter btree.IterG[objectio.ObjectEntry],
 			if entry.CreateTime.LT(&start) || entry.CreateTime.GT(&end) {
 				continue
 			}
-			cnObj = append(cnObj, &entry)
+			cnObj = append(cnObj, entry)
 		}
 	}
 	goSort.Slice(aobj, func(i, j int) bool {
