@@ -51,6 +51,8 @@ type MOTracer struct {
 
 	mux            sync.Mutex
 	profileBackOff map[string]BackOff
+	// configPool is used to reuse SpanConfig objects to avoid allocations in IsEnable
+	configPool sync.Pool
 }
 
 // Start starts a Span and returns it along with a context containing it.
@@ -109,18 +111,32 @@ func (t *MOTracer) Debug(ctx context.Context, name string, opts ...trace.SpanSta
 }
 
 func (t *MOTracer) IsEnable(opts ...trace.SpanStartOption) bool {
-	var cfg trace.SpanConfig
+	// Get a config from pool or create new one
+	cfg := t.configPool.Get()
+	if cfg == nil {
+		cfg = &trace.SpanConfig{}
+	}
+	spanConfig := cfg.(*trace.SpanConfig)
+
+	// Reset the config to ensure clean state
+	spanConfig.Reset()
+
+	// Apply options
 	for idx := range opts {
-		opts[idx].ApplySpanStart(&cfg)
+		opts[idx].ApplySpanStart(spanConfig)
 	}
 
 	enable := t.provider.IsEnable()
 
 	// check if is this span kind controlled by mo_ctl.
-	if has, state, _ := trace.IsMOCtledSpan(cfg.Kind); has {
+	if has, state, _ := trace.IsMOCtledSpan(spanConfig.Kind); has {
+		// Return config to pool before returning
+		t.configPool.Put(spanConfig)
 		return enable && state
 	}
 
+	// Return config to pool before returning
+	t.configPool.Put(spanConfig)
 	return enable
 }
 

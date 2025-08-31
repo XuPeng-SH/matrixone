@@ -64,6 +64,12 @@ func (p *MOTracerProvider) Tracer(instrumentationName string, opts ...trace.Trac
 		// init mapper
 		profileBackOff: make(map[string]BackOff, 8),
 	}
+
+	// Pre-populate the config pool with a few objects to reduce allocation overhead
+	for i := 0; i < 4; i++ {
+		tracer.configPool.Put(&trace.SpanConfig{})
+	}
+
 	for _, opt := range opts {
 		opt.Apply(&tracer.TracerConfig)
 	}

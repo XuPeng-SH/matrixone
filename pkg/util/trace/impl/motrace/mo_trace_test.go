@@ -912,3 +912,57 @@ func TestConstBackOff_Count(t *testing.T) {
 	})
 
 }
+
+func TestMOTracer_IsEnable_Optimization(t *testing.T) {
+	p := newMOTracerProvider(WithFSWriterFactory(&dummyFileWriterFactory{}), EnableTracer(true))
+	tracer := &MOTracer{
+		TracerConfig:   trace.TracerConfig{Name: "test"},
+		provider:       p,
+		profileBackOff: make(map[string]BackOff, 8),
+	}
+
+	// Initialize mo_ctl configuration
+	trace.InitMOCtledSpan()
+
+	// Test that IsEnable works correctly with different options
+	tests := []struct {
+		name     string
+		opts     []trace.SpanStartOption
+		expected bool
+	}{
+		{
+			name:     "no options",
+			opts:     nil,
+			expected: true, // provider is enabled
+		},
+		{
+			name:     "with internal kind",
+			opts:     []trace.SpanStartOption{trace.WithKind(trace.SpanKindInternal)},
+			expected: true, // provider is enabled and internal is not mo_ctl controlled
+		},
+		{
+			name:     "with local fs kind",
+			opts:     []trace.SpanStartOption{trace.WithKind(trace.SpanKindLocalFSVis)},
+			expected: false, // provider is enabled but local fs is disabled by default
+		},
+		{
+			name:     "with remote fs kind",
+			opts:     []trace.SpanStartOption{trace.WithKind(trace.SpanKindRemoteFSVis)},
+			expected: false, // provider is enabled but remote fs is disabled by default
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tracer.IsEnable(tt.opts...)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+
+	// Test that the pool is working correctly by calling IsEnable multiple times
+	// This should not cause any issues with reused config objects
+	for i := 0; i < 100; i++ {
+		result := tracer.IsEnable(trace.WithKind(trace.SpanKindInternal))
+		assert.True(t, result)
+	}
+}

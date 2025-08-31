@@ -416,3 +416,24 @@ func BenchmarkMOTracer_WithOpts_vs_WithoutOpts(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkMOTracer_IsEnable(b *testing.B) {
+	p := newMOTracerProvider(WithFSWriterFactory(&dummyFileWriterFactory{}), EnableTracer(true))
+	tracer := &MOTracer{
+		TracerConfig:   trace.TracerConfig{Name: "benchmark"},
+		provider:       p,
+		profileBackOff: make(map[string]BackOff, 8),
+	}
+
+	// Pre-populate the config pool
+	for i := 0; i < 4; i++ {
+		tracer.configPool.Put(&trace.SpanConfig{})
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		tracer.IsEnable(trace.WithKind(trace.SpanKindLocalFSVis))
+	}
+}
