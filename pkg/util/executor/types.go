@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
 
 // SQLExecutor is used to execute internal sql. All internal requirements for writing
@@ -67,6 +68,7 @@ type Options struct {
 	sql                     string
 	forceRebuildPlan        bool
 	resolveVariableFunc     func(varName string, isSystemVar, isGlobalVar bool) (interface{}, error)
+	batBuf                  containers.IBatchBuffer
 }
 
 // StatementOption statement execute option.

@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex/metric"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/stretchr/testify/require"
 )
@@ -35,6 +36,7 @@ func mock_runSql_streaming(
 	sql string,
 	ch chan executor.Result,
 	err_chan chan error,
+	_ containers.IBatchBuffer,
 ) (executor.Result, error) {
 	// don't close channel because it may run faster than err_chan
 	defer close(ch)
@@ -48,6 +50,7 @@ func mock_runSql_streaming_parser_error(
 	sql string,
 	ch chan executor.Result,
 	err_chan chan error,
+	_ containers.IBatchBuffer,
 ) (executor.Result, error) {
 	defer close(ch)
 	return executor.Result{}, moerr.NewInternalErrorNoCtx("sql parser error")
@@ -59,6 +62,7 @@ func mock_runSql_streaming_cancel(
 	sql string,
 	ch chan executor.Result,
 	err_chan chan error,
+	_ containers.IBatchBuffer,
 ) (executor.Result, error) {
 	select {
 	case <-proc.Ctx.Done():

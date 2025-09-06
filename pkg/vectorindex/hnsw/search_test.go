@@ -31,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex/cache"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/stretchr/testify/require"
 
@@ -50,6 +51,7 @@ func mock_runSql_streaming(
 	sql string,
 	ch chan executor.Result,
 	err_chan chan error,
+	_ containers.IBatchBuffer,
 ) (executor.Result, error) {
 
 	defer close(ch)

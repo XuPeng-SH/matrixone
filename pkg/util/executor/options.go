@@ -24,7 +24,14 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 )
+
+// WithBatBuf attach a batch buffer for the result
+func (opts Options) WithBatBuf(batBuf containers.IBatchBuffer) Options {
+	opts.batBuf = batBuf
+	return opts
+}
 
 // WithDisableIncrStatement disable incr statement
 func (opts Options) WithDisableIncrStatement() Options {
@@ -74,6 +81,16 @@ func (opts Options) WithMinCommittedTS(ts timestamp.Timestamp) Options {
 func (opts Options) WithWaitCommittedLogApplied() Options {
 	opts.waitCommittedLogApplied = true
 	return opts
+}
+
+// BatBuf returns the batch buffer
+func (opts Options) BatBuf() containers.IBatchBuffer {
+	return opts.batBuf
+}
+
+// HasBatBuf returns true if the batch buffer is set
+func (opts Options) HasBatBuf() bool {
+	return opts.batBuf != nil
 }
 
 // Database returns default database

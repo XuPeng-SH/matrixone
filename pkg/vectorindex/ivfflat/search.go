@@ -131,7 +131,7 @@ func (idx *IvfflatSearchIndex[T]) searchEntries(
 	}
 
 	bat := res.Batches[0]
-	defer res.Close()
+	defer sqlexec.BigBatchBuffer.Putback(bat, proc.Mp())
 
 	for i := 0; i < bat.RowCount(); i++ {
 		pk := vector.GetAny(bat.Vecs[0], i, true)
@@ -257,7 +257,7 @@ func (idx *IvfflatSearchIndex[T]) Search(
 	go func() {
 		defer wg.Done()
 		if _, err2 := runSql_streaming(
-			ctx, proc, sql, stream_chan, error_chan,
+			ctx, proc, sql, stream_chan, error_chan, sqlexec.BigBatchBuffer,
 		); err2 != nil {
 			// consumer notify the producer to stop the sql streaming
 			cancel(err2)

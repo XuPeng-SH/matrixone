@@ -150,7 +150,7 @@ func (idx *HnswSearchIndex) LoadIndex(
 
 	go func() {
 		if _, err2 := runSql_streaming(
-			ctx, proc, sql, stream_chan, error_chan,
+			ctx, proc, sql, stream_chan, error_chan, nil,
 		); err2 != nil {
 			error_chan <- err2
 			return

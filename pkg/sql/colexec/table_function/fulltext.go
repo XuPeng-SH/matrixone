@@ -240,7 +240,7 @@ func runWordStats(
 		return
 	}
 
-	result, err = ft_runSql_streaming(ctx, proc, sql, u.streamCh, u.errCh)
+	result, err = ft_runSql_streaming(ctx, proc, sql, u.streamCh, u.errCh, nil)
 
 	return
 }

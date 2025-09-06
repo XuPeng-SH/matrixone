@@ -420,11 +420,20 @@ func (exec *txnExecutor) Exec(
 				// the bat is valid only in current method. So we need copy data.
 				// FIXME: add a custom streaming apply handler to consume readed data. Now
 				// our current internal sql will never read too much data.
-				rows, err := bat.Clone(exec.s.mp, streaming)
-				if err != nil {
-					return err
-				}
 				if streaming {
+					var rows *batch.Batch
+
+					if exec.opts.HasBatBuf() {
+						attrs, attrTypes := bat.GetSchema()
+						rows = exec.opts.BatBuf().FetchWithSchema(
+							attrs,
+							attrTypes,
+						)
+					}
+					if err := rows.CloneTo(bat, exec.s.mp); err != nil {
+						return err
+					}
+
 					stream_result := executor.NewResult(exec.s.mp)
 					for len(stream_chan) == cap(stream_chan) {
 						select {
@@ -441,6 +450,10 @@ func (exec *txnExecutor) Exec(
 					stream_result.Batches = []*batch.Batch{rows}
 					stream_chan <- stream_result
 				} else {
+					rows, err := bat.Clone(exec.s.mp, streaming)
+					if err != nil {
+						return err
+					}
 					batches = append(batches, rows)
 				}
 			}

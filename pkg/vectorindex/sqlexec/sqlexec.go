@@ -17,11 +17,24 @@ package sqlexec
 import (
 	"context"
 
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/util/executor"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
+
+var BigBatchBuffer containers.IBatchBuffer
+
+func init() {
+	BigBatchBuffer = containers.NewGeneralBatchBuffer(
+		mpool.MB*64*20,
+		true,
+		0,
+		mpool.MB*64,
+	)
+}
 
 // run SQL in batch mode. Result batches will stored in memory and return once all result batches received.
 func RunSql(proc *process.Process, sql string) (executor.Result, error) {
@@ -57,6 +70,7 @@ func RunStreamingSql(
 	sql string,
 	stream_chan chan executor.Result,
 	error_chan chan error,
+	batBuf containers.IBatchBuffer,
 ) (executor.Result, error) {
 	v, ok := moruntime.ServiceRuntime(proc.GetService()).GetGlobalVariables(moruntime.InternalSQLExecutor)
 	if !ok {
@@ -78,6 +92,7 @@ func RunStreamingSql(
 		WithDatabase(proc.GetSessionInfo().Database).
 		WithTimeZone(proc.GetSessionInfo().TimeZone).
 		WithAccountID(accountId).
-		WithStreaming(stream_chan, error_chan)
+		WithStreaming(stream_chan, error_chan).
+		WithBatBuf(batBuf)
 	return exec.Exec(ctx, sql, opts)
 }
