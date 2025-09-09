@@ -1,0 +1,57 @@
+🔄 Data Comparison - Time Point 1: 2025-09-09 13:06:20 vs Time Point 2: 2025-09-09 13:06:24
+================================================================================
+🕐 Time Point 1 TS: 1757424004000000000
+🕐 Time Point 2 TS: 1757424004000000000
+
+📊 Data Comparison Results:
+--------------------------------------------------------------------------------
+🔍 Detailed Changes:
+====================================================================================================
+🔄 RECORD MODIFIED - ID: 1
+   📍 Time Points: 2025-09-09 13:06:20 → 2025-09-09 13:06:24
+   🔄 Label: 'unlabeled' → 'cat'
+   🔄 Annotator: 'N/A' → 'AI_model_v1'
+   🔄 Confidence: 'N/A' → '0.95'
+   📋 Metadata Details:
+      Time 1: Annotator='N/A', Confidence='N/A', Reason='N/A'
+      Time 2: Annotator='AI_model_v1', Confidence='0.95', Reason='N/A'
+   ⏰ Timestamps: 2025-09-09 13:06:20 → 2025-09-09 13:06:24
+--------------------------------------------------
+🔄 RECORD MODIFIED - ID: 2
+   📍 Time Points: 2025-09-09 13:06:20 → 2025-09-09 13:06:24
+   🔄 Label: 'unlabeled' → 'dog'
+   🔄 Annotator: 'N/A' → 'AI_model_v1'
+   🔄 Confidence: 'N/A' → '0.85'
+   📋 Metadata Details:
+      Time 1: Annotator='N/A', Confidence='N/A', Reason='N/A'
+      Time 2: Annotator='AI_model_v1', Confidence='0.85', Reason='N/A'
+   ⏰ Timestamps: 2025-09-09 13:06:20 → 2025-09-09 13:06:24
+--------------------------------------------------
+🔄 RECORD MODIFIED - ID: 5
+   📍 Time Points: 2025-09-09 13:06:20 → 2025-09-09 13:06:24
+   🔄 Label: 'dog' → 'wolf'
+   🔄 Annotator: 'AI_model_v1' → 'human_reviewer'
+   🔄 Confidence: '0.85' → 'N/A'
+   🔄 Reason: 'N/A' → 'corrected from dog - AI misidentified'
+   📋 Metadata Details:
+      Time 1: Annotator='AI_model_v1', Confidence='0.85', Reason='N/A'
+      Time 2: Annotator='human_reviewer', Confidence='N/A', Reason='corrected from dog - AI misidentified'
+   ⏰ Timestamps: 2025-09-09 13:06:20 → 2025-09-09 13:06:24
+--------------------------------------------------
+📈 Summary:
+--------------------------------------------------
+  🆕 Added records: 0
+  🗑️  Removed records: 0
+  🔄 Modified records: 3
+  ✅ Unchanged records: 97
+  📊 Total records at 2025-09-09 13:06:20: 100
+  📊 Total records at 2025-09-09 13:06:24: 100
+
+🏷️  Label Change Analysis:
+------------------------------------------------------------
+Label           Count1   Count2   Change
+------------------------------------------------------------
+unlabeled       100      97       -3
+cat             0        1        +1
+dog             0        1        +1
+wolf            0        1        +1
