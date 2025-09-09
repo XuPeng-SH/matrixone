@@ -94,7 +94,28 @@ GROUP BY label
 ORDER BY count DESC;
 
 -- ===========================================
--- 6. Time Travel 查询示例 (Git for Data)
+-- 6. 快照管理示例 (Git for Data)
+-- ===========================================
+
+-- 创建快照
+CREATE SNAPSHOT ai_dataset_20250909_143022_initial FOR TABLE test ai_dataset;
+
+-- 查看所有快照
+SHOW SNAPSHOTS;
+
+-- 查询快照数据
+SELECT id, label, 
+       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+       timestamp
+FROM ai_dataset {Snapshot = "ai_dataset_20250909_143022_initial"}
+ORDER BY id;
+
+-- 删除快照
+DROP SNAPSHOT ai_dataset_20250909_143022_initial;
+
+-- ===========================================
+-- 7. Time Travel 查询示例 (Git for Data)
 -- ===========================================
 
 -- 查询特定时间点的数据状态
@@ -117,7 +138,7 @@ WHERE timestamp <= '2024-01-01 10:00:00'
 ORDER BY id, timestamp;
 
 -- ===========================================
--- 7. 向量相似度搜索示例
+-- 8. 向量相似度搜索示例
 -- ===========================================
 
 -- 查找与指定记录最相似的记录

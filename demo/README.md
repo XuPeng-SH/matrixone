@@ -148,7 +148,28 @@ demo.CompareTimePoints("2025-09-09 13:06:20", "2025-09-09 13:06:24")
 - 🏷️ 标签分布变化统计
 - 📈 快速概览，无详细记录
 
-### 5. 时间旅行查询
+### 5. 快照管理
+
+```go
+// 创建快照
+demo.CreateSnapshot("initial")
+
+// 查看所有快照
+demo.ShowSnapshots()
+
+// 删除快照
+demo.DropSnapshot("ai_dataset_20250909_143022_initial")
+
+// 比较两个快照
+demo.CompareSnapshots("snapshot1", "snapshot2")
+```
+
+**快照命名规则**:
+- 格式: `ai_dataset_YYYYMMDD_HHMMSS_suffix`
+- 示例: `ai_dataset_20250909_143022_initial`
+- 用户只需提供后缀，系统自动生成完整名称
+
+### 6. 时间旅行查询
 
 ```sql
 -- 查询特定时间点的数据状态
@@ -196,7 +217,29 @@ FROM ai_dataset {MO_TS=1757424004000000000};
 - 📋 新增/删除/修改记录数量
 - 🔄 快速概览，无详细记录
 
-### 7. 向量相似度搜索
+### 7. 快照管理
+
+```sql
+-- 创建快照
+CREATE SNAPSHOT ai_dataset_20250909_143022_initial FOR TABLE test ai_dataset;
+
+-- 查看所有快照
+SHOW SNAPSHOTS;
+
+-- 删除快照
+DROP SNAPSHOT ai_dataset_20250909_143022_initial;
+
+-- 查询快照数据
+SELECT * FROM ai_dataset {Snapshot = "ai_dataset_20250909_143022_initial"};
+```
+
+**快照功能特性**:
+- 📸 自动命名: `ai_dataset_YYYYMMDD_HHMMSS_suffix`
+- 🔄 快照比较: 类似时间戳比较，支持详细和统计模式
+- 📋 版本管理: 数据管道的版本控制
+- 🗑️ 快照清理: 删除不需要的快照
+
+### 8. 向量相似度搜索
 
 ```sql
 -- 查找与 ID=1 最相似的 5 条记录
@@ -208,6 +251,25 @@ LIMIT 5;
 ```
 
 ## 🔍 SQL 查询示例
+
+### 快照管理查询
+
+```sql
+-- 创建快照
+CREATE SNAPSHOT ai_dataset_20250909_143022_initial FOR TABLE test ai_dataset;
+
+-- 查看所有快照
+SHOW SNAPSHOTS;
+
+-- 查询快照数据
+SELECT id, label, 
+       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+       JSON_EXTRACT(metadata, '$.confidence') as confidence
+FROM ai_dataset {Snapshot = "ai_dataset_20250909_143022_initial"};
+
+-- 删除快照
+DROP SNAPSHOT ai_dataset_20250909_143022_initial;
+```
 
 ### 查看当前数据状态
 

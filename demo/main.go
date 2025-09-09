@@ -751,6 +751,235 @@ func (d *AIDatasetDemo) showLabelChanges(data1, data2 map[int]DataRecord, time1,
 	}
 }
 
+// CreateSnapshot 创建快照
+func (d *AIDatasetDemo) CreateSnapshot(suffix string) error {
+	// 生成快照名称：前缀 + 时间戳 + 用户后缀
+	timestamp := time.Now().Format("20060102_150405")
+	snapshotName := fmt.Sprintf("ai_dataset_%s_%s", timestamp, suffix)
+
+	fmt.Printf("📸 Creating Snapshot: %s\n", snapshotName)
+	fmt.Println(strings.Repeat("=", 60))
+
+	// 创建快照的 SQL
+	createSQL := fmt.Sprintf("CREATE SNAPSHOT %s FOR TABLE test ai_dataset", snapshotName)
+
+	_, err := d.db.Exec(createSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot: %v", err)
+	}
+
+	fmt.Printf("✅ Snapshot '%s' created successfully!\n", snapshotName)
+	fmt.Printf("📋 SQL: %s\n", createSQL)
+
+	return nil
+}
+
+// ShowSnapshots 显示所有快照
+func (d *AIDatasetDemo) ShowSnapshots() error {
+	fmt.Println("📸 Available Snapshots:")
+	fmt.Println(strings.Repeat("=", 80))
+
+	query := "SHOW SNAPSHOTS"
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return fmt.Errorf("failed to query snapshots: %v", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var snapshotName, timestamp, snapshotLevel, accountName, databaseName, tableName string
+		err := rows.Scan(&snapshotName, &timestamp, &snapshotLevel, &accountName, &databaseName, &tableName)
+		if err != nil {
+			return fmt.Errorf("failed to scan snapshot row: %v", err)
+		}
+
+		// 美化输出，突出快照名称和时间
+		fmt.Printf("📸 %s\n", strings.Repeat("=", 76))
+		fmt.Printf("🏷️  Name: %s\n", snapshotName)
+		fmt.Printf("⏰ Time:  %s\n", timestamp)
+		fmt.Printf("📊 Level: %s | Account: %s | Database: %s | Table: %s\n", 
+			snapshotLevel, accountName, databaseName, tableName)
+		fmt.Println()
+		count++
+	}
+
+	if count == 0 {
+		fmt.Println("❌ No snapshots found.")
+	} else {
+		fmt.Printf("📊 Total snapshots: %d\n", count)
+	}
+
+	return nil
+}
+
+// DropSnapshot 删除快照
+func (d *AIDatasetDemo) DropSnapshot(snapshotName string) error {
+	fmt.Printf("🗑️  Dropping Snapshot: %s\n", snapshotName)
+	fmt.Println(strings.Repeat("=", 60))
+
+	dropSQL := fmt.Sprintf("DROP SNAPSHOT %s", snapshotName)
+
+	_, err := d.db.Exec(dropSQL)
+	if err != nil {
+		return fmt.Errorf("failed to drop snapshot: %v", err)
+	}
+
+	fmt.Printf("✅ Snapshot '%s' dropped successfully!\n", snapshotName)
+	fmt.Printf("📋 SQL: %s\n", dropSQL)
+
+	return nil
+}
+
+// DropAllSnapshots 删除所有快照
+func (d *AIDatasetDemo) DropAllSnapshots() error {
+	fmt.Println("🗑️🗑️  Dropping All Snapshots")
+	fmt.Println(strings.Repeat("=", 60))
+
+	// 首先获取所有快照
+	query := "SHOW SNAPSHOTS"
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return fmt.Errorf("failed to query snapshots: %v", err)
+	}
+	defer rows.Close()
+
+	var snapshotNames []string
+	for rows.Next() {
+		var snapshotName, timestamp, snapshotLevel, accountName, databaseName, tableName string
+		err := rows.Scan(&snapshotName, &timestamp, &snapshotLevel, &accountName, &databaseName, &tableName)
+		if err != nil {
+			return fmt.Errorf("failed to scan snapshot row: %v", err)
+		}
+		snapshotNames = append(snapshotNames, snapshotName)
+	}
+
+	if len(snapshotNames) == 0 {
+		fmt.Println("ℹ️  No snapshots found to delete.")
+		return nil
+	}
+
+	fmt.Printf("📋 Found %d snapshots to delete:\n", len(snapshotNames))
+	for i, name := range snapshotNames {
+		fmt.Printf("  %d. %s\n", i+1, name)
+	}
+	fmt.Println()
+
+	// 删除所有快照
+	successCount := 0
+	failedCount := 0
+
+	for _, snapshotName := range snapshotNames {
+		dropSQL := fmt.Sprintf("DROP SNAPSHOT %s", snapshotName)
+		_, err := d.db.Exec(dropSQL)
+		if err != nil {
+			fmt.Printf("❌ Failed to drop snapshot '%s': %v\n", snapshotName, err)
+			failedCount++
+		} else {
+			fmt.Printf("✅ Dropped snapshot: %s\n", snapshotName)
+			successCount++
+		}
+	}
+
+	fmt.Println(strings.Repeat("-", 60))
+	fmt.Printf("📊 Summary: %d successful, %d failed\n", successCount, failedCount)
+
+	if failedCount == 0 {
+		fmt.Println("🎉 All snapshots deleted successfully!")
+	} else {
+		fmt.Printf("⚠️  %d snapshots failed to delete\n", failedCount)
+	}
+
+	return nil
+}
+
+// CompareSnapshots 比较两个快照
+func (d *AIDatasetDemo) CompareSnapshots(snapshot1, snapshot2 string) error {
+	return d.CompareSnapshotsWithMode(snapshot1, snapshot2, true) // 默认显示详细差异
+}
+
+// CompareSnapshotsWithMode 比较两个快照，可选择显示模式
+func (d *AIDatasetDemo) CompareSnapshotsWithMode(snapshot1, snapshot2 string, showDetailed bool) error {
+	fmt.Printf("🔄 Snapshot Comparison - Snapshot 1: %s vs Snapshot 2: %s\n", snapshot1, snapshot2)
+	fmt.Println(strings.Repeat("=", 80))
+
+	// 获取两个快照的数据
+	data1, err := d.getDataFromSnapshot(snapshot1)
+	if err != nil {
+		return fmt.Errorf("failed to get data from snapshot1: %v", err)
+	}
+
+	data2, err := d.getDataFromSnapshot(snapshot2)
+	if err != nil {
+		return fmt.Errorf("failed to get data from snapshot2: %v", err)
+	}
+
+	// 比较数据差异
+	if showDetailed {
+		d.compareDataDetailed(data1, data2, snapshot1, snapshot2)
+	} else {
+		d.compareDataSummary(data1, data2, snapshot1, snapshot2)
+	}
+	return nil
+}
+
+// getDataFromSnapshot 从快照获取数据
+func (d *AIDatasetDemo) getDataFromSnapshot(snapshotName string) (map[int]DataRecord, error) {
+	query := fmt.Sprintf(`
+		SELECT id, label, 
+		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
+		       timestamp
+		FROM ai_dataset {Snapshot = "%s"}
+		ORDER BY id`, snapshotName)
+
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query snapshot data: %v", err)
+	}
+	defer rows.Close()
+
+	data := make(map[int]DataRecord)
+	for rows.Next() {
+		var id int
+		var label, timestamp string
+		var annotator, reason sql.NullString
+		var confidence sql.NullFloat64
+
+		err := rows.Scan(&id, &label, &annotator, &confidence, &reason, &timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan row: %v", err)
+		}
+
+		annotatorStr := "N/A"
+		if annotator.Valid {
+			annotatorStr = strings.Trim(annotator.String, `"`)
+		}
+
+		confStr := "N/A"
+		if confidence.Valid {
+			confStr = fmt.Sprintf("%.2f", confidence.Float64)
+		}
+
+		reasonStr := "N/A"
+		if reason.Valid {
+			reasonStr = strings.Trim(reason.String, `"`)
+		}
+
+		data[id] = DataRecord{
+			ID:         id,
+			Label:      label,
+			Annotator:  annotatorStr,
+			Confidence: confStr,
+			Reason:     reasonStr,
+			Timestamp:  timestamp,
+		}
+	}
+
+	return data, nil
+}
+
 // VectorSimilaritySearch 向量相似度搜索
 func (d *AIDatasetDemo) VectorSimilaritySearch(queryID int, topK int) error {
 	fmt.Printf("🔍 Vector Similarity Search - Query ID: %d, Top K: %d\n", queryID, topK)
@@ -1038,14 +1267,18 @@ func runInteractiveDemo(config *Config) {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "7":
-			if err := vectorSearchMenu(demo, reader); err != nil {
+			if err := snapshotMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "8":
-			if err := demo.RunDemo(); err != nil {
+			if err := vectorSearchMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "9":
+			if err := demo.RunDemo(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "10":
 			fmt.Println("👋 感谢使用 AI Dataset Demo!")
 			return
 		default:
@@ -1068,9 +1301,10 @@ func showInteractiveMenu() {
 	fmt.Println("4. 📈 查看当前状态")
 	fmt.Println("5. ⏰ 时间旅行查询")
 	fmt.Println("6. 🔄 比较两个时间点")
-	fmt.Println("7. 🔍 向量相似度搜索")
-	fmt.Println("8. 🎬 运行完整演示")
-	fmt.Println("9. 🚪 退出")
+	fmt.Println("7. 📸 快照管理")
+	fmt.Println("8. 🔍 向量相似度搜索")
+	fmt.Println("9. 🎬 运行完整演示")
+	fmt.Println("10. 🚪 退出")
 	fmt.Println(strings.Repeat("=", 50))
 }
 
@@ -1220,6 +1454,127 @@ func compareTimeMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	}
 
 	return demo.CompareTimePointsWithMode(time1, time2, showDetailed)
+}
+
+// snapshotMenu 快照管理菜单
+func snapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("📸 快照管理")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 📸 创建快照")
+		fmt.Println("2. 📋 查看所有快照")
+		fmt.Println("3. 🗑️  删除快照")
+		fmt.Println("4. 🗑️🗑️ 删除所有快照")
+		fmt.Println("5. 🔄 比较两个快照")
+		fmt.Println("6. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
+
+		fmt.Print("请选择操作 (1-6): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			if err := createSnapshotMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := demo.ShowSnapshots(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			if err := dropSnapshotMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "4":
+			if err := dropAllSnapshotsMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "5":
+			if err := compareSnapshotMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "6":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
+	}
+}
+
+// createSnapshotMenu 创建快照菜单
+func createSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Print("请输入快照后缀名称 (如: initial, after_ai, after_human): ")
+	suffix, _ := reader.ReadString('\n')
+	suffix = strings.TrimSpace(suffix)
+
+	if suffix == "" {
+		suffix = "manual"
+	}
+
+	return demo.CreateSnapshot(suffix)
+}
+
+// dropSnapshotMenu 删除快照菜单
+func dropSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Print("请输入要删除的快照名称: ")
+	snapshotName, _ := reader.ReadString('\n')
+	snapshotName = strings.TrimSpace(snapshotName)
+
+	if snapshotName == "" {
+		return fmt.Errorf("快照名称不能为空")
+	}
+
+	return demo.DropSnapshot(snapshotName)
+}
+
+// dropAllSnapshotsMenu 删除所有快照菜单
+func dropAllSnapshotsMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Println("⚠️  警告：此操作将删除所有快照，且无法撤销！")
+	fmt.Print("确认删除所有快照吗？(输入 'yes' 确认): ")
+	confirmation, _ := reader.ReadString('\n')
+	confirmation = strings.TrimSpace(confirmation)
+
+	if confirmation != "yes" {
+		fmt.Println("❌ 操作已取消")
+		return nil
+	}
+
+	return demo.DropAllSnapshots()
+}
+
+// compareSnapshotMenu 比较快照菜单
+func compareSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Print("请输入第一个快照名称: ")
+	snapshot1, _ := reader.ReadString('\n')
+	snapshot1 = strings.TrimSpace(snapshot1)
+
+	if snapshot1 == "" {
+		return fmt.Errorf("快照名称不能为空")
+	}
+
+	fmt.Print("请输入第二个快照名称: ")
+	snapshot2, _ := reader.ReadString('\n')
+	snapshot2 = strings.TrimSpace(snapshot2)
+
+	if snapshot2 == "" {
+		return fmt.Errorf("快照名称不能为空")
+	}
+
+	fmt.Print("选择显示模式 (1=详细差异, 2=统计摘要, 默认=1): ")
+	mode, _ := reader.ReadString('\n')
+	mode = strings.TrimSpace(mode)
+
+	showDetailed := true
+	if mode == "2" {
+		showDetailed = false
+	}
+
+	return demo.CompareSnapshotsWithMode(snapshot1, snapshot2, showDetailed)
 }
 
 // vectorSearchMenu 向量搜索菜单
