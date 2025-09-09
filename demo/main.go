@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -217,6 +218,14 @@ func (d *AIDatasetDemo) MockData(rowCount int) error {
 	}
 
 	fmt.Printf("✅ Successfully generated %d rows of mock data!\n", rowCount)
+
+	// 自动创建初始化快照
+	fmt.Println("📸 Creating initial snapshot...")
+	if err := d.createInitialSnapshot(); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to create initial snapshot: %v\n", err)
+		// 继续执行，不因为快照创建失败而停止
+	}
+
 	return nil
 }
 
@@ -243,6 +252,15 @@ func (d *AIDatasetDemo) AIModelAnnotation(modelName string, annotations []Annota
 	}
 
 	fmt.Println("✅ AI model annotation completed!")
+
+	// 自动创建标注后快照
+	fmt.Println("📸 Creating annotation snapshot...")
+	sequence := d.getNextSequenceNumber(modelName)
+	if err := d.createAnnotationSnapshot(modelName, sequence); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to create annotation snapshot: %v\n", err)
+		// 继续执行，不因为快照创建失败而停止
+	}
+
 	return nil
 }
 
@@ -269,6 +287,15 @@ func (d *AIDatasetDemo) HumanAnnotation(annotations []AnnotationResult) error {
 	}
 
 	fmt.Println("✅ Human annotation completed!")
+
+	// 自动创建标注后快照
+	fmt.Println("📸 Creating annotation snapshot...")
+	sequence := d.getNextSequenceNumber("human")
+	if err := d.createAnnotationSnapshot("human", sequence); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to create annotation snapshot: %v\n", err)
+		// 继续执行，不因为快照创建失败而停止
+	}
+
 	return nil
 }
 
@@ -757,6 +784,65 @@ func (d *AIDatasetDemo) showLabelChanges(data1, data2 map[int]DataRecord, time1,
 	}
 }
 
+// createInitialSnapshot 创建初始化快照
+func (d *AIDatasetDemo) createInitialSnapshot() error {
+	timestamp := time.Now().Format("20060102_150405")
+	snapshotName := fmt.Sprintf("ai_dataset_%s_initial", timestamp)
+
+	createSQL := fmt.Sprintf("CREATE SNAPSHOT %s FOR TABLE test ai_dataset", snapshotName)
+
+	_, err := d.db.Exec(createSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create initial snapshot: %v", err)
+	}
+
+	fmt.Printf("✅ Initial snapshot '%s' created successfully!\n", snapshotName)
+	return nil
+}
+
+// createAnnotationSnapshot 创建标注后快照
+func (d *AIDatasetDemo) createAnnotationSnapshot(annotator string, sequence int) error {
+	timestamp := time.Now().Format("20060102_150405")
+	snapshotName := fmt.Sprintf("ai_dataset_%s_%s_%d", timestamp, annotator, sequence)
+
+	createSQL := fmt.Sprintf("CREATE SNAPSHOT %s FOR TABLE test ai_dataset", snapshotName)
+
+	_, err := d.db.Exec(createSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create annotation snapshot: %v", err)
+	}
+
+	fmt.Printf("✅ Annotation snapshot '%s' created successfully!\n", snapshotName)
+	return nil
+}
+
+// getNextSequenceNumber 获取下一个序列号
+func (d *AIDatasetDemo) getNextSequenceNumber(annotator string) int {
+	snapshots, err := d.getSnapshotList()
+	if err != nil {
+		return 1
+	}
+
+	maxSeq := 0
+	pattern := fmt.Sprintf("_%s_", annotator)
+
+	for _, snapshotName := range snapshots {
+		if strings.Contains(snapshotName, pattern) {
+			// 提取序列号
+			parts := strings.Split(snapshotName, "_")
+			if len(parts) >= 3 {
+				if seq, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
+					if seq > maxSeq {
+						maxSeq = seq
+					}
+				}
+			}
+		}
+	}
+
+	return maxSeq + 1
+}
+
 // CreateSnapshot 创建快照
 func (d *AIDatasetDemo) CreateSnapshot(suffix string) error {
 	// 生成快照名称：前缀 + 时间戳 + 用户后缀
@@ -780,32 +866,24 @@ func (d *AIDatasetDemo) CreateSnapshot(suffix string) error {
 	return nil
 }
 
-// ShowSnapshots 显示所有快照
+// ShowSnapshots 显示所有快照（按时间戳升序排列）
 func (d *AIDatasetDemo) ShowSnapshots() error {
-	fmt.Println("📸 Available Snapshots:")
+	fmt.Println("📸 Available Snapshots (按时间戳升序排列):")
 	fmt.Println(strings.Repeat("=", 80))
 
-	query := "SHOW SNAPSHOTS"
-	rows, err := d.db.Query(query)
+	snapshots, err := d.getSnapshotInfoList()
 	if err != nil {
-		return fmt.Errorf("failed to query snapshots: %v", err)
+		return fmt.Errorf("failed to get snapshots: %v", err)
 	}
-	defer rows.Close()
 
 	count := 0
-	for rows.Next() {
-		var snapshotName, timestamp, snapshotLevel, accountName, databaseName, tableName string
-		err := rows.Scan(&snapshotName, &timestamp, &snapshotLevel, &accountName, &databaseName, &tableName)
-		if err != nil {
-			return fmt.Errorf("failed to scan snapshot row: %v", err)
-		}
-
+	for _, snapshot := range snapshots {
 		// 美化输出，突出快照名称和时间
 		fmt.Printf("📸 %s\n", strings.Repeat("=", 76))
-		fmt.Printf("🏷️  Name: %s\n", snapshotName)
-		fmt.Printf("⏰ Time:  %s\n", timestamp)
+		fmt.Printf("🏷️  Name: %s\n", snapshot.Name)
+		fmt.Printf("⏰ Time:  %s\n", snapshot.Timestamp)
 		fmt.Printf("📊 Level: %s | Account: %s | Database: %s | Table: %s\n",
-			snapshotLevel, accountName, databaseName, tableName)
+			snapshot.Level, snapshot.Account, snapshot.Database, snapshot.Table)
 		fmt.Println()
 		count++
 	}
@@ -1879,8 +1957,33 @@ func dropAllSnapshotsMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	return demo.DropAllSnapshots()
 }
 
-// getSnapshotList 获取快照列表
+// SnapshotInfo 快照信息结构
+type SnapshotInfo struct {
+	Name      string
+	Timestamp string
+	Level     string
+	Account   string
+	Database  string
+	Table     string
+}
+
+// getSnapshotList 获取快照列表（按时间戳升序排列）
 func (d *AIDatasetDemo) getSnapshotList() ([]string, error) {
+	snapshots, err := d.getSnapshotInfoList()
+	if err != nil {
+		return nil, err
+	}
+
+	var snapshotNames []string
+	for _, snapshot := range snapshots {
+		snapshotNames = append(snapshotNames, snapshot.Name)
+	}
+
+	return snapshotNames, nil
+}
+
+// getSnapshotInfoList 获取快照信息列表（按时间戳升序排列）
+func (d *AIDatasetDemo) getSnapshotInfoList() ([]SnapshotInfo, error) {
 	query := "SHOW SNAPSHOTS"
 	rows, err := d.db.Query(query)
 	if err != nil {
@@ -1888,17 +1991,23 @@ func (d *AIDatasetDemo) getSnapshotList() ([]string, error) {
 	}
 	defer rows.Close()
 
-	var snapshotNames []string
+	var snapshots []SnapshotInfo
 	for rows.Next() {
-		var snapshotName, timestamp, snapshotLevel, accountName, databaseName, tableName string
-		err := rows.Scan(&snapshotName, &timestamp, &snapshotLevel, &accountName, &databaseName, &tableName)
+		var snapshot SnapshotInfo
+		err := rows.Scan(&snapshot.Name, &snapshot.Timestamp, &snapshot.Level,
+			&snapshot.Account, &snapshot.Database, &snapshot.Table)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan snapshot row: %v", err)
 		}
-		snapshotNames = append(snapshotNames, snapshotName)
+		snapshots = append(snapshots, snapshot)
 	}
 
-	return snapshotNames, nil
+	// 在应用层按时间戳升序排序
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].Timestamp < snapshots[j].Timestamp
+	})
+
+	return snapshots, nil
 }
 
 // unifiedCompareMenu 统一的数据比较菜单
@@ -1943,8 +2052,8 @@ func unifiedCompareMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // compareSnapshotToSnapshot 快照 vs 快照比较
 func compareSnapshotToSnapshot(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	// 获取快照列表
-	snapshots, err := demo.getSnapshotList()
+	// 获取快照信息列表（按时间戳升序排列）
+	snapshots, err := demo.getSnapshotInfoList()
 	if err != nil {
 		return fmt.Errorf("获取快照列表失败: %v", err)
 	}
@@ -1953,15 +2062,15 @@ func compareSnapshotToSnapshot(demo *AIDatasetDemo, reader *bufio.Reader) error 
 		return fmt.Errorf("没有找到任何快照")
 	}
 
-	// 显示候选快照（最多5个）
-	fmt.Println("📋 可用的快照:")
+	// 显示候选快照（最多5个，按时间戳升序）
+	fmt.Println("📋 可用的快照 (按时间戳升序排列):")
 	maxShow := 5
 	if len(snapshots) < maxShow {
 		maxShow = len(snapshots)
 	}
 
 	for i := 0; i < maxShow; i++ {
-		fmt.Printf("  %d. %s\n", i+1, snapshots[i])
+		fmt.Printf("  %d. %s (%s)\n", i+1, snapshots[i].Name, snapshots[i].Timestamp)
 	}
 	if len(snapshots) > maxShow {
 		fmt.Printf("  ... 还有 %d 个快照\n", len(snapshots)-maxShow)
@@ -1975,7 +2084,7 @@ func compareSnapshotToSnapshot(demo *AIDatasetDemo, reader *bufio.Reader) error 
 
 	snapshot1 := input1
 	if num, err := strconv.Atoi(input1); err == nil && num >= 1 && num <= len(snapshots) {
-		snapshot1 = snapshots[num-1]
+		snapshot1 = snapshots[num-1].Name
 		fmt.Printf("✅ 选择快照: %s\n", snapshot1)
 	}
 
@@ -1990,7 +2099,7 @@ func compareSnapshotToSnapshot(demo *AIDatasetDemo, reader *bufio.Reader) error 
 
 	snapshot2 := input2
 	if num, err := strconv.Atoi(input2); err == nil && num >= 1 && num <= len(snapshots) {
-		snapshot2 = snapshots[num-1]
+		snapshot2 = snapshots[num-1].Name
 		fmt.Printf("✅ 选择快照: %s\n", snapshot2)
 	}
 
@@ -2013,8 +2122,8 @@ func compareSnapshotToSnapshot(demo *AIDatasetDemo, reader *bufio.Reader) error 
 
 // compareSnapshotToTimestamp 快照 vs 时间戳比较
 func compareSnapshotToTimestamp(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	// 获取快照列表
-	snapshots, err := demo.getSnapshotList()
+	// 获取快照信息列表（按时间戳升序排列）
+	snapshots, err := demo.getSnapshotInfoList()
 	if err != nil {
 		return fmt.Errorf("获取快照列表失败: %v", err)
 	}
@@ -2023,15 +2132,15 @@ func compareSnapshotToTimestamp(demo *AIDatasetDemo, reader *bufio.Reader) error
 		return fmt.Errorf("没有找到任何快照")
 	}
 
-	// 显示候选快照（最多5个）
-	fmt.Println("📋 可用的快照:")
+	// 显示候选快照（最多5个，按时间戳升序）
+	fmt.Println("📋 可用的快照 (按时间戳升序排列):")
 	maxShow := 5
 	if len(snapshots) < maxShow {
 		maxShow = len(snapshots)
 	}
 
 	for i := 0; i < maxShow; i++ {
-		fmt.Printf("  %d. %s\n", i+1, snapshots[i])
+		fmt.Printf("  %d. %s (%s)\n", i+1, snapshots[i].Name, snapshots[i].Timestamp)
 	}
 	if len(snapshots) > maxShow {
 		fmt.Printf("  ... 还有 %d 个快照\n", len(snapshots)-maxShow)
@@ -2045,7 +2154,7 @@ func compareSnapshotToTimestamp(demo *AIDatasetDemo, reader *bufio.Reader) error
 
 	snapshot := input
 	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(snapshots) {
-		snapshot = snapshots[num-1]
+		snapshot = snapshots[num-1].Name
 		fmt.Printf("✅ 选择快照: %s\n", snapshot)
 	}
 
@@ -2250,8 +2359,8 @@ func restoreMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // restoreFromSnapshotMenu 从快照恢复菜单
 func restoreFromSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	// 获取快照列表
-	snapshots, err := demo.getSnapshotList()
+	// 获取快照信息列表（按时间戳升序排列）
+	snapshots, err := demo.getSnapshotInfoList()
 	if err != nil {
 		return fmt.Errorf("获取快照列表失败: %v", err)
 	}
@@ -2260,15 +2369,15 @@ func restoreFromSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		return fmt.Errorf("没有找到任何快照")
 	}
 
-	// 显示候选快照（最多5个）
-	fmt.Println("📋 可用的快照:")
+	// 显示候选快照（最多5个，按时间戳升序）
+	fmt.Println("📋 可用的快照 (按时间戳升序排列):")
 	maxShow := 5
 	if len(snapshots) < maxShow {
 		maxShow = len(snapshots)
 	}
 
 	for i := 0; i < maxShow; i++ {
-		fmt.Printf("  %d. %s\n", i+1, snapshots[i])
+		fmt.Printf("  %d. %s (%s)\n", i+1, snapshots[i].Name, snapshots[i].Timestamp)
 	}
 	if len(snapshots) > maxShow {
 		fmt.Printf("  ... 还有 %d 个快照\n", len(snapshots)-maxShow)
@@ -2282,7 +2391,7 @@ func restoreFromSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 	snapshotName := input
 	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(snapshots) {
-		snapshotName = snapshots[num-1]
+		snapshotName = snapshots[num-1].Name
 		fmt.Printf("✅ 选择快照: %s\n", snapshotName)
 	}
 
