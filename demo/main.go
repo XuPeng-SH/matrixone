@@ -177,6 +177,12 @@ func (d *AIDatasetDemo) generateRandomVector(dim int) string {
 
 // MockData 生成指定行数的模拟数据
 func (d *AIDatasetDemo) MockData(rowCount int) error {
+	// 确保3小时PITR存在
+	if err := d.ensurePITRExists(); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to create PITR: %v\n", err)
+		// 继续执行，不因为PITR创建失败而停止数据生成
+	}
+
 	// 清空现有数据
 	_, err := d.db.Exec("DELETE FROM ai_dataset")
 	if err != nil {
@@ -798,7 +804,7 @@ func (d *AIDatasetDemo) ShowSnapshots() error {
 		fmt.Printf("📸 %s\n", strings.Repeat("=", 76))
 		fmt.Printf("🏷️  Name: %s\n", snapshotName)
 		fmt.Printf("⏰ Time:  %s\n", timestamp)
-		fmt.Printf("📊 Level: %s | Account: %s | Database: %s | Table: %s\n", 
+		fmt.Printf("📊 Level: %s | Account: %s | Database: %s | Table: %s\n",
 			snapshotLevel, accountName, databaseName, tableName)
 		fmt.Println()
 		count++
@@ -829,6 +835,129 @@ func (d *AIDatasetDemo) DropSnapshot(snapshotName string) error {
 	fmt.Printf("📋 SQL: %s\n", dropSQL)
 
 	return nil
+}
+
+// CreatePITR 创建PITR
+func (d *AIDatasetDemo) CreatePITR(pitrName string, duration string) error {
+	fmt.Printf("🕐 Creating PITR: %s (Duration: %s)\n", pitrName, duration)
+	fmt.Println(strings.Repeat("=", 60))
+
+	// 创建PITR的SQL
+	createSQL := fmt.Sprintf("CREATE PITR %s FOR TABLE test ai_dataset RANGE %s", pitrName, duration)
+
+	_, err := d.db.Exec(createSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create PITR: %v", err)
+	}
+
+	fmt.Printf("✅ PITR '%s' created successfully!\n", pitrName)
+	fmt.Printf("📋 SQL: %s\n", createSQL)
+
+	return nil
+}
+
+// ShowPITRs 显示所有PITR
+func (d *AIDatasetDemo) ShowPITRs() error {
+	fmt.Println("🕐 Available PITRs:")
+	fmt.Println(strings.Repeat("=", 80))
+
+	query := "SHOW PITR"
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return fmt.Errorf("failed to query PITRs: %v", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var pitrName, createdTime, modifiedTime, pitrLevel, accountName, databaseName, tableName, pitrLength, pitrUnit string
+		err := rows.Scan(&pitrName, &createdTime, &modifiedTime, &pitrLevel, &accountName, &databaseName, &tableName, &pitrLength, &pitrUnit)
+		if err != nil {
+			return fmt.Errorf("failed to scan PITR row: %v", err)
+		}
+
+		// 美化输出，突出PITR名称和时间
+		fmt.Printf("🕐 %s\n", strings.Repeat("=", 76))
+		fmt.Printf("🏷️  Name: %s\n", pitrName)
+		fmt.Printf("⏰ Created:  %s\n", createdTime)
+		fmt.Printf("🔄 Modified: %s\n", modifiedTime)
+		fmt.Printf("📊 Level: %s | Account: %s | Database: %s | Table: %s\n",
+			pitrLevel, accountName, databaseName, tableName)
+		fmt.Printf("⏱️  Duration: %s %s\n", pitrLength, pitrUnit)
+		fmt.Println()
+		count++
+	}
+
+	if count == 0 {
+		fmt.Println("❌ No PITRs found.")
+	} else {
+		fmt.Printf("📊 Total PITRs: %d\n", count)
+	}
+
+	return nil
+}
+
+// DropPITR 删除PITR
+func (d *AIDatasetDemo) DropPITR(pitrName string) error {
+	fmt.Printf("🗑️  Dropping PITR: %s\n", pitrName)
+	fmt.Println(strings.Repeat("=", 60))
+
+	dropSQL := fmt.Sprintf("DROP PITR %s", pitrName)
+
+	_, err := d.db.Exec(dropSQL)
+	if err != nil {
+		return fmt.Errorf("failed to drop PITR: %v", err)
+	}
+
+	fmt.Printf("✅ PITR '%s' dropped successfully!\n", pitrName)
+	fmt.Printf("📋 SQL: %s\n", dropSQL)
+
+	return nil
+}
+
+// getPITRList 获取PITR列表
+func (d *AIDatasetDemo) getPITRList() ([]string, error) {
+	query := "SHOW PITR"
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query PITRs: %v", err)
+	}
+	defer rows.Close()
+
+	var pitrNames []string
+	for rows.Next() {
+		var pitrName, createdTime, modifiedTime, pitrLevel, accountName, databaseName, tableName, pitrLength, pitrUnit string
+		err := rows.Scan(&pitrName, &createdTime, &modifiedTime, &pitrLevel, &accountName, &databaseName, &tableName, &pitrLength, &pitrUnit)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan PITR row: %v", err)
+		}
+		pitrNames = append(pitrNames, pitrName)
+	}
+
+	return pitrNames, nil
+}
+
+// ensurePITRExists 确保3小时PITR存在
+func (d *AIDatasetDemo) ensurePITRExists() error {
+	pitrName := "ai_dataset_3h_pitr"
+
+	// 检查PITR是否已存在
+	pitrList, err := d.getPITRList()
+	if err != nil {
+		return fmt.Errorf("failed to check existing PITRs: %v", err)
+	}
+
+	// 检查是否已存在3小时PITR
+	for _, name := range pitrList {
+		if name == pitrName {
+			fmt.Printf("ℹ️  PITR '%s' already exists, skipping creation\n", pitrName)
+			return nil
+		}
+	}
+
+	// 创建3小时PITR
+	fmt.Println("🕐 Creating 3-hour PITR for data protection...")
+	return d.CreatePITR(pitrName, "3 'h'")
 }
 
 // DropAllSnapshots 删除所有快照
@@ -1268,7 +1397,7 @@ func runInteractiveDemo(config *Config) {
 
 	for {
 		showInteractiveMenu()
-		fmt.Print("请选择操作 (1-8): ")
+		fmt.Print("请选择操作 (1-11): ")
 
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
@@ -1303,14 +1432,18 @@ func runInteractiveDemo(config *Config) {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "8":
-			if err := vectorSearchMenu(demo, reader); err != nil {
+			if err := pitrMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "9":
-			if err := demo.RunDemo(); err != nil {
+			if err := vectorSearchMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "10":
+			if err := demo.RunDemo(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "11":
 			fmt.Println("👋 感谢使用 AI Dataset Demo!")
 			return
 		default:
@@ -1334,9 +1467,10 @@ func showInteractiveMenu() {
 	fmt.Println("5. ⏰ 时间旅行查询")
 	fmt.Println("6. 🔄 数据比较 (时间点/快照)")
 	fmt.Println("7. 📸 快照管理")
-	fmt.Println("8. 🔍 向量相似度搜索")
-	fmt.Println("9. 🎬 运行完整演示")
-	fmt.Println("10. 🚪 退出")
+	fmt.Println("8. 🕐 PITR管理")
+	fmt.Println("9. 🔍 向量相似度搜索")
+	fmt.Println("10. 🎬 运行完整演示")
+	fmt.Println("11. 🚪 退出")
 	fmt.Println(strings.Repeat("=", 50))
 }
 
@@ -1636,7 +1770,6 @@ func unifiedCompareMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	}
 }
 
-
 // compareSnapshotToSnapshot 快照 vs 快照比较
 func compareSnapshotToSnapshot(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	// 获取快照列表
@@ -1655,7 +1788,7 @@ func compareSnapshotToSnapshot(demo *AIDatasetDemo, reader *bufio.Reader) error 
 	if len(snapshots) < maxShow {
 		maxShow = len(snapshots)
 	}
-	
+
 	for i := 0; i < maxShow; i++ {
 		fmt.Printf("  %d. %s\n", i+1, snapshots[i])
 	}
@@ -1725,7 +1858,7 @@ func compareSnapshotToTimestamp(demo *AIDatasetDemo, reader *bufio.Reader) error
 	if len(snapshots) < maxShow {
 		maxShow = len(snapshots)
 	}
-	
+
 	for i := 0; i < maxShow; i++ {
 		fmt.Printf("  %d. %s\n", i+1, snapshots[i])
 	}
@@ -1802,6 +1935,111 @@ func compareTimestampToTimestamp(demo *AIDatasetDemo, reader *bufio.Reader) erro
 	}
 
 	return demo.CompareTimePointsWithMode(timestamp1, timestamp2, showDetailed)
+}
+
+// pitrMenu PITR管理菜单
+func pitrMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("🕐 PITR管理")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 🕐 创建PITR")
+		fmt.Println("2. 📋 查看所有PITR")
+		fmt.Println("3. 🗑️  删除PITR")
+		fmt.Println("4. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
+
+		fmt.Print("请选择操作 (1-4): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			if err := createPITRMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := demo.ShowPITRs(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			if err := dropPITRMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "4":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
+	}
+}
+
+// createPITRMenu 创建PITR菜单
+func createPITRMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Print("请输入PITR名称 (默认: ai_dataset_3h_pitr): ")
+	pitrName, _ := reader.ReadString('\n')
+	pitrName = strings.TrimSpace(pitrName)
+
+	if pitrName == "" {
+		pitrName = "ai_dataset_3h_pitr"
+	}
+
+	fmt.Print("请输入持续时间 (默认: 3 'h'): ")
+	duration, _ := reader.ReadString('\n')
+	duration = strings.TrimSpace(duration)
+
+	if duration == "" {
+		duration = "3 'h'"
+	}
+
+	return demo.CreatePITR(pitrName, duration)
+}
+
+// dropPITRMenu 删除PITR菜单
+func dropPITRMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取PITR列表
+	pitrList, err := demo.getPITRList()
+	if err != nil {
+		return fmt.Errorf("获取PITR列表失败: %v", err)
+	}
+
+	if len(pitrList) == 0 {
+		return fmt.Errorf("没有找到任何PITR")
+	}
+
+	// 显示候选PITR（最多5个）
+	fmt.Println("📋 可用的PITR:")
+	maxShow := 5
+	if len(pitrList) < maxShow {
+		maxShow = len(pitrList)
+	}
+
+	for i := 0; i < maxShow; i++ {
+		fmt.Printf("  %d. %s\n", i+1, pitrList[i])
+	}
+	if len(pitrList) > maxShow {
+		fmt.Printf("  ... 还有 %d 个PITR\n", len(pitrList)-maxShow)
+	}
+	fmt.Println()
+
+	fmt.Print("请输入要删除的PITR名称 (或输入序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	pitrName := input
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(pitrList) {
+		pitrName = pitrList[num-1]
+		fmt.Printf("✅ 选择PITR: %s\n", pitrName)
+	}
+
+	if pitrName == "" {
+		return fmt.Errorf("PITR名称不能为空")
+	}
+
+	return demo.DropPITR(pitrName)
 }
 
 // vectorSearchMenu 向量搜索菜单
