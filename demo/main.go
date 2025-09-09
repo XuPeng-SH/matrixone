@@ -384,6 +384,79 @@ func parseTimeToTS(timeStr string) (string, error) {
 
 // TimeTravelQuery 时间旅行查询 - 查询指定时间点的数据状态
 func (d *AIDatasetDemo) TimeTravelQuery(targetTime string) error {
+	return d.TimeTravelQueryWithMode(targetTime, false, "")
+}
+
+// TimeTravelQueryWithMode 时间旅行查询 - 支持快照和时间戳查询
+func (d *AIDatasetDemo) TimeTravelQueryWithMode(target string, useSnapshot bool, snapshotName string) error {
+	if useSnapshot {
+		return d.TimeTravelQueryFromSnapshot(snapshotName)
+	} else {
+		return d.TimeTravelQueryFromTimestamp(target)
+	}
+}
+
+// TimeTravelQueryFromSnapshot 从快照进行时间旅行查询
+func (d *AIDatasetDemo) TimeTravelQueryFromSnapshot(snapshotName string) error {
+	fmt.Printf("⏰ Time Travel Query from Snapshot: %s\n", snapshotName)
+	fmt.Println(strings.Repeat("=", 60))
+
+	// 使用快照查询
+	query := fmt.Sprintf(`
+		SELECT id, label, 
+		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
+		       timestamp
+		FROM ai_dataset {Snapshot = "%s"}
+		ORDER BY id 
+		LIMIT 10`, snapshotName)
+
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return fmt.Errorf("failed to query snapshot data: %v", err)
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-4s %-12s %-15s %-10s %-20s %-20s\n",
+		"ID", "Label", "Annotator", "Confidence", "Reason", "Timestamp")
+	fmt.Println(strings.Repeat("-", 100))
+
+	for rows.Next() {
+		var id int
+		var label, timestamp string
+		var annotator, reason sql.NullString
+		var confidence sql.NullFloat64
+
+		err := rows.Scan(&id, &label, &annotator, &confidence, &reason, &timestamp)
+		if err != nil {
+			return fmt.Errorf("failed to scan row: %v", err)
+		}
+
+		confStr := "N/A"
+		if confidence.Valid {
+			confStr = fmt.Sprintf("%.2f", confidence.Float64)
+		}
+
+		annotatorStr := "N/A"
+		if annotator.Valid {
+			annotatorStr = strings.Trim(annotator.String, `"`)
+		}
+
+		reasonStr := "N/A"
+		if reason.Valid {
+			reasonStr = strings.Trim(reason.String, `"`)
+		}
+
+		fmt.Printf("%-4d %-12s %-15s %-10s %-20s %-20s\n",
+			id, label, annotatorStr, confStr, reasonStr, timestamp)
+	}
+
+	return nil
+}
+
+// TimeTravelQueryFromTimestamp 从时间戳进行时间旅行查询
+func (d *AIDatasetDemo) TimeTravelQueryFromTimestamp(targetTime string) error {
 	fmt.Printf("⏰ Time Travel Query - Target Time: %s\n", targetTime)
 	fmt.Println(strings.Repeat("=", 60))
 
@@ -402,6 +475,7 @@ func (d *AIDatasetDemo) TimeTravelQuery(targetTime string) error {
 		SELECT id, label, 
 		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
 		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
 		       timestamp
 		FROM ai_dataset {MO_TS=%s}
 		ORDER BY id 
@@ -416,17 +490,17 @@ func (d *AIDatasetDemo) TimeTravelQuery(targetTime string) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-4s %-12s %-15s %-10s %-20s\n",
-		"ID", "Label", "Annotator", "Confidence", "Timestamp")
-	fmt.Println(strings.Repeat("-", 80))
+	fmt.Printf("%-4s %-12s %-15s %-10s %-20s %-20s\n",
+		"ID", "Label", "Annotator", "Confidence", "Reason", "Timestamp")
+	fmt.Println(strings.Repeat("-", 100))
 
 	for rows.Next() {
 		var id int
 		var label, timestamp string
-		var annotator sql.NullString
+		var annotator, reason sql.NullString
 		var confidence sql.NullFloat64
 
-		err := rows.Scan(&id, &label, &annotator, &confidence, &timestamp)
+		err := rows.Scan(&id, &label, &annotator, &confidence, &reason, &timestamp)
 		if err != nil {
 			return fmt.Errorf("failed to scan row: %v", err)
 		}
@@ -441,8 +515,13 @@ func (d *AIDatasetDemo) TimeTravelQuery(targetTime string) error {
 			annotatorStr = strings.Trim(annotator.String, `"`)
 		}
 
-		fmt.Printf("%-4d %-12s %-15s %-10s %-20s\n",
-			id, label, annotatorStr, confStr, timestamp)
+		reasonStr := "N/A"
+		if reason.Valid {
+			reasonStr = strings.Trim(reason.String, `"`)
+		}
+
+		fmt.Printf("%-4d %-12s %-15s %-10s %-20s %-20s\n",
+			id, label, annotatorStr, confStr, reasonStr, timestamp)
 	}
 
 	return nil
@@ -1830,6 +1909,66 @@ func humanAnnotationMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // timeTravelMenu 时间旅行菜单
 func timeTravelMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Println("⏰ 时间旅行查询")
+	fmt.Println("1. 📸 从快照查询")
+	fmt.Println("2. 🕐 从时间戳查询")
+	fmt.Print("请选择查询方式 (1-2): ")
+
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "1":
+		return timeTravelFromSnapshotMenu(demo, reader)
+	case "2":
+		return timeTravelFromTimestampMenu(demo, reader)
+	default:
+		fmt.Println("❌ 无效选择，使用默认时间戳查询")
+		return timeTravelFromTimestampMenu(demo, reader)
+	}
+}
+
+// timeTravelFromSnapshotMenu 从快照进行时间旅行查询菜单
+func timeTravelFromSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取快照列表
+	snapshots, err := demo.getSnapshotInfoList()
+	if err != nil {
+		return fmt.Errorf("failed to get snapshots: %v", err)
+	}
+
+	if len(snapshots) == 0 {
+		fmt.Println("❌ 没有可用的快照")
+		return nil
+	}
+
+	fmt.Println("📸 可用的快照:")
+	for i, snapshot := range snapshots {
+		if i >= 5 { // 最多显示5个
+			break
+		}
+		fmt.Printf("%d. %s (创建时间: %s)\n", i+1, snapshot.Name, snapshot.Timestamp)
+	}
+
+	fmt.Print("请选择快照 (输入序号或快照名称): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var snapshotName string
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(snapshots) {
+		snapshotName = snapshots[num-1].Name
+	} else {
+		snapshotName = input
+	}
+
+	if snapshotName == "" {
+		return fmt.Errorf("快照名称不能为空")
+	}
+
+	return demo.TimeTravelQueryFromSnapshot(snapshotName)
+}
+
+// timeTravelFromTimestampMenu 从时间戳进行时间旅行查询菜单
+func timeTravelFromTimestampMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	fmt.Print("请输入目标时间 (格式: 2024-01-01 10:00:00): ")
 	targetTime, _ := reader.ReadString('\n')
 	targetTime = strings.TrimSpace(targetTime)
@@ -1838,7 +1977,7 @@ func timeTravelMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		targetTime = "2024-01-01 10:00:00"
 	}
 
-	return demo.TimeTravelQuery(targetTime)
+	return demo.TimeTravelQueryFromTimestamp(targetTime)
 }
 
 // compareTimeMenu 比较时间点菜单
