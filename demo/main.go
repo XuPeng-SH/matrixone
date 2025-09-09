@@ -898,6 +898,38 @@ func (d *AIDatasetDemo) CompareSnapshots(snapshot1, snapshot2 string) error {
 	return d.CompareSnapshotsWithMode(snapshot1, snapshot2, true) // 默认显示详细差异
 }
 
+// CompareSnapshotWithTimestamp 比较快照和时间戳
+func (d *AIDatasetDemo) CompareSnapshotWithTimestamp(snapshotName, timestamp string, showDetailed bool) error {
+	fmt.Printf("🔄 Snapshot vs Timestamp Comparison - Snapshot: %s vs Timestamp: %s\n", snapshotName, timestamp)
+	fmt.Println(strings.Repeat("=", 80))
+
+	// 获取快照数据
+	data1, err := d.getDataFromSnapshot(snapshotName)
+	if err != nil {
+		return fmt.Errorf("failed to get data from snapshot: %v", err)
+	}
+
+	// 转换时间戳格式
+	ts, err := parseTimeToTS(timestamp)
+	if err != nil {
+		return fmt.Errorf("invalid timestamp format: %v", err)
+	}
+
+	// 获取时间戳数据
+	data2, err := d.getDataAtTime(ts)
+	if err != nil {
+		return fmt.Errorf("failed to get data at timestamp: %v", err)
+	}
+
+	// 比较数据差异
+	if showDetailed {
+		d.compareDataDetailed(data1, data2, fmt.Sprintf("Snapshot: %s", snapshotName), fmt.Sprintf("Timestamp: %s", timestamp))
+	} else {
+		d.compareDataSummary(data1, data2, fmt.Sprintf("Snapshot: %s", snapshotName), fmt.Sprintf("Timestamp: %s", timestamp))
+	}
+	return nil
+}
+
 // CompareSnapshotsWithMode 比较两个快照，可选择显示模式
 func (d *AIDatasetDemo) CompareSnapshotsWithMode(snapshot1, snapshot2 string, showDetailed bool) error {
 	fmt.Printf("🔄 Snapshot Comparison - Snapshot 1: %s vs Snapshot 2: %s\n", snapshot1, snapshot2)
@@ -1263,7 +1295,7 @@ func runInteractiveDemo(config *Config) {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "6":
-			if err := compareTimeMenu(demo, reader); err != nil {
+			if err := unifiedCompareMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "7":
@@ -1300,7 +1332,7 @@ func showInteractiveMenu() {
 	fmt.Println("3. 👤 人类标注")
 	fmt.Println("4. 📈 查看当前状态")
 	fmt.Println("5. ⏰ 时间旅行查询")
-	fmt.Println("6. 🔄 比较两个时间点")
+	fmt.Println("6. 🔄 数据比较 (时间点/快照)")
 	fmt.Println("7. 📸 快照管理")
 	fmt.Println("8. 🔍 向量相似度搜索")
 	fmt.Println("9. 🎬 运行完整演示")
@@ -1466,11 +1498,10 @@ func snapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		fmt.Println("2. 📋 查看所有快照")
 		fmt.Println("3. 🗑️  删除快照")
 		fmt.Println("4. 🗑️🗑️ 删除所有快照")
-		fmt.Println("5. 🔄 比较两个快照")
-		fmt.Println("6. 🔙 返回主菜单")
+		fmt.Println("5. 🔙 返回主菜单")
 		fmt.Println(strings.Repeat("=", 40))
 
-		fmt.Print("请选择操作 (1-6): ")
+		fmt.Print("请选择操作 (1-5): ")
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
 
@@ -1492,10 +1523,6 @@ func snapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "5":
-			if err := compareSnapshotMenu(demo, reader); err != nil {
-				fmt.Printf("❌ 错误: %v\n", err)
-			}
-		case "6":
 			return nil
 		default:
 			fmt.Println("❌ 无效选择，请重新输入")
@@ -1547,24 +1574,127 @@ func dropAllSnapshotsMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	return demo.DropAllSnapshots()
 }
 
-// compareSnapshotMenu 比较快照菜单
-func compareSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Print("请输入第一个快照名称: ")
-	snapshot1, _ := reader.ReadString('\n')
-	snapshot1 = strings.TrimSpace(snapshot1)
+// getSnapshotList 获取快照列表
+func (d *AIDatasetDemo) getSnapshotList() ([]string, error) {
+	query := "SHOW SNAPSHOTS"
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query snapshots: %v", err)
+	}
+	defer rows.Close()
+
+	var snapshotNames []string
+	for rows.Next() {
+		var snapshotName, timestamp, snapshotLevel, accountName, databaseName, tableName string
+		err := rows.Scan(&snapshotName, &timestamp, &snapshotLevel, &accountName, &databaseName, &tableName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan snapshot row: %v", err)
+		}
+		snapshotNames = append(snapshotNames, snapshotName)
+	}
+
+	return snapshotNames, nil
+}
+
+// unifiedCompareMenu 统一的数据比较菜单
+func unifiedCompareMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 60))
+		fmt.Println("🔄 数据比较中心")
+		fmt.Println(strings.Repeat("=", 60))
+		fmt.Println("1. 📸 快照 vs 📸 快照")
+		fmt.Println("2. 📸 快照 vs ⏰ 时间戳")
+		fmt.Println("3. ⏰ 时间戳 vs ⏰ 时间戳")
+		fmt.Println("4. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 60))
+
+		fmt.Print("请选择比较类型 (1-4): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			if err := compareSnapshotToSnapshot(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := compareSnapshotToTimestamp(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			if err := compareTimestampToTimestamp(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "4":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
+	}
+}
+
+
+// compareSnapshotToSnapshot 快照 vs 快照比较
+func compareSnapshotToSnapshot(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取快照列表
+	snapshots, err := demo.getSnapshotList()
+	if err != nil {
+		return fmt.Errorf("获取快照列表失败: %v", err)
+	}
+
+	if len(snapshots) == 0 {
+		return fmt.Errorf("没有找到任何快照")
+	}
+
+	// 显示候选快照（最多5个）
+	fmt.Println("📋 可用的快照:")
+	maxShow := 5
+	if len(snapshots) < maxShow {
+		maxShow = len(snapshots)
+	}
+	
+	for i := 0; i < maxShow; i++ {
+		fmt.Printf("  %d. %s\n", i+1, snapshots[i])
+	}
+	if len(snapshots) > maxShow {
+		fmt.Printf("  ... 还有 %d 个快照\n", len(snapshots)-maxShow)
+	}
+	fmt.Println()
+
+	// 选择第一个快照
+	fmt.Print("请输入第一个快照名称 (或输入序号): ")
+	input1, _ := reader.ReadString('\n')
+	input1 = strings.TrimSpace(input1)
+
+	snapshot1 := input1
+	if num, err := strconv.Atoi(input1); err == nil && num >= 1 && num <= len(snapshots) {
+		snapshot1 = snapshots[num-1]
+		fmt.Printf("✅ 选择快照: %s\n", snapshot1)
+	}
 
 	if snapshot1 == "" {
 		return fmt.Errorf("快照名称不能为空")
 	}
 
-	fmt.Print("请输入第二个快照名称: ")
-	snapshot2, _ := reader.ReadString('\n')
-	snapshot2 = strings.TrimSpace(snapshot2)
+	// 选择第二个快照
+	fmt.Print("请输入第二个快照名称 (或输入序号): ")
+	input2, _ := reader.ReadString('\n')
+	input2 = strings.TrimSpace(input2)
+
+	snapshot2 := input2
+	if num, err := strconv.Atoi(input2); err == nil && num >= 1 && num <= len(snapshots) {
+		snapshot2 = snapshots[num-1]
+		fmt.Printf("✅ 选择快照: %s\n", snapshot2)
+	}
 
 	if snapshot2 == "" {
 		return fmt.Errorf("快照名称不能为空")
 	}
 
+	// 选择显示模式
 	fmt.Print("选择显示模式 (1=详细差异, 2=统计摘要, 默认=1): ")
 	mode, _ := reader.ReadString('\n')
 	mode = strings.TrimSpace(mode)
@@ -1575,6 +1705,103 @@ func compareSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	}
 
 	return demo.CompareSnapshotsWithMode(snapshot1, snapshot2, showDetailed)
+}
+
+// compareSnapshotToTimestamp 快照 vs 时间戳比较
+func compareSnapshotToTimestamp(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取快照列表
+	snapshots, err := demo.getSnapshotList()
+	if err != nil {
+		return fmt.Errorf("获取快照列表失败: %v", err)
+	}
+
+	if len(snapshots) == 0 {
+		return fmt.Errorf("没有找到任何快照")
+	}
+
+	// 显示候选快照（最多5个）
+	fmt.Println("📋 可用的快照:")
+	maxShow := 5
+	if len(snapshots) < maxShow {
+		maxShow = len(snapshots)
+	}
+	
+	for i := 0; i < maxShow; i++ {
+		fmt.Printf("  %d. %s\n", i+1, snapshots[i])
+	}
+	if len(snapshots) > maxShow {
+		fmt.Printf("  ... 还有 %d 个快照\n", len(snapshots)-maxShow)
+	}
+	fmt.Println()
+
+	// 选择快照
+	fmt.Print("请输入快照名称 (或输入序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	snapshot := input
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(snapshots) {
+		snapshot = snapshots[num-1]
+		fmt.Printf("✅ 选择快照: %s\n", snapshot)
+	}
+
+	if snapshot == "" {
+		return fmt.Errorf("快照名称不能为空")
+	}
+
+	// 输入时间戳
+	fmt.Print("请输入时间戳 (格式: 2024-01-01 10:00:00): ")
+	timestamp, _ := reader.ReadString('\n')
+	timestamp = strings.TrimSpace(timestamp)
+
+	if timestamp == "" {
+		return fmt.Errorf("时间戳不能为空")
+	}
+
+	// 选择显示模式
+	fmt.Print("选择显示模式 (1=详细差异, 2=统计摘要, 默认=1): ")
+	mode, _ := reader.ReadString('\n')
+	mode = strings.TrimSpace(mode)
+
+	showDetailed := true
+	if mode == "2" {
+		showDetailed = false
+	}
+
+	return demo.CompareSnapshotWithTimestamp(snapshot, timestamp, showDetailed)
+}
+
+// compareTimestampToTimestamp 时间戳 vs 时间戳比较
+func compareTimestampToTimestamp(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 输入第一个时间戳
+	fmt.Print("请输入第一个时间戳 (格式: 2024-01-01 10:00:00): ")
+	timestamp1, _ := reader.ReadString('\n')
+	timestamp1 = strings.TrimSpace(timestamp1)
+
+	if timestamp1 == "" {
+		return fmt.Errorf("第一个时间戳不能为空")
+	}
+
+	// 输入第二个时间戳
+	fmt.Print("请输入第二个时间戳 (格式: 2024-01-01 11:00:00): ")
+	timestamp2, _ := reader.ReadString('\n')
+	timestamp2 = strings.TrimSpace(timestamp2)
+
+	if timestamp2 == "" {
+		return fmt.Errorf("第二个时间戳不能为空")
+	}
+
+	// 选择显示模式
+	fmt.Print("选择显示模式 (1=详细差异, 2=统计摘要, 默认=1): ")
+	mode, _ := reader.ReadString('\n')
+	mode = strings.TrimSpace(mode)
+
+	showDetailed := true
+	if mode == "2" {
+		showDetailed = false
+	}
+
+	return demo.CompareTimePointsWithMode(timestamp1, timestamp2, showDetailed)
 }
 
 // vectorSearchMenu 向量搜索菜单
