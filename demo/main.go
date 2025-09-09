@@ -937,6 +937,167 @@ func (d *AIDatasetDemo) getPITRList() ([]string, error) {
 	return pitrNames, nil
 }
 
+// RestoreFromSnapshot 从快照恢复数据
+func (d *AIDatasetDemo) RestoreFromSnapshot(snapshotName string) error {
+	fmt.Printf("🔄 Restoring data from snapshot: %s\n", snapshotName)
+	fmt.Println(strings.Repeat("=", 60))
+
+	// 恢复数据的SQL
+	restoreSQL := fmt.Sprintf("RESTORE ACCOUNT sys DATABASE test TABLE ai_dataset FROM SNAPSHOT %s", snapshotName)
+
+	_, err := d.db.Exec(restoreSQL)
+	if err != nil {
+		return fmt.Errorf("failed to restore from snapshot: %v", err)
+	}
+
+	fmt.Printf("✅ Data restored from snapshot '%s' successfully!\n", snapshotName)
+	fmt.Printf("📋 SQL: %s\n", restoreSQL)
+
+	return nil
+}
+
+// RestoreFromPITR 从PITR时间点恢复数据
+func (d *AIDatasetDemo) RestoreFromPITR(pitrName, timestamp string) error {
+	fmt.Printf("🔄 Restoring data from PITR: %s at %s\n", pitrName, timestamp)
+	fmt.Println(strings.Repeat("=", 60))
+
+	// 恢复数据的SQL
+	restoreSQL := fmt.Sprintf("RESTORE DATABASE test TABLE ai_dataset FROM PITR '%s' '%s'", pitrName, timestamp)
+
+	_, err := d.db.Exec(restoreSQL)
+	if err != nil {
+		return fmt.Errorf("failed to restore from PITR: %v", err)
+	}
+
+	fmt.Printf("✅ Data restored from PITR '%s' at %s successfully!\n", pitrName, timestamp)
+	fmt.Printf("📋 SQL: %s\n", restoreSQL)
+
+	return nil
+}
+
+// getDefaultPITRName 获取默认PITR名称
+func (d *AIDatasetDemo) getDefaultPITRName() string {
+	return "ai_dataset_3h_pitr"
+}
+
+// CleanupAllDemoData 一键清空所有demo相关数据
+func (d *AIDatasetDemo) CleanupAllDemoData() error {
+	fmt.Println("🧹 一键清空")
+	fmt.Println(strings.Repeat("=", 60))
+
+	// 统计信息
+	snapshotCount := 0
+	pitrCount := 0
+	dataCount := 0
+	errorCount := 0
+
+	// 1. 删除所有demo相关的快照
+	fmt.Println("📸 正在删除所有demo相关快照...")
+	snapshots, err := d.getSnapshotList()
+	if err != nil {
+		fmt.Printf("⚠️  获取快照列表失败: %v\n", err)
+	} else {
+		for _, snapshotName := range snapshots {
+			if strings.Contains(snapshotName, "ai_dataset") {
+				err := d.DropSnapshot(snapshotName)
+				if err != nil {
+					fmt.Printf("❌ 删除快照 '%s' 失败: %v\n", snapshotName, err)
+					errorCount++
+				} else {
+					snapshotCount++
+				}
+			}
+		}
+	}
+
+	// 2. 删除所有demo相关的PITR
+	fmt.Println("\n🕐 正在删除所有demo相关PITR...")
+	pitrList, err := d.getPITRList()
+	if err != nil {
+		fmt.Printf("⚠️  获取PITR列表失败: %v\n", err)
+	} else {
+		for _, pitrName := range pitrList {
+			if strings.Contains(pitrName, "ai_dataset") {
+				err := d.DropPITR(pitrName)
+				if err != nil {
+					fmt.Printf("❌ 删除PITR '%s' 失败: %v\n", pitrName, err)
+					errorCount++
+				} else {
+					pitrCount++
+				}
+			}
+		}
+	}
+
+	// 3. 清空ai_dataset表数据
+	fmt.Println("\n🗑️  正在清空ai_dataset表数据...")
+	// 先获取数据量
+	dataCount = d.getDataCount()
+	_, err = d.db.Exec("DELETE FROM ai_dataset")
+	if err != nil {
+		fmt.Printf("❌ 清空表数据失败: %v\n", err)
+		errorCount++
+	}
+
+	// 显示清理结果
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println("📊 清理结果:")
+	fmt.Printf("  📸 删除快照: %d 个\n", snapshotCount)
+	fmt.Printf("  🕐 删除PITR: %d 个\n", pitrCount)
+	fmt.Printf("  🗑️  清空数据: %d 行数据已删除\n", dataCount)
+
+	if errorCount > 0 {
+		fmt.Printf("  ❌ 错误数量: %d 个\n", errorCount)
+		fmt.Println("⚠️  部分清理操作失败，请检查错误信息")
+	} else {
+		fmt.Println("✅ 所有demo数据清理完成！")
+	}
+
+	return nil
+}
+
+// getDemoSnapshotCount 获取demo相关快照数量
+func (d *AIDatasetDemo) getDemoSnapshotCount() int {
+	snapshots, err := d.getSnapshotList()
+	if err != nil {
+		return 0
+	}
+
+	count := 0
+	for _, snapshotName := range snapshots {
+		if strings.Contains(snapshotName, "ai_dataset") {
+			count++
+		}
+	}
+	return count
+}
+
+// getDemoPITRCount 获取demo相关PITR数量
+func (d *AIDatasetDemo) getDemoPITRCount() int {
+	pitrList, err := d.getPITRList()
+	if err != nil {
+		return 0
+	}
+
+	count := 0
+	for _, pitrName := range pitrList {
+		if strings.Contains(pitrName, "ai_dataset") {
+			count++
+		}
+	}
+	return count
+}
+
+// getDataCount 获取ai_dataset表数据行数
+func (d *AIDatasetDemo) getDataCount() int {
+	var count int
+	err := d.db.QueryRow("SELECT COUNT(*) FROM ai_dataset").Scan(&count)
+	if err != nil {
+		return 0
+	}
+	return count
+}
+
 // ensurePITRExists 确保3小时PITR存在
 func (d *AIDatasetDemo) ensurePITRExists() error {
 	pitrName := "ai_dataset_3h_pitr"
@@ -1397,7 +1558,7 @@ func runInteractiveDemo(config *Config) {
 
 	for {
 		showInteractiveMenu()
-		fmt.Print("请选择操作 (1-11): ")
+		fmt.Print("请选择操作 (1-13): ")
 
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
@@ -1436,14 +1597,22 @@ func runInteractiveDemo(config *Config) {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "9":
-			if err := vectorSearchMenu(demo, reader); err != nil {
+			if err := restoreMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "10":
-			if err := demo.RunDemo(); err != nil {
+			if err := cleanupMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "11":
+			if err := vectorSearchMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "12":
+			if err := demo.RunDemo(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "13":
 			fmt.Println("👋 感谢使用 AI Dataset Demo!")
 			return
 		default:
@@ -1468,9 +1637,11 @@ func showInteractiveMenu() {
 	fmt.Println("6. 🔄 数据比较 (时间点/快照)")
 	fmt.Println("7. 📸 快照管理")
 	fmt.Println("8. 🕐 PITR管理")
-	fmt.Println("9. 🔍 向量相似度搜索")
-	fmt.Println("10. 🎬 运行完整演示")
-	fmt.Println("11. 🚪 退出")
+	fmt.Println("9. 🔄 数据恢复")
+	fmt.Println("10. 🧹 一键清空Demo数据")
+	fmt.Println("11. 🔍 向量相似度搜索")
+	fmt.Println("12. 🎬 运行完整演示")
+	fmt.Println("13. 🚪 退出")
 	fmt.Println(strings.Repeat("=", 50))
 }
 
@@ -2040,6 +2211,172 @@ func dropPITRMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	}
 
 	return demo.DropPITR(pitrName)
+}
+
+// restoreMenu 数据恢复菜单
+func restoreMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 50))
+		fmt.Println("🔄 数据恢复")
+		fmt.Println(strings.Repeat("=", 50))
+		fmt.Println("1. 📸 从快照恢复")
+		fmt.Println("2. 🕐 从PITR时间点恢复")
+		fmt.Println("3. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 50))
+
+		fmt.Print("请选择恢复类型 (1-3): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			if err := restoreFromSnapshotMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := restoreFromPITRMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
+	}
+}
+
+// restoreFromSnapshotMenu 从快照恢复菜单
+func restoreFromSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取快照列表
+	snapshots, err := demo.getSnapshotList()
+	if err != nil {
+		return fmt.Errorf("获取快照列表失败: %v", err)
+	}
+
+	if len(snapshots) == 0 {
+		return fmt.Errorf("没有找到任何快照")
+	}
+
+	// 显示候选快照（最多5个）
+	fmt.Println("📋 可用的快照:")
+	maxShow := 5
+	if len(snapshots) < maxShow {
+		maxShow = len(snapshots)
+	}
+
+	for i := 0; i < maxShow; i++ {
+		fmt.Printf("  %d. %s\n", i+1, snapshots[i])
+	}
+	if len(snapshots) > maxShow {
+		fmt.Printf("  ... 还有 %d 个快照\n", len(snapshots)-maxShow)
+	}
+	fmt.Println()
+
+	// 选择快照
+	fmt.Print("请输入快照名称 (或输入序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	snapshotName := input
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(snapshots) {
+		snapshotName = snapshots[num-1]
+		fmt.Printf("✅ 选择快照: %s\n", snapshotName)
+	}
+
+	if snapshotName == "" {
+		return fmt.Errorf("快照名称不能为空")
+	}
+
+	// 确认恢复操作
+	fmt.Printf("⚠️  警告：此操作将恢复数据到快照 '%s' 的状态，当前数据将被覆盖！\n", snapshotName)
+	fmt.Print("确认恢复吗？(输入 'yes' 确认): ")
+	confirmation, _ := reader.ReadString('\n')
+	confirmation = strings.TrimSpace(confirmation)
+
+	if confirmation != "yes" {
+		fmt.Println("❌ 操作已取消")
+		return nil
+	}
+
+	return demo.RestoreFromSnapshot(snapshotName)
+}
+
+// restoreFromPITRMenu 从PITR时间点恢复菜单
+func restoreFromPITRMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 使用默认PITR
+	pitrName := demo.getDefaultPITRName()
+	fmt.Printf("🕐 使用默认PITR: %s\n", pitrName)
+
+	// 输入时间戳
+	fmt.Print("请输入恢复时间点 (格式: 2025-09-09 13:20:04.123456，留空使用当前时间): ")
+	timestamp, _ := reader.ReadString('\n')
+	timestamp = strings.TrimSpace(timestamp)
+
+	if timestamp == "" {
+		timestamp = "now"
+		fmt.Printf("✅ 使用当前时间: %s\n", timestamp)
+	}
+
+	// 确认恢复操作
+	fmt.Printf("⚠️  警告：此操作将恢复数据到PITR '%s' 在时间点 '%s' 的状态，当前数据将被覆盖！\n", pitrName, timestamp)
+	fmt.Print("确认恢复吗？(输入 'yes' 确认): ")
+	confirmation, _ := reader.ReadString('\n')
+	confirmation = strings.TrimSpace(confirmation)
+
+	if confirmation != "yes" {
+		fmt.Println("❌ 操作已取消")
+		return nil
+	}
+
+	return demo.RestoreFromPITR(pitrName, timestamp)
+}
+
+// cleanupMenu 清空数据菜单
+func cleanupMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 显示当前状态
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("🧹 一键清空Demo数据")
+	fmt.Println(strings.Repeat("=", 60))
+
+	// 获取当前状态
+	snapshotCount := demo.getDemoSnapshotCount()
+	pitrCount := demo.getDemoPITRCount()
+	dataCount := demo.getDataCount()
+
+	fmt.Println("📊 当前Demo数据状态:")
+	fmt.Printf("  📸 Demo相关快照: %d 个\n", snapshotCount)
+	fmt.Printf("  🕐 Demo相关PITR: %d 个\n", pitrCount)
+	fmt.Printf("  🗑️  ai_dataset表数据: %d 行\n", dataCount)
+	fmt.Println()
+
+	if snapshotCount == 0 && pitrCount == 0 && dataCount == 0 {
+		fmt.Println("ℹ️  没有找到需要清理的Demo数据")
+		return nil
+	}
+
+	// 警告信息
+	fmt.Println("⚠️  警告：此操作将删除所有Demo相关数据，包括：")
+	fmt.Println("  • 所有包含 'ai_dataset' 的快照")
+	fmt.Println("  • 所有包含 'ai_dataset' 的PITR")
+	fmt.Println("  • ai_dataset表中的所有数据")
+	fmt.Println("  • 此操作无法撤销！")
+	fmt.Println()
+
+	// 确认操作
+	fmt.Print("确认要清空所有Demo数据吗？(输入 'CLEANUP' 确认): ")
+	confirmation, _ := reader.ReadString('\n')
+	confirmation = strings.TrimSpace(confirmation)
+
+	if confirmation != "CLEANUP" {
+		fmt.Println("❌ 操作已取消")
+		return nil
+	}
+
+	// 执行清理
+	return demo.CleanupAllDemoData()
 }
 
 // vectorSearchMenu 向量搜索菜单
