@@ -1027,22 +1027,41 @@ func (d *AIDatasetDemo) ShowConflicts(conflicts []ConflictRecord, startIndex int
 	fmt.Printf("\n🔍 冲突列表 (显示 %d-%d 条，共 %d 条冲突)\n",
 		startIndex+1, min(startIndex+5, len(conflicts)), len(conflicts))
 	fmt.Println(strings.Repeat("=", 120))
-	fmt.Printf("%-4s %-15s %-15s %-15s %-15s %-15s %-15s\n",
-		"ID", "源分支Label", "目标分支Label", "源分支描述", "目标分支描述", "源分支标注者", "目标分支标注者")
+	fmt.Printf("%-4s %s\n", "ID", "差异详情 (源分支→目标分支)")
 	fmt.Println(strings.Repeat("-", 120))
 
 	endIndex := min(startIndex+5, len(conflicts))
 	for i := startIndex; i < endIndex; i++ {
 		conflict := conflicts[i]
-		sourceLabel := truncateText(conflict.SourceLabel, 13)
-		targetLabel := truncateText(conflict.TargetLabel, 13)
-		sourceDesc := truncateText(conflict.SourceDescription, 13)
-		targetDesc := truncateText(conflict.TargetDescription, 13)
-		sourceAnnotator := truncateText(conflict.SourceAnnotator, 13)
-		targetAnnotator := truncateText(conflict.TargetAnnotator, 13)
 
-		fmt.Printf("%-4d %-15s %-15s %-15s %-15s %-15s %-15s\n",
-			conflict.ID, sourceLabel, targetLabel, sourceDesc, targetDesc, sourceAnnotator, targetAnnotator)
+		// 构建差异详情
+		var diffDetails []string
+		if conflict.SourceLabel != conflict.TargetLabel {
+			diffDetails = append(diffDetails, fmt.Sprintf("Label: %s→%s", conflict.SourceLabel, conflict.TargetLabel))
+		}
+		if conflict.SourceDescription != conflict.TargetDescription {
+			sourceDesc := truncateText(conflict.SourceDescription, 15)
+			targetDesc := truncateText(conflict.TargetDescription, 15)
+			diffDetails = append(diffDetails, fmt.Sprintf("描述: %s→%s", sourceDesc, targetDesc))
+		}
+		if conflict.SourceAnnotator != conflict.TargetAnnotator {
+			diffDetails = append(diffDetails, fmt.Sprintf("标注者: %s→%s", conflict.SourceAnnotator, conflict.TargetAnnotator))
+		}
+		if conflict.SourceConfidence != conflict.TargetConfidence {
+			diffDetails = append(diffDetails, fmt.Sprintf("置信度: %s→%s", conflict.SourceConfidence, conflict.TargetConfidence))
+		}
+		if conflict.SourceReason != conflict.TargetReason {
+			sourceReason := truncateText(conflict.SourceReason, 15)
+			targetReason := truncateText(conflict.TargetReason, 15)
+			diffDetails = append(diffDetails, fmt.Sprintf("原因: %s→%s", sourceReason, targetReason))
+		}
+
+		diffStr := strings.Join(diffDetails, " | ")
+		if diffStr == "" {
+			diffStr = "无差异"
+		}
+
+		fmt.Printf("%-4d %s\n", conflict.ID, diffStr)
 	}
 
 	if len(conflicts) > startIndex+5 {
@@ -1092,6 +1111,12 @@ func (d *AIDatasetDemo) ResolveConflicts(mergeResult *MergeResult, sourceBranch,
 		case "4":
 			d.selectiveResolve(mergeResult, reader)
 		case "5":
+			// 检查是否还有未解决的冲突
+			unresolvedCount := mergeResult.TotalConflicts - len(mergeResult.ResolutionChoice)
+			if unresolvedCount > 0 {
+				fmt.Printf("❌ 还有 %d 个冲突未解决，请先解决所有冲突才能执行 merge\n", unresolvedCount)
+				continue
+			}
 			return d.executeMerge(mergeResult, sourceBranch, targetBranch)
 		case "6":
 			fmt.Println("❌ 已取消 Merge 操作")
@@ -1173,12 +1198,27 @@ func (d *AIDatasetDemo) selectiveResolve(mergeResult *MergeResult, reader *bufio
 			}
 
 			fmt.Printf("\n🔍 冲突 ID %d - 整行冲突\n", conflict.ID)
-			fmt.Printf("📊 源分支: Label=%s, 描述=%s, 标注者=%s, 置信度=%s, 原因=%s\n",
-				conflict.SourceLabel, conflict.SourceDescription, conflict.SourceAnnotator,
-				conflict.SourceConfidence, conflict.SourceReason)
-			fmt.Printf("🌿 目标分支: Label=%s, 描述=%s, 标注者=%s, 置信度=%s, 原因=%s\n",
-				conflict.TargetLabel, conflict.TargetDescription, conflict.TargetAnnotator,
-				conflict.TargetConfidence, conflict.TargetReason)
+
+			// 只显示有差异的字段
+			fmt.Println("📊 差异字段:")
+			if conflict.SourceLabel != conflict.TargetLabel {
+				fmt.Printf("   Label: 源分支=%s, 目标分支=%s\n", conflict.SourceLabel, conflict.TargetLabel)
+			}
+			if conflict.SourceDescription != conflict.TargetDescription {
+				fmt.Printf("   描述: 源分支=%s, 目标分支=%s\n",
+					truncateText(conflict.SourceDescription, 30), truncateText(conflict.TargetDescription, 30))
+			}
+			if conflict.SourceAnnotator != conflict.TargetAnnotator {
+				fmt.Printf("   标注者: 源分支=%s, 目标分支=%s\n", conflict.SourceAnnotator, conflict.TargetAnnotator)
+			}
+			if conflict.SourceConfidence != conflict.TargetConfidence {
+				fmt.Printf("   置信度: 源分支=%s, 目标分支=%s\n", conflict.SourceConfidence, conflict.TargetConfidence)
+			}
+			if conflict.SourceReason != conflict.TargetReason {
+				fmt.Printf("   原因: 源分支=%s, 目标分支=%s\n",
+					truncateText(conflict.SourceReason, 30), truncateText(conflict.TargetReason, 30))
+			}
+
 			fmt.Print("选择: (s)源分支整行, (t)目标分支整行, (k)跳过: ")
 
 			choice, _ := reader.ReadString('\n')
