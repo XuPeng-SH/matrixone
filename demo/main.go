@@ -304,16 +304,19 @@ type BranchSnapshotInfo struct {
 	CreatedAt    string
 }
 
-// ConflictRecord 冲突记录
+// ConflictRecord 冲突记录（按行级别）
 type ConflictRecord struct {
 	ID              int
-	Field           string
-	MainValue       string
-	BranchValue     string
-	MainAnnotator   string
-	BranchAnnotator string
-	MainReason      string
-	BranchReason    string
+	SourceLabel     string
+	SourceDescription string
+	SourceAnnotator string
+	SourceConfidence string
+	SourceReason    string
+	TargetLabel     string
+	TargetDescription string
+	TargetAnnotator string
+	TargetConfidence string
+	TargetReason    string
 }
 
 // MergeResult merge结果
@@ -986,48 +989,29 @@ func (d *AIDatasetDemo) DetectConflicts(sourceBranch, targetBranch string) (*Mer
 			targetReasonStr = targetReason.String
 		}
 
-		// 检查每个字段的冲突
-		if sourceLabel != targetLabel {
-			conflicts = append(conflicts, ConflictRecord{
-				ID: id, Field: "label",
-				MainValue: sourceLabel, BranchValue: targetLabel,
-				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
-				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
-			})
+		sourceConfidenceStr := "N/A"
+		if sourceConfidence.Valid {
+			sourceConfidenceStr = fmt.Sprintf("%.2f", sourceConfidence.Float64)
 		}
-		if sourceDescription != targetDescription {
-			conflicts = append(conflicts, ConflictRecord{
-				ID: id, Field: "description",
-				MainValue: sourceDescription, BranchValue: targetDescription,
-				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
-				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
-			})
+		targetConfidenceStr := "N/A"
+		if targetConfidence.Valid {
+			targetConfidenceStr = fmt.Sprintf("%.2f", targetConfidence.Float64)
 		}
-		if sourceAnnotatorStr != targetAnnotatorStr {
-			conflicts = append(conflicts, ConflictRecord{
-				ID: id, Field: "annotator",
-				MainValue: sourceAnnotatorStr, BranchValue: targetAnnotatorStr,
-				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
-				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
-			})
-		}
-		if sourceConfidence.Valid && targetConfidence.Valid && sourceConfidence.Float64 != targetConfidence.Float64 {
-			conflicts = append(conflicts, ConflictRecord{
-				ID: id, Field: "confidence",
-				MainValue:     fmt.Sprintf("%.2f", sourceConfidence.Float64),
-				BranchValue:   fmt.Sprintf("%.2f", targetConfidence.Float64),
-				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
-				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
-			})
-		}
-		if sourceReasonStr != targetReasonStr {
-			conflicts = append(conflicts, ConflictRecord{
-				ID: id, Field: "reason",
-				MainValue: sourceReasonStr, BranchValue: targetReasonStr,
-				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
-				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
-			})
-		}
+
+		// 按行级别创建冲突记录（同一ID的所有差异算作一个冲突）
+		conflicts = append(conflicts, ConflictRecord{
+			ID: id,
+			SourceLabel: sourceLabel,
+			SourceDescription: sourceDescription,
+			SourceAnnotator: sourceAnnotatorStr,
+			SourceConfidence: sourceConfidenceStr,
+			SourceReason: sourceReasonStr,
+			TargetLabel: targetLabel,
+			TargetDescription: targetDescription,
+			TargetAnnotator: targetAnnotatorStr,
+			TargetConfidence: targetConfidenceStr,
+			TargetReason: targetReasonStr,
+		})
 	}
 
 	return &MergeResult{
@@ -1038,25 +1022,27 @@ func (d *AIDatasetDemo) DetectConflicts(sourceBranch, targetBranch string) (*Mer
 	}, nil
 }
 
-// ShowConflicts 显示冲突列表
+// ShowConflicts 显示冲突列表（按行级别）
 func (d *AIDatasetDemo) ShowConflicts(conflicts []ConflictRecord, startIndex int, sourceBranch, targetBranch string) {
 	fmt.Printf("\n🔍 冲突列表 (显示 %d-%d 条，共 %d 条冲突)\n",
 		startIndex+1, min(startIndex+5, len(conflicts)), len(conflicts))
-	fmt.Println(strings.Repeat("=", 100))
-	fmt.Printf("%-4s %-10s %-20s %-20s %-15s %-15s\n",
-		"ID", "字段", "源分支值", "目标分支值", "源分支标注者", "目标分支标注者")
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Println(strings.Repeat("=", 120))
+	fmt.Printf("%-4s %-15s %-15s %-15s %-15s %-15s %-15s\n",
+		"ID", "源分支Label", "目标分支Label", "源分支描述", "目标分支描述", "源分支标注者", "目标分支标注者")
+	fmt.Println(strings.Repeat("-", 120))
 
 	endIndex := min(startIndex+5, len(conflicts))
 	for i := startIndex; i < endIndex; i++ {
 		conflict := conflicts[i]
-		sourceValue := truncateText(conflict.MainValue, 18)
-		targetValue := truncateText(conflict.BranchValue, 18)
-		sourceAnnotator := truncateText(conflict.MainAnnotator, 13)
-		targetAnnotator := truncateText(conflict.BranchAnnotator, 13)
+		sourceLabel := truncateText(conflict.SourceLabel, 13)
+		targetLabel := truncateText(conflict.TargetLabel, 13)
+		sourceDesc := truncateText(conflict.SourceDescription, 13)
+		targetDesc := truncateText(conflict.TargetDescription, 13)
+		sourceAnnotator := truncateText(conflict.SourceAnnotator, 13)
+		targetAnnotator := truncateText(conflict.TargetAnnotator, 13)
 
-		fmt.Printf("%-4d %-10s %-20s %-20s %-15s %-15s\n",
-			conflict.ID, conflict.Field, sourceValue, targetValue, sourceAnnotator, targetAnnotator)
+		fmt.Printf("%-4d %-15s %-15s %-15s %-15s %-15s %-15s\n",
+			conflict.ID, sourceLabel, targetLabel, sourceDesc, targetDesc, sourceAnnotator, targetAnnotator)
 	}
 
 	if len(conflicts) > startIndex+5 {
@@ -1140,16 +1126,28 @@ func (d *AIDatasetDemo) showAllConflicts(conflicts []ConflictRecord, sourceBranc
 
 // acceptAllSource 全部接受源分支版本
 func (d *AIDatasetDemo) acceptAllSource(mergeResult *MergeResult) {
+	// 清空之前的解决记录
+	mergeResult.ResolvedConflicts = []ConflictRecord{}
+	mergeResult.ResolutionChoice = make(map[int]string)
+
+	// 设置所有冲突为接受源分支版本
 	for _, conflict := range mergeResult.Conflicts {
 		mergeResult.ResolutionChoice[conflict.ID] = "source"
+		mergeResult.ResolvedConflicts = append(mergeResult.ResolvedConflicts, conflict)
 	}
 	fmt.Println("✅ 已设置全部接受源分支版本")
 }
 
 // acceptAllTarget 全部接受目标分支版本
 func (d *AIDatasetDemo) acceptAllTarget(mergeResult *MergeResult) {
+	// 清空之前的解决记录
+	mergeResult.ResolvedConflicts = []ConflictRecord{}
+	mergeResult.ResolutionChoice = make(map[int]string)
+
+	// 设置所有冲突为接受目标分支版本
 	for _, conflict := range mergeResult.Conflicts {
 		mergeResult.ResolutionChoice[conflict.ID] = "target"
+		mergeResult.ResolvedConflicts = append(mergeResult.ResolvedConflicts, conflict)
 	}
 	fmt.Println("✅ 已设置全部接受目标分支版本")
 }
@@ -1170,14 +1168,18 @@ func (d *AIDatasetDemo) selectiveResolve(mergeResult *MergeResult, reader *bufio
 
 			// 检查是否已经解决
 			if _, resolved := mergeResult.ResolutionChoice[conflict.ID]; resolved {
-				fmt.Printf("✅ ID %d (%s) - 已解决\n", conflict.ID, conflict.Field)
+				fmt.Printf("✅ ID %d - 已解决\n", conflict.ID)
 				continue
 			}
 
-			fmt.Printf("\n🔍 冲突 ID %d - 字段: %s\n", conflict.ID, conflict.Field)
-			fmt.Printf("📊 源分支值: %s (标注者: %s)\n", conflict.MainValue, conflict.MainAnnotator)
-			fmt.Printf("🌿 目标分支值: %s (标注者: %s)\n", conflict.BranchValue, conflict.BranchAnnotator)
-			fmt.Print("选择: (s)源分支版本, (t)目标分支版本, (k)跳过: ")
+			fmt.Printf("\n🔍 冲突 ID %d - 整行冲突\n", conflict.ID)
+			fmt.Printf("📊 源分支: Label=%s, 描述=%s, 标注者=%s, 置信度=%s, 原因=%s\n", 
+				conflict.SourceLabel, conflict.SourceDescription, conflict.SourceAnnotator, 
+				conflict.SourceConfidence, conflict.SourceReason)
+			fmt.Printf("🌿 目标分支: Label=%s, 描述=%s, 标注者=%s, 置信度=%s, 原因=%s\n", 
+				conflict.TargetLabel, conflict.TargetDescription, conflict.TargetAnnotator, 
+				conflict.TargetConfidence, conflict.TargetReason)
+			fmt.Print("选择: (s)源分支整行, (t)目标分支整行, (k)跳过: ")
 
 			choice, _ := reader.ReadString('\n')
 			choice = strings.TrimSpace(strings.ToLower(choice))
@@ -1185,9 +1187,31 @@ func (d *AIDatasetDemo) selectiveResolve(mergeResult *MergeResult, reader *bufio
 			switch choice {
 			case "s":
 				mergeResult.ResolutionChoice[conflict.ID] = "source"
+				// 添加到已解决列表（如果还没有的话）
+				found := false
+				for _, resolved := range mergeResult.ResolvedConflicts {
+					if resolved.ID == conflict.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					mergeResult.ResolvedConflicts = append(mergeResult.ResolvedConflicts, conflict)
+				}
 				fmt.Println("✅ 已选择源分支版本")
 			case "t":
 				mergeResult.ResolutionChoice[conflict.ID] = "target"
+				// 添加到已解决列表（如果还没有的话）
+				found := false
+				for _, resolved := range mergeResult.ResolvedConflicts {
+					if resolved.ID == conflict.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					mergeResult.ResolvedConflicts = append(mergeResult.ResolvedConflicts, conflict)
+				}
 				fmt.Println("✅ 已选择目标分支版本")
 			case "k":
 				fmt.Println("⏭️ 跳过此冲突")
@@ -1246,19 +1270,20 @@ func (d *AIDatasetDemo) executeMerge(mergeResult *MergeResult, sourceBranch, tar
 		var err error
 
 		if choice == "source" {
-			// 使用源分支的值更新目标分支
+			// 使用源分支的整行数据更新目标分支
 			updateQuery = fmt.Sprintf(`
 				UPDATE %s 
 				SET label = (SELECT label FROM %s WHERE id = ?),
 				    description = (SELECT description FROM %s WHERE id = ?),
-				    metadata = (SELECT metadata FROM %s WHERE id = ?)
-				WHERE id = ?`, targetTable, sourceTable, sourceTable, sourceTable)
+				    metadata = (SELECT metadata FROM %s WHERE id = ?),
+				    timestamp = (SELECT timestamp FROM %s WHERE id = ?)
+				WHERE id = ?`, targetTable, sourceTable, sourceTable, sourceTable, sourceTable)
 		} else {
 			// choice == "target" - 保持目标分支的值不变
 			continue
 		}
 
-		_, err = d.db.Exec(updateQuery, conflictID, conflictID, conflictID, conflictID)
+		_, err = d.db.Exec(updateQuery, conflictID, conflictID, conflictID, conflictID, conflictID)
 		if err != nil {
 			fmt.Printf("❌ 更新记录 %d 失败: %v\n", conflictID, err)
 			errorCount++
