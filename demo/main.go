@@ -425,7 +425,7 @@ func (d *AIDatasetDemo) ShowBranchHistory() error {
 	}
 
 	query := `
-		SELECT id, event_type, source_database, source_table, branch_name, snapshot_name, created_at
+		SELECT id, event_type, source_database, source_table, branch_name, target_branch, snapshot_name, created_at
 		FROM mo_branches.branch_management 
 		ORDER BY created_at DESC 
 		LIMIT 50`
@@ -441,11 +441,11 @@ func (d *AIDatasetDemo) ShowBranchHistory() error {
 
 	var id int
 	var eventType, sourceDB, sourceTable, branchName, createdAt string
-	var snapshotName sql.NullString
+	var targetBranch, snapshotName sql.NullString
 	recordCount := 0
 
 	for rows.Next() {
-		err := rows.Scan(&id, &eventType, &sourceDB, &sourceTable, &branchName, &snapshotName, &createdAt)
+		err := rows.Scan(&id, &eventType, &sourceDB, &sourceTable, &branchName, &targetBranch, &snapshotName, &createdAt)
 		if err != nil {
 			return fmt.Errorf("failed to scan branch history row: %v", err)
 		}
@@ -458,8 +458,19 @@ func (d *AIDatasetDemo) ShowBranchHistory() error {
 			eventIcon = "🔀"
 		}
 
-		fmt.Printf("%s %s | Branch: %s | Source: %s.%s\n",
-			eventIcon, eventType, branchName, sourceDB, sourceTable)
+		if eventType == "MERGE" {
+			// Merge事件显示更详细的信息
+			targetBranchStr := "main"
+			if targetBranch.Valid && targetBranch.String != "" {
+				targetBranchStr = targetBranch.String
+			}
+			fmt.Printf("%s %s | Source: %s → Target: %s\n",
+				eventIcon, eventType, branchName, targetBranchStr)
+		} else {
+			// 其他事件显示原有格式
+			fmt.Printf("%s %s | Branch: %s | Source: %s.%s\n",
+				eventIcon, eventType, branchName, sourceDB, sourceTable)
+		}
 
 		if snapshotName.Valid && snapshotName.String != "" {
 			fmt.Printf("   📸 Based on snapshot: %s\n", snapshotName.String)
@@ -1271,6 +1282,16 @@ func (d *AIDatasetDemo) executeMerge(mergeResult *MergeResult, sourceBranch, tar
 	// 记录merge事件
 	if err := d.recordMergeEvent(sourceBranch, targetBranch, mergeResult.TotalConflicts, len(mergeResult.ResolutionChoice)); err != nil {
 		fmt.Printf("⚠️  Warning: Failed to record merge event: %v\n", err)
+	}
+
+	// 如果目标分支是主表，自动生成新快照
+	if targetBranch == "main" {
+		snapshotName := fmt.Sprintf("merge_%s_to_main_%s", sourceBranch, time.Now().Format("20060102_150405"))
+		if err := d.CreateSnapshot(snapshotName); err != nil {
+			fmt.Printf("⚠️  Warning: Failed to create snapshot after merge: %v\n", err)
+		} else {
+			fmt.Printf("📸 已自动创建快照: %s\n", snapshotName)
+		}
 	}
 
 	return nil
@@ -3480,14 +3501,14 @@ func mergeMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 	// 显示所有分支
 	fmt.Println("🌿 可用的分支:")
-	fmt.Println(strings.Repeat("=", 30))
+	fmt.Println(strings.Repeat("=", 50))
 	for i, branch := range branches {
 		fmt.Printf("%d. 📋 %s\n", i+1, branch)
 	}
 	fmt.Printf("%d. 📊 main (主表)\n", len(branches)+1)
 
 	// 选择源分支
-	fmt.Print("\n请选择源分支 (序号): ")
+	fmt.Print("\n🔀 请选择源分支 (要合并的分支) (序号): ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
@@ -3498,13 +3519,13 @@ func mergeMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		} else {
 			sourceBranch = branches[num-1]
 		}
-		fmt.Printf("✅ 选择源分支: %s\n", sourceBranch)
+		fmt.Printf("✅ 源分支: %s\n", sourceBranch)
 	} else {
 		return fmt.Errorf("无效的分支序号")
 	}
 
 	// 选择目标分支
-	fmt.Print("\n请选择目标分支 (序号): ")
+	fmt.Print("\n🎯 请选择目标分支 (接收合并的分支) (序号): ")
 	input, _ = reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
@@ -3515,7 +3536,7 @@ func mergeMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		} else {
 			targetBranch = branches[num-1]
 		}
-		fmt.Printf("✅ 选择目标分支: %s\n", targetBranch)
+		fmt.Printf("✅ 目标分支: %s\n", targetBranch)
 	} else {
 		return fmt.Errorf("无效的分支序号")
 	}
@@ -3523,6 +3544,14 @@ func mergeMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	if sourceBranch == targetBranch {
 		return fmt.Errorf("源分支和目标分支不能相同")
 	}
+
+	// 显示merge操作摘要
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Printf("🔀 Merge 操作摘要:\n")
+	fmt.Printf("   源分支 (Source): %s\n", sourceBranch)
+	fmt.Printf("   目标分支 (Target): %s\n", targetBranch)
+	fmt.Printf("   操作: 将 %s 的更改合并到 %s\n", sourceBranch, targetBranch)
+	fmt.Println(strings.Repeat("=", 60))
 
 	// 检测冲突
 	fmt.Printf("\n🔍 正在检测分支 %s 与 %s 的冲突...\n", sourceBranch, targetBranch)
@@ -3599,6 +3628,16 @@ func (d *AIDatasetDemo) executeDirectMerge(sourceBranch, targetBranch string) er
 	// 记录merge事件
 	if err := d.recordMergeEvent(sourceBranch, targetBranch, 0, 0); err != nil {
 		fmt.Printf("⚠️  Warning: Failed to record merge event: %v\n", err)
+	}
+
+	// 如果目标分支是主表，自动生成新快照
+	if targetBranch == "main" {
+		snapshotName := fmt.Sprintf("merge_%s_to_main_%s", sourceBranch, time.Now().Format("20060102_150405"))
+		if err := d.CreateSnapshot(snapshotName); err != nil {
+			fmt.Printf("⚠️  Warning: Failed to create snapshot after merge: %v\n", err)
+		} else {
+			fmt.Printf("📸 已自动创建快照: %s\n", snapshotName)
+		}
 	}
 
 	return nil
