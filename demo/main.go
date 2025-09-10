@@ -306,17 +306,17 @@ type BranchSnapshotInfo struct {
 
 // ConflictRecord 冲突记录（按行级别）
 type ConflictRecord struct {
-	ID              int
-	SourceLabel     string
+	ID                int
+	SourceLabel       string
 	SourceDescription string
-	SourceAnnotator string
-	SourceConfidence string
-	SourceReason    string
-	TargetLabel     string
+	SourceAnnotator   string
+	SourceConfidence  string
+	SourceReason      string
+	TargetLabel       string
 	TargetDescription string
-	TargetAnnotator string
-	TargetConfidence string
-	TargetReason    string
+	TargetAnnotator   string
+	TargetConfidence  string
+	TargetReason      string
 }
 
 // MergeResult merge结果
@@ -1000,17 +1000,17 @@ func (d *AIDatasetDemo) DetectConflicts(sourceBranch, targetBranch string) (*Mer
 
 		// 按行级别创建冲突记录（同一ID的所有差异算作一个冲突）
 		conflicts = append(conflicts, ConflictRecord{
-			ID: id,
-			SourceLabel: sourceLabel,
+			ID:                id,
+			SourceLabel:       sourceLabel,
 			SourceDescription: sourceDescription,
-			SourceAnnotator: sourceAnnotatorStr,
-			SourceConfidence: sourceConfidenceStr,
-			SourceReason: sourceReasonStr,
-			TargetLabel: targetLabel,
+			SourceAnnotator:   sourceAnnotatorStr,
+			SourceConfidence:  sourceConfidenceStr,
+			SourceReason:      sourceReasonStr,
+			TargetLabel:       targetLabel,
 			TargetDescription: targetDescription,
-			TargetAnnotator: targetAnnotatorStr,
-			TargetConfidence: targetConfidenceStr,
-			TargetReason: targetReasonStr,
+			TargetAnnotator:   targetAnnotatorStr,
+			TargetConfidence:  targetConfidenceStr,
+			TargetReason:      targetReasonStr,
 		})
 	}
 
@@ -1173,11 +1173,11 @@ func (d *AIDatasetDemo) selectiveResolve(mergeResult *MergeResult, reader *bufio
 			}
 
 			fmt.Printf("\n🔍 冲突 ID %d - 整行冲突\n", conflict.ID)
-			fmt.Printf("📊 源分支: Label=%s, 描述=%s, 标注者=%s, 置信度=%s, 原因=%s\n", 
-				conflict.SourceLabel, conflict.SourceDescription, conflict.SourceAnnotator, 
+			fmt.Printf("📊 源分支: Label=%s, 描述=%s, 标注者=%s, 置信度=%s, 原因=%s\n",
+				conflict.SourceLabel, conflict.SourceDescription, conflict.SourceAnnotator,
 				conflict.SourceConfidence, conflict.SourceReason)
-			fmt.Printf("🌿 目标分支: Label=%s, 描述=%s, 标注者=%s, 置信度=%s, 原因=%s\n", 
-				conflict.TargetLabel, conflict.TargetDescription, conflict.TargetAnnotator, 
+			fmt.Printf("🌿 目标分支: Label=%s, 描述=%s, 标注者=%s, 置信度=%s, 原因=%s\n",
+				conflict.TargetLabel, conflict.TargetDescription, conflict.TargetAnnotator,
 				conflict.TargetConfidence, conflict.TargetReason)
 			fmt.Print("选择: (s)源分支整行, (t)目标分支整行, (k)跳过: ")
 
