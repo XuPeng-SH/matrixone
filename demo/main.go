@@ -388,6 +388,282 @@ func (d *AIDatasetDemo) ShowBranchHistory() error {
 	return nil
 }
 
+// CompareBranches 比较两个分支的数据
+func (d *AIDatasetDemo) CompareBranches(branch1Name, branch2Name string, showDetailed bool) error {
+	// 生成分支表名
+	branch1Table := fmt.Sprintf("mo_branches.test_ai_dataset_%s", branch1Name)
+	branch2Table := fmt.Sprintf("mo_branches.test_ai_dataset_%s", branch2Name)
+
+	// 查询两个分支的数据
+	query1 := fmt.Sprintf(`
+		SELECT id, label, description,
+		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
+		       timestamp
+		FROM %s 
+		ORDER BY id 
+		LIMIT 10`, branch1Table)
+
+	query2 := fmt.Sprintf(`
+		SELECT id, label, description,
+		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
+		       timestamp
+		FROM %s 
+		ORDER BY id 
+		LIMIT 10`, branch2Table)
+
+	// 获取第一个分支的数据
+	rows1, err := d.db.Query(query1)
+	if err != nil {
+		return fmt.Errorf("failed to query branch1 data: %v", err)
+	}
+	defer rows1.Close()
+
+	var data1 []map[string]interface{}
+	for rows1.Next() {
+		var id int
+		var label, description, timestamp string
+		var annotator, reason sql.NullString
+		var confidence sql.NullFloat64
+
+		err := rows1.Scan(&id, &label, &description, &annotator, &confidence, &reason, &timestamp)
+		if err != nil {
+			return fmt.Errorf("failed to scan branch1 row: %v", err)
+		}
+
+		row := map[string]interface{}{
+			"id":          id,
+			"label":       label,
+			"description": description,
+			"annotator":   annotator.String,
+			"confidence":  confidence.Float64,
+			"reason":      reason.String,
+			"timestamp":   timestamp,
+		}
+		data1 = append(data1, row)
+	}
+
+	// 获取第二个分支的数据
+	rows2, err := d.db.Query(query2)
+	if err != nil {
+		return fmt.Errorf("failed to query branch2 data: %v", err)
+	}
+	defer rows2.Close()
+
+	var data2 []map[string]interface{}
+	for rows2.Next() {
+		var id int
+		var label, description, timestamp string
+		var annotator, reason sql.NullString
+		var confidence sql.NullFloat64
+
+		err := rows2.Scan(&id, &label, &description, &annotator, &confidence, &reason, &timestamp)
+		if err != nil {
+			return fmt.Errorf("failed to scan branch2 row: %v", err)
+		}
+
+		row := map[string]interface{}{
+			"id":          id,
+			"label":       label,
+			"description": description,
+			"annotator":   annotator.String,
+			"confidence":  confidence.Float64,
+			"reason":      reason.String,
+			"timestamp":   timestamp,
+		}
+		data2 = append(data2, row)
+	}
+
+	// 比较数据
+	fmt.Printf("🔄 Branch Comparison: %s vs %s\n", branch1Name, branch2Name)
+	fmt.Println(strings.Repeat("=", 80))
+
+	// 转换为DataRecord格式
+	records1 := make(map[int]DataRecord)
+	records2 := make(map[int]DataRecord)
+
+	for _, row := range data1 {
+		id := row["id"].(int)
+		confidence := "N/A"
+		if conf, ok := row["confidence"].(float64); ok {
+			confidence = fmt.Sprintf("%.2f", conf)
+		}
+		records1[id] = DataRecord{
+			ID:         id,
+			Label:      row["label"].(string),
+			Annotator:  row["annotator"].(string),
+			Confidence: confidence,
+			Reason:     row["reason"].(string),
+			Timestamp:  row["timestamp"].(string),
+		}
+	}
+
+	for _, row := range data2 {
+		id := row["id"].(int)
+		confidence := "N/A"
+		if conf, ok := row["confidence"].(float64); ok {
+			confidence = fmt.Sprintf("%.2f", conf)
+		}
+		records2[id] = DataRecord{
+			ID:         id,
+			Label:      row["label"].(string),
+			Annotator:  row["annotator"].(string),
+			Confidence: confidence,
+			Reason:     row["reason"].(string),
+			Timestamp:  row["timestamp"].(string),
+		}
+	}
+
+	if showDetailed {
+		d.compareDataDetailed(records1, records2, fmt.Sprintf("Branch: %s", branch1Name), fmt.Sprintf("Branch: %s", branch2Name))
+	} else {
+		d.compareDataSummary(records1, records2, fmt.Sprintf("Branch: %s", branch1Name), fmt.Sprintf("Branch: %s", branch2Name))
+	}
+
+	return nil
+}
+
+// CompareBranchWithSnapshot 比较分支和快照的数据
+func (d *AIDatasetDemo) CompareBranchWithSnapshot(branchName, snapshotName string, showDetailed bool) error {
+	// 生成分支表名
+	branchTable := fmt.Sprintf("mo_branches.test_ai_dataset_%s", branchName)
+
+	// 查询分支数据
+	branchQuery := fmt.Sprintf(`
+		SELECT id, label, description,
+		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
+		       timestamp
+		FROM %s 
+		ORDER BY id 
+		LIMIT 10`, branchTable)
+
+	// 查询快照数据
+	snapshotQuery := fmt.Sprintf(`
+		SELECT id, label, description,
+		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
+		       timestamp
+		FROM ai_dataset {Snapshot = '%s'}
+		ORDER BY id 
+		LIMIT 10`, snapshotName)
+
+	// 获取分支数据
+	rows1, err := d.db.Query(branchQuery)
+	if err != nil {
+		return fmt.Errorf("failed to query branch data: %v", err)
+	}
+	defer rows1.Close()
+
+	var data1 []map[string]interface{}
+	for rows1.Next() {
+		var id int
+		var label, description, timestamp string
+		var annotator, reason sql.NullString
+		var confidence sql.NullFloat64
+
+		err := rows1.Scan(&id, &label, &description, &annotator, &confidence, &reason, &timestamp)
+		if err != nil {
+			return fmt.Errorf("failed to scan branch row: %v", err)
+		}
+
+		row := map[string]interface{}{
+			"id":          id,
+			"label":       label,
+			"description": description,
+			"annotator":   annotator.String,
+			"confidence":  confidence.Float64,
+			"reason":      reason.String,
+			"timestamp":   timestamp,
+		}
+		data1 = append(data1, row)
+	}
+
+	// 获取快照数据
+	rows2, err := d.db.Query(snapshotQuery)
+	if err != nil {
+		return fmt.Errorf("failed to query snapshot data: %v", err)
+	}
+	defer rows2.Close()
+
+	var data2 []map[string]interface{}
+	for rows2.Next() {
+		var id int
+		var label, description, timestamp string
+		var annotator, reason sql.NullString
+		var confidence sql.NullFloat64
+
+		err := rows2.Scan(&id, &label, &description, &annotator, &confidence, &reason, &timestamp)
+		if err != nil {
+			return fmt.Errorf("failed to scan snapshot row: %v", err)
+		}
+
+		row := map[string]interface{}{
+			"id":          id,
+			"label":       label,
+			"description": description,
+			"annotator":   annotator.String,
+			"confidence":  confidence.Float64,
+			"reason":      reason.String,
+			"timestamp":   timestamp,
+		}
+		data2 = append(data2, row)
+	}
+
+	// 比较数据
+	fmt.Printf("🔄 Branch vs Snapshot Comparison: %s vs %s\n", branchName, snapshotName)
+	fmt.Println(strings.Repeat("=", 80))
+
+	// 转换为DataRecord格式
+	records1 := make(map[int]DataRecord)
+	records2 := make(map[int]DataRecord)
+
+	for _, row := range data1 {
+		id := row["id"].(int)
+		confidence := "N/A"
+		if conf, ok := row["confidence"].(float64); ok {
+			confidence = fmt.Sprintf("%.2f", conf)
+		}
+		records1[id] = DataRecord{
+			ID:         id,
+			Label:      row["label"].(string),
+			Annotator:  row["annotator"].(string),
+			Confidence: confidence,
+			Reason:     row["reason"].(string),
+			Timestamp:  row["timestamp"].(string),
+		}
+	}
+
+	for _, row := range data2 {
+		id := row["id"].(int)
+		confidence := "N/A"
+		if conf, ok := row["confidence"].(float64); ok {
+			confidence = fmt.Sprintf("%.2f", conf)
+		}
+		records2[id] = DataRecord{
+			ID:         id,
+			Label:      row["label"].(string),
+			Annotator:  row["annotator"].(string),
+			Confidence: confidence,
+			Reason:     row["reason"].(string),
+			Timestamp:  row["timestamp"].(string),
+		}
+	}
+
+	if showDetailed {
+		d.compareDataDetailed(records1, records2, fmt.Sprintf("Branch: %s", branchName), fmt.Sprintf("Snapshot: %s", snapshotName))
+	} else {
+		d.compareDataSummary(records1, records2, fmt.Sprintf("Branch: %s", branchName), fmt.Sprintf("Snapshot: %s", snapshotName))
+	}
+
+	return nil
+}
+
 // generateRandomVector 生成随机向量
 func (d *AIDatasetDemo) generateRandomVector(dim int) string {
 	var values []string
@@ -2134,7 +2410,8 @@ func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	fmt.Println("2. ➕ 创建新分支")
 	fmt.Println("3. 🗑️ 删除分支")
 	fmt.Println("4. 📜 查看分支历史")
-	fmt.Print("请选择操作 (1-4): ")
+	fmt.Println("5. 🔄 分支比较")
+	fmt.Print("请选择操作 (1-5): ")
 
 	choice, _ := reader.ReadString('\n')
 	choice = strings.TrimSpace(choice)
@@ -2148,6 +2425,8 @@ func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		return deleteBranchMenu(demo, reader)
 	case "4":
 		return demo.ShowBranchHistory()
+	case "5":
+		return branchCompareMenu(demo, reader)
 	default:
 		fmt.Println("❌ 无效选择")
 		return nil
@@ -2197,6 +2476,159 @@ func createBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	}
 
 	return demo.CreateTableBranch(branchName, snapshotName)
+}
+
+// branchCompareMenu 分支比较菜单
+func branchCompareMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Println("\n🔄 分支比较")
+	fmt.Println("1. 🌿 分支 vs 分支")
+	fmt.Println("2. 🌿 分支 vs 快照")
+	fmt.Print("请选择比较类型 (1-2): ")
+
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "1":
+		return branchVsBranchMenu(demo, reader)
+	case "2":
+		return branchVsSnapshotMenu(demo, reader)
+	default:
+		fmt.Println("❌ 无效选择")
+		return nil
+	}
+}
+
+// branchVsBranchMenu 分支与分支比较菜单
+func branchVsBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取所有分支列表
+	branches, err := demo.getTableBranches()
+	if err != nil {
+		return fmt.Errorf("failed to get branches: %v", err)
+	}
+
+	if len(branches) < 2 {
+		return fmt.Errorf("至少需要2个分支才能进行比较")
+	}
+
+	// 显示所有分支
+	fmt.Println("🌿 可用的分支:")
+	fmt.Println(strings.Repeat("=", 30))
+	for i, branch := range branches {
+		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+	}
+
+	// 选择第一个分支
+	fmt.Print("\n请选择第一个分支 (序号): ")
+	input1, _ := reader.ReadString('\n')
+	input1 = strings.TrimSpace(input1)
+
+	var branch1Name string
+	if num, err := strconv.Atoi(input1); err == nil && num >= 1 && num <= len(branches) {
+		branch1Name = branches[num-1]
+		fmt.Printf("✅ 选择分支1: %s\n", branch1Name)
+	} else {
+		return fmt.Errorf("无效的分支序号")
+	}
+
+	// 选择第二个分支
+	fmt.Print("请选择第二个分支 (序号): ")
+	input2, _ := reader.ReadString('\n')
+	input2 = strings.TrimSpace(input2)
+
+	var branch2Name string
+	if num, err := strconv.Atoi(input2); err == nil && num >= 1 && num <= len(branches) {
+		branch2Name = branches[num-1]
+		fmt.Printf("✅ 选择分支2: %s\n", branch2Name)
+	} else {
+		return fmt.Errorf("无效的分支序号")
+	}
+
+	if branch1Name == branch2Name {
+		return fmt.Errorf("不能比较同一个分支")
+	}
+
+	// 选择显示模式
+	fmt.Print("显示详细比较? (y/N): ")
+	detailed, _ := reader.ReadString('\n')
+	detailed = strings.TrimSpace(detailed)
+	showDetailed := strings.ToLower(detailed) == "y" || strings.ToLower(detailed) == "yes"
+
+	return demo.CompareBranches(branch1Name, branch2Name, showDetailed)
+}
+
+// branchVsSnapshotMenu 分支与快照比较菜单
+func branchVsSnapshotMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取所有分支列表
+	branches, err := demo.getTableBranches()
+	if err != nil {
+		return fmt.Errorf("failed to get branches: %v", err)
+	}
+
+	if len(branches) == 0 {
+		return fmt.Errorf("没有可用的分支")
+	}
+
+	// 显示所有分支
+	fmt.Println("🌿 可用的分支:")
+	fmt.Println(strings.Repeat("=", 30))
+	for i, branch := range branches {
+		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+	}
+
+	// 选择分支
+	fmt.Print("\n请选择分支 (序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var branchName string
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(branches) {
+		branchName = branches[num-1]
+		fmt.Printf("✅ 选择分支: %s\n", branchName)
+	} else {
+		return fmt.Errorf("无效的分支序号")
+	}
+
+	// 获取可用快照列表
+	snapshots, err := demo.getSnapshotInfoList()
+	if err != nil {
+		return fmt.Errorf("failed to get snapshots: %v", err)
+	}
+
+	if len(snapshots) == 0 {
+		return fmt.Errorf("没有可用的快照")
+	}
+
+	// 显示可用快照
+	fmt.Println("\n📸 可用的快照:")
+	fmt.Println(strings.Repeat("=", 50))
+	for i, snapshot := range snapshots {
+		if i >= 10 { // 最多显示10个快照
+			break
+		}
+		fmt.Printf("%d. %s (创建时间: %s)\n", i+1, snapshot.Name, snapshot.Timestamp)
+	}
+
+	// 选择快照
+	fmt.Print("\n请选择快照 (序号): ")
+	snapshotInput, _ := reader.ReadString('\n')
+	snapshotInput = strings.TrimSpace(snapshotInput)
+
+	var snapshotName string
+	if num, err := strconv.Atoi(snapshotInput); err == nil && num >= 1 && num <= len(snapshots) {
+		snapshotName = snapshots[num-1].Name
+		fmt.Printf("✅ 选择快照: %s\n", snapshotName)
+	} else {
+		return fmt.Errorf("无效的快照序号")
+	}
+
+	// 选择显示模式
+	fmt.Print("显示详细比较? (y/N): ")
+	detailed, _ := reader.ReadString('\n')
+	detailed = strings.TrimSpace(detailed)
+	showDetailed := strings.ToLower(detailed) == "y" || strings.ToLower(detailed) == "yes"
+
+	return demo.CompareBranchWithSnapshot(branchName, snapshotName, showDetailed)
 }
 
 // deleteBranchMenu 删除分支菜单
