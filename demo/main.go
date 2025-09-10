@@ -195,7 +195,10 @@ func (d *AIDatasetDemo) ensureBranchManagementTable() error {
 		source_database VARCHAR(100) NOT NULL,
 		source_table VARCHAR(100) NOT NULL,
 		branch_name VARCHAR(100) NOT NULL,
+		target_branch VARCHAR(100),
 		snapshot_name VARCHAR(200),
+		merge_conflicts INT DEFAULT 0,
+		merge_resolved INT DEFAULT 0,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		INDEX idx_branch_name (branch_name),
 		INDEX idx_created_at (created_at)
@@ -250,6 +253,20 @@ func (d *AIDatasetDemo) recordBranchEvent(eventType, sourceDB, sourceTable, bran
 	return nil
 }
 
+// recordMergeEvent 记录merge事件
+func (d *AIDatasetDemo) recordMergeEvent(sourceBranch, targetBranch string, conflicts, resolved int) error {
+	insertSQL := `
+		INSERT INTO mo_branches.branch_management 
+		(event_type, source_database, source_table, branch_name, target_branch, merge_conflicts, merge_resolved) 
+		VALUES (?, ?, ?, ?, ?, ?, ?)`
+
+	_, err := d.db.Exec(insertSQL, "MERGE", "test", "ai_dataset", sourceBranch, targetBranch, conflicts, resolved)
+	if err != nil {
+		return fmt.Errorf("failed to record merge event: %v", err)
+	}
+	return nil
+}
+
 // ListTableBranches 列出所有表分支
 func (d *AIDatasetDemo) ListTableBranches() error {
 	branches, err := d.getTableBranches()
@@ -287,6 +304,26 @@ type BranchSnapshotInfo struct {
 	CreatedAt    string
 }
 
+// ConflictRecord 冲突记录
+type ConflictRecord struct {
+	ID              int
+	Field           string
+	MainValue       string
+	BranchValue     string
+	MainAnnotator   string
+	BranchAnnotator string
+	MainReason      string
+	BranchReason    string
+}
+
+// MergeResult merge结果
+type MergeResult struct {
+	Conflicts         []ConflictRecord
+	TotalConflicts    int
+	ResolvedConflicts []ConflictRecord
+	ResolutionChoice  map[int]string // ID -> "main" or "branch"
+}
+
 // getBranchSnapshotInfo 获取分支的快照信息
 func (d *AIDatasetDemo) getBranchSnapshotInfo(branchName string) BranchSnapshotInfo {
 	query := `
@@ -296,7 +333,8 @@ func (d *AIDatasetDemo) getBranchSnapshotInfo(branchName string) BranchSnapshotI
 		ORDER BY created_at DESC
 		LIMIT 1`
 
-	var snapshotName, createdAt string
+	var snapshotName sql.NullString
+	var createdAt string
 	err := d.db.QueryRow(query, branchName).Scan(&snapshotName, &createdAt)
 	if err != nil {
 		return BranchSnapshotInfo{
@@ -312,8 +350,13 @@ func (d *AIDatasetDemo) getBranchSnapshotInfo(branchName string) BranchSnapshotI
 		}
 	}
 
+	snapshotNameStr := "未知"
+	if snapshotName.Valid && snapshotName.String != "" {
+		snapshotNameStr = snapshotName.String
+	}
+
 	return BranchSnapshotInfo{
-		SnapshotName: snapshotName,
+		SnapshotName: snapshotNameStr,
 		CreatedAt:    createdAt,
 	}
 }
@@ -397,7 +440,8 @@ func (d *AIDatasetDemo) ShowBranchHistory() error {
 	fmt.Println(strings.Repeat("=", 80))
 
 	var id int
-	var eventType, sourceDB, sourceTable, branchName, snapshotName, createdAt string
+	var eventType, sourceDB, sourceTable, branchName, createdAt string
+	var snapshotName sql.NullString
 	recordCount := 0
 
 	for rows.Next() {
@@ -410,13 +454,15 @@ func (d *AIDatasetDemo) ShowBranchHistory() error {
 		eventIcon := "➕"
 		if eventType == "DROP" {
 			eventIcon = "🗑️"
+		} else if eventType == "MERGE" {
+			eventIcon = "🔀"
 		}
 
 		fmt.Printf("%s %s | Branch: %s | Source: %s.%s\n",
 			eventIcon, eventType, branchName, sourceDB, sourceTable)
 
-		if snapshotName != "" {
-			fmt.Printf("   📸 Based on snapshot: %s\n", snapshotName)
+		if snapshotName.Valid && snapshotName.String != "" {
+			fmt.Printf("   📸 Based on snapshot: %s\n", snapshotName.String)
 		}
 
 		fmt.Printf("   ⏰ %s\n", createdAt)
@@ -850,6 +896,386 @@ func (d *AIDatasetDemo) CompareBranchWithMainTable(branchName string, showDetail
 	return nil
 }
 
+// DetectConflicts 检测两个分支之间的冲突
+func (d *AIDatasetDemo) DetectConflicts(sourceBranch, targetBranch string) (*MergeResult, error) {
+	var sourceTable, targetTable string
+
+	if sourceBranch == "main" {
+		// 源分支是主表
+		sourceTable = "ai_dataset"
+	} else {
+		// 源分支是另一个分支
+		sourceTable = fmt.Sprintf("mo_branches.test_ai_dataset_%s", sourceBranch)
+	}
+
+	if targetBranch == "main" {
+		// 目标分支是主表
+		targetTable = "ai_dataset"
+	} else {
+		// 目标分支是另一个分支
+		targetTable = fmt.Sprintf("mo_branches.test_ai_dataset_%s", targetBranch)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			s.id,
+			s.label as source_label,
+			s.description as source_description,
+			JSON_EXTRACT(s.metadata, '$.annotator') as source_annotator,
+			JSON_EXTRACT(s.metadata, '$.confidence') as source_confidence,
+			JSON_EXTRACT(s.metadata, '$.reason') as source_reason,
+			t.label as target_label,
+			t.description as target_description,
+			JSON_EXTRACT(t.metadata, '$.annotator') as target_annotator,
+			JSON_EXTRACT(t.metadata, '$.confidence') as target_confidence,
+			JSON_EXTRACT(t.metadata, '$.reason') as target_reason
+		FROM %s s
+		INNER JOIN %s t ON s.id = t.id
+		WHERE s.label != t.label 
+		   OR s.description != t.description
+		   OR JSON_EXTRACT(s.metadata, '$.annotator') != JSON_EXTRACT(t.metadata, '$.annotator')
+		   OR JSON_EXTRACT(s.metadata, '$.confidence') != JSON_EXTRACT(t.metadata, '$.confidence')
+		   OR JSON_EXTRACT(s.metadata, '$.reason') != JSON_EXTRACT(t.metadata, '$.reason')
+		ORDER BY s.id`, sourceTable, targetTable)
+
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect conflicts: %v", err)
+	}
+	defer rows.Close()
+
+	var conflicts []ConflictRecord
+	for rows.Next() {
+		var id int
+		var sourceLabel, sourceDescription, targetLabel, targetDescription string
+		var sourceAnnotator, sourceReason, targetAnnotator, targetReason sql.NullString
+		var sourceConfidence, targetConfidence sql.NullFloat64
+
+		err := rows.Scan(&id, &sourceLabel, &sourceDescription, &sourceAnnotator, &sourceConfidence, &sourceReason,
+			&targetLabel, &targetDescription, &targetAnnotator, &targetConfidence, &targetReason)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan conflict row: %v", err)
+		}
+
+		// 处理NULL值
+		sourceAnnotatorStr := "N/A"
+		if sourceAnnotator.Valid {
+			sourceAnnotatorStr = sourceAnnotator.String
+		}
+		sourceReasonStr := "N/A"
+		if sourceReason.Valid {
+			sourceReasonStr = sourceReason.String
+		}
+		targetAnnotatorStr := "N/A"
+		if targetAnnotator.Valid {
+			targetAnnotatorStr = targetAnnotator.String
+		}
+		targetReasonStr := "N/A"
+		if targetReason.Valid {
+			targetReasonStr = targetReason.String
+		}
+
+		// 检查每个字段的冲突
+		if sourceLabel != targetLabel {
+			conflicts = append(conflicts, ConflictRecord{
+				ID: id, Field: "label",
+				MainValue: sourceLabel, BranchValue: targetLabel,
+				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
+				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
+			})
+		}
+		if sourceDescription != targetDescription {
+			conflicts = append(conflicts, ConflictRecord{
+				ID: id, Field: "description",
+				MainValue: sourceDescription, BranchValue: targetDescription,
+				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
+				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
+			})
+		}
+		if sourceAnnotatorStr != targetAnnotatorStr {
+			conflicts = append(conflicts, ConflictRecord{
+				ID: id, Field: "annotator",
+				MainValue: sourceAnnotatorStr, BranchValue: targetAnnotatorStr,
+				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
+				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
+			})
+		}
+		if sourceConfidence.Valid && targetConfidence.Valid && sourceConfidence.Float64 != targetConfidence.Float64 {
+			conflicts = append(conflicts, ConflictRecord{
+				ID: id, Field: "confidence",
+				MainValue:     fmt.Sprintf("%.2f", sourceConfidence.Float64),
+				BranchValue:   fmt.Sprintf("%.2f", targetConfidence.Float64),
+				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
+				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
+			})
+		}
+		if sourceReasonStr != targetReasonStr {
+			conflicts = append(conflicts, ConflictRecord{
+				ID: id, Field: "reason",
+				MainValue: sourceReasonStr, BranchValue: targetReasonStr,
+				MainAnnotator: sourceAnnotatorStr, BranchAnnotator: targetAnnotatorStr,
+				MainReason: sourceReasonStr, BranchReason: targetReasonStr,
+			})
+		}
+	}
+
+	return &MergeResult{
+		Conflicts:         conflicts,
+		TotalConflicts:    len(conflicts),
+		ResolvedConflicts: []ConflictRecord{},
+		ResolutionChoice:  make(map[int]string),
+	}, nil
+}
+
+// ShowConflicts 显示冲突列表
+func (d *AIDatasetDemo) ShowConflicts(conflicts []ConflictRecord, startIndex int, sourceBranch, targetBranch string) {
+	fmt.Printf("\n🔍 冲突列表 (显示 %d-%d 条，共 %d 条冲突)\n",
+		startIndex+1, min(startIndex+5, len(conflicts)), len(conflicts))
+	fmt.Println(strings.Repeat("=", 100))
+	fmt.Printf("%-4s %-10s %-20s %-20s %-15s %-15s\n",
+		"ID", "字段", "源分支值", "目标分支值", "源分支标注者", "目标分支标注者")
+	fmt.Println(strings.Repeat("-", 100))
+
+	endIndex := min(startIndex+5, len(conflicts))
+	for i := startIndex; i < endIndex; i++ {
+		conflict := conflicts[i]
+		sourceValue := truncateText(conflict.MainValue, 18)
+		targetValue := truncateText(conflict.BranchValue, 18)
+		sourceAnnotator := truncateText(conflict.MainAnnotator, 13)
+		targetAnnotator := truncateText(conflict.BranchAnnotator, 13)
+
+		fmt.Printf("%-4d %-10s %-20s %-20s %-15s %-15s\n",
+			conflict.ID, conflict.Field, sourceValue, targetValue, sourceAnnotator, targetAnnotator)
+	}
+
+	if len(conflicts) > startIndex+5 {
+		fmt.Printf("\n按 'n' 继续查看，按 'e' 结束扫描\n")
+	} else {
+		fmt.Printf("\n已显示所有冲突\n")
+	}
+}
+
+// min 辅助函数
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ResolveConflicts 冲突解决界面
+func (d *AIDatasetDemo) ResolveConflicts(mergeResult *MergeResult, sourceBranch, targetBranch string, reader *bufio.Reader) error {
+	for {
+		fmt.Println("\n🔧 冲突解决面板")
+		fmt.Println(strings.Repeat("=", 50))
+		fmt.Printf("源分支: %s\n", sourceBranch)
+		fmt.Printf("目标分支: %s\n", targetBranch)
+		fmt.Printf("总冲突数: %d\n", mergeResult.TotalConflicts)
+		fmt.Printf("已解决: %d\n", len(mergeResult.ResolutionChoice))
+		fmt.Printf("待解决: %d\n", mergeResult.TotalConflicts-len(mergeResult.ResolutionChoice))
+		fmt.Println(strings.Repeat("=", 50))
+		fmt.Println("1. 📋 查看所有冲突")
+		fmt.Printf("2. ✅ 全部接受源分支版本 (%s)\n", sourceBranch)
+		fmt.Printf("3. ✅ 全部接受目标分支版本 (%s)\n", targetBranch)
+		fmt.Println("4. 🎯 选择性解决冲突")
+		fmt.Println("5. 🚀 执行 Merge")
+		fmt.Println("6. ❌ 退出 (不执行任何操作)")
+		fmt.Print("请选择操作 (1-6): ")
+
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			d.showAllConflicts(mergeResult.Conflicts, sourceBranch, targetBranch, reader)
+		case "2":
+			d.acceptAllSource(mergeResult)
+		case "3":
+			d.acceptAllTarget(mergeResult)
+		case "4":
+			d.selectiveResolve(mergeResult, reader)
+		case "5":
+			return d.executeMerge(mergeResult, sourceBranch, targetBranch)
+		case "6":
+			fmt.Println("❌ 已取消 Merge 操作")
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+	}
+}
+
+// showAllConflicts 显示所有冲突
+func (d *AIDatasetDemo) showAllConflicts(conflicts []ConflictRecord, sourceBranch, targetBranch string, reader *bufio.Reader) {
+	startIndex := 0
+	for {
+		d.ShowConflicts(conflicts, startIndex, sourceBranch, targetBranch)
+
+		if startIndex+5 >= len(conflicts) {
+			break
+		}
+
+		fmt.Print("按 'n' 继续，按 'e' 结束: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		if strings.ToLower(input) == "e" {
+			break
+		} else if strings.ToLower(input) == "n" {
+			startIndex += 5
+		}
+	}
+}
+
+// acceptAllSource 全部接受源分支版本
+func (d *AIDatasetDemo) acceptAllSource(mergeResult *MergeResult) {
+	for _, conflict := range mergeResult.Conflicts {
+		mergeResult.ResolutionChoice[conflict.ID] = "source"
+	}
+	fmt.Println("✅ 已设置全部接受源分支版本")
+}
+
+// acceptAllTarget 全部接受目标分支版本
+func (d *AIDatasetDemo) acceptAllTarget(mergeResult *MergeResult) {
+	for _, conflict := range mergeResult.Conflicts {
+		mergeResult.ResolutionChoice[conflict.ID] = "target"
+	}
+	fmt.Println("✅ 已设置全部接受目标分支版本")
+}
+
+// selectiveResolve 选择性解决冲突
+func (d *AIDatasetDemo) selectiveResolve(mergeResult *MergeResult, reader *bufio.Reader) error {
+	fmt.Println("\n🎯 选择性解决冲突")
+	fmt.Println(strings.Repeat("=", 50))
+
+	startIndex := 0
+	for {
+		// 显示当前批次的冲突
+		endIndex := min(startIndex+5, len(mergeResult.Conflicts))
+		fmt.Printf("\n处理冲突 %d-%d (共 %d 个)\n", startIndex+1, endIndex, len(mergeResult.Conflicts))
+
+		for i := startIndex; i < endIndex; i++ {
+			conflict := mergeResult.Conflicts[i]
+
+			// 检查是否已经解决
+			if _, resolved := mergeResult.ResolutionChoice[conflict.ID]; resolved {
+				fmt.Printf("✅ ID %d (%s) - 已解决\n", conflict.ID, conflict.Field)
+				continue
+			}
+
+			fmt.Printf("\n🔍 冲突 ID %d - 字段: %s\n", conflict.ID, conflict.Field)
+			fmt.Printf("📊 源分支值: %s (标注者: %s)\n", conflict.MainValue, conflict.MainAnnotator)
+			fmt.Printf("🌿 目标分支值: %s (标注者: %s)\n", conflict.BranchValue, conflict.BranchAnnotator)
+			fmt.Print("选择: (s)源分支版本, (t)目标分支版本, (k)跳过: ")
+
+			choice, _ := reader.ReadString('\n')
+			choice = strings.TrimSpace(strings.ToLower(choice))
+
+			switch choice {
+			case "s":
+				mergeResult.ResolutionChoice[conflict.ID] = "source"
+				fmt.Println("✅ 已选择源分支版本")
+			case "t":
+				mergeResult.ResolutionChoice[conflict.ID] = "target"
+				fmt.Println("✅ 已选择目标分支版本")
+			case "k":
+				fmt.Println("⏭️ 跳过此冲突")
+			default:
+				fmt.Println("❌ 无效选择，跳过")
+			}
+		}
+
+		if endIndex >= len(mergeResult.Conflicts) {
+			break
+		}
+
+		fmt.Print("\n按 'n' 继续下一批，按 'e' 结束: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(strings.ToLower(input))
+
+		if input == "e" {
+			break
+		} else if input == "n" {
+			startIndex += 5
+		}
+	}
+
+	return nil
+}
+
+// executeMerge 执行merge操作
+func (d *AIDatasetDemo) executeMerge(mergeResult *MergeResult, sourceBranch, targetBranch string) error {
+	if len(mergeResult.ResolutionChoice) == 0 {
+		return fmt.Errorf("没有解决任何冲突，无法执行 merge")
+	}
+
+	fmt.Printf("\n🚀 正在执行 Merge 操作...\n")
+	fmt.Printf("源分支: %s\n", sourceBranch)
+	fmt.Printf("目标分支: %s\n", targetBranch)
+	fmt.Printf("解决冲突数: %d/%d\n", len(mergeResult.ResolutionChoice), mergeResult.TotalConflicts)
+
+	var sourceTable, targetTable string
+
+	if sourceBranch == "main" {
+		sourceTable = "ai_dataset"
+	} else {
+		sourceTable = fmt.Sprintf("mo_branches.test_ai_dataset_%s", sourceBranch)
+	}
+
+	if targetBranch == "main" {
+		targetTable = "ai_dataset"
+	} else {
+		targetTable = fmt.Sprintf("mo_branches.test_ai_dataset_%s", targetBranch)
+	}
+	successCount := 0
+	errorCount := 0
+
+	for conflictID, choice := range mergeResult.ResolutionChoice {
+		var updateQuery string
+		var err error
+
+		if choice == "source" {
+			// 使用源分支的值更新目标分支
+			updateQuery = fmt.Sprintf(`
+				UPDATE %s 
+				SET label = (SELECT label FROM %s WHERE id = ?),
+				    description = (SELECT description FROM %s WHERE id = ?),
+				    metadata = (SELECT metadata FROM %s WHERE id = ?)
+				WHERE id = ?`, targetTable, sourceTable, sourceTable, sourceTable)
+		} else {
+			// choice == "target" - 保持目标分支的值不变
+			continue
+		}
+
+		_, err = d.db.Exec(updateQuery, conflictID, conflictID, conflictID, conflictID)
+		if err != nil {
+			fmt.Printf("❌ 更新记录 %d 失败: %v\n", conflictID, err)
+			errorCount++
+		} else {
+			successCount++
+		}
+	}
+
+	fmt.Printf("\n📊 Merge 执行结果:\n")
+	fmt.Printf("✅ 成功更新: %d 条记录\n", successCount)
+	if errorCount > 0 {
+		fmt.Printf("❌ 失败: %d 条记录\n", errorCount)
+	}
+
+	if errorCount == 0 {
+		fmt.Println("🎉 Merge 操作完成！")
+	} else {
+		fmt.Println("⚠️ Merge 操作部分完成，请检查错误信息")
+	}
+
+	// 记录merge事件
+	if err := d.recordMergeEvent(sourceBranch, targetBranch, mergeResult.TotalConflicts, len(mergeResult.ResolutionChoice)); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to record merge event: %v\n", err)
+	}
+
+	return nil
+}
+
 // generateRandomVector 生成随机向量
 func (d *AIDatasetDemo) generateRandomVector(dim int) string {
 	var values []string
@@ -1021,19 +1447,17 @@ func (d *AIDatasetDemo) AIModelAnnotationOnBranch(branchName, modelName string, 
 	fmt.Printf("🤖 正在分支 %s 上进行 AI 标注...\n", branchName)
 
 	for _, annotation := range annotations {
+		// 构建metadata JSON字符串，与主表标注保持一致
+		metadata := fmt.Sprintf(`{"annotator": "%s", "confidence": %.2f}`,
+			annotation.Annotator, annotation.Confidence)
+
 		// 更新分支表中的记录
 		updateQuery := fmt.Sprintf(`
 			UPDATE %s 
-			SET label = ?, 
-			    metadata = JSON_SET(metadata, '$.annotator', ?, '$.confidence', ?, '$.reason', ?)
+			SET label = ?, metadata = ?, timestamp = CURRENT_TIMESTAMP 
 			WHERE id = ?`, branchTable)
 
-		_, err := d.db.Exec(updateQuery,
-			annotation.Label,
-			annotation.Annotator,
-			annotation.Confidence,
-			annotation.Reason,
-			annotation.ID)
+		_, err := d.db.Exec(updateQuery, annotation.Label, metadata, annotation.ID)
 
 		if err != nil {
 			return fmt.Errorf("failed to update branch record %d: %v", annotation.ID, err)
@@ -1089,18 +1513,17 @@ func (d *AIDatasetDemo) HumanAnnotationOnBranch(branchName string, annotations [
 	fmt.Printf("👤 正在分支 %s 上进行人类标注...\n", branchName)
 
 	for _, annotation := range annotations {
+		// 构建metadata JSON字符串，与主表标注保持一致
+		metadata := fmt.Sprintf(`{"annotator": "human_reviewer", "reason": "%s"}`,
+			annotation.Reason)
+
 		// 更新分支表中的记录
 		updateQuery := fmt.Sprintf(`
 			UPDATE %s 
-			SET label = ?, 
-			    metadata = JSON_SET(metadata, '$.annotator', ?, '$.reason', ?)
+			SET label = ?, metadata = ?, timestamp = CURRENT_TIMESTAMP 
 			WHERE id = ?`, branchTable)
 
-		_, err := d.db.Exec(updateQuery,
-			annotation.Label,
-			annotation.Annotator,
-			annotation.Reason,
-			annotation.ID)
+		_, err := d.db.Exec(updateQuery, annotation.Label, metadata, annotation.ID)
 
 		if err != nil {
 			return fmt.Errorf("failed to update branch record %d: %v", annotation.ID, err)
@@ -2756,10 +3179,14 @@ func runInteractiveDemo(config *Config) {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "13":
-			if err := demo.RunDemo(); err != nil {
+			if err := mergeMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "14":
+			if err := demo.RunDemo(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "15":
 			fmt.Println("👋 感谢使用 AI Dataset Demo!")
 			return
 		default:
@@ -2788,8 +3215,9 @@ func showInteractiveMenu() {
 	fmt.Println("10. 🧹 一键清空Demo数据")
 	fmt.Println("11. 🔍 向量相似度搜索")
 	fmt.Println("12. 🌿 表分支管理")
-	fmt.Println("13. 🎬 运行完整演示")
-	fmt.Println("14. 🚪 退出")
+	fmt.Println("13. 🔀 分支 Merge")
+	fmt.Println("14. 🎬 运行完整演示")
+	fmt.Println("15. 🚪 退出")
 	fmt.Println(strings.Repeat("=", 50))
 }
 
@@ -3036,6 +3464,144 @@ func branchVsMainTableMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	showDetailed := strings.ToLower(detailed) == "y" || strings.ToLower(detailed) == "yes"
 
 	return demo.CompareBranchWithMainTable(branchName, showDetailed)
+}
+
+// mergeMenu merge菜单
+func mergeMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取所有分支列表
+	branches, err := demo.getTableBranches()
+	if err != nil {
+		return fmt.Errorf("failed to get branches: %v", err)
+	}
+
+	if len(branches) == 0 {
+		return fmt.Errorf("没有可用的分支")
+	}
+
+	// 显示所有分支
+	fmt.Println("🌿 可用的分支:")
+	fmt.Println(strings.Repeat("=", 30))
+	for i, branch := range branches {
+		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+	}
+	fmt.Printf("%d. 📊 main (主表)\n", len(branches)+1)
+
+	// 选择源分支
+	fmt.Print("\n请选择源分支 (序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var sourceBranch string
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(branches)+1 {
+		if num == len(branches)+1 {
+			sourceBranch = "main"
+		} else {
+			sourceBranch = branches[num-1]
+		}
+		fmt.Printf("✅ 选择源分支: %s\n", sourceBranch)
+	} else {
+		return fmt.Errorf("无效的分支序号")
+	}
+
+	// 选择目标分支
+	fmt.Print("\n请选择目标分支 (序号): ")
+	input, _ = reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var targetBranch string
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(branches)+1 {
+		if num == len(branches)+1 {
+			targetBranch = "main"
+		} else {
+			targetBranch = branches[num-1]
+		}
+		fmt.Printf("✅ 选择目标分支: %s\n", targetBranch)
+	} else {
+		return fmt.Errorf("无效的分支序号")
+	}
+
+	if sourceBranch == targetBranch {
+		return fmt.Errorf("源分支和目标分支不能相同")
+	}
+
+	// 检测冲突
+	fmt.Printf("\n🔍 正在检测分支 %s 与 %s 的冲突...\n", sourceBranch, targetBranch)
+	mergeResult, err := demo.DetectConflicts(sourceBranch, targetBranch)
+	if err != nil {
+		return fmt.Errorf("failed to detect conflicts: %v", err)
+	}
+
+	if mergeResult.TotalConflicts == 0 {
+		fmt.Println("✅ 没有发现冲突，可以直接merge")
+		fmt.Print("是否执行merge? (y/N): ")
+		confirm, _ := reader.ReadString('\n')
+		confirm = strings.TrimSpace(strings.ToLower(confirm))
+
+		if confirm == "y" || confirm == "yes" {
+			// 直接执行merge，没有冲突
+			return demo.executeDirectMerge(sourceBranch, targetBranch)
+		} else {
+			fmt.Println("❌ 已取消merge操作")
+			return nil
+		}
+	} else {
+		fmt.Printf("⚠️ 发现 %d 个冲突，需要解决\n", mergeResult.TotalConflicts)
+
+		// 显示前5个冲突
+		demo.ShowConflicts(mergeResult.Conflicts, 0, sourceBranch, targetBranch)
+
+		// 进入冲突解决界面
+		return demo.ResolveConflicts(mergeResult, sourceBranch, targetBranch, reader)
+	}
+}
+
+// executeDirectMerge 执行直接merge（无冲突情况）
+func (d *AIDatasetDemo) executeDirectMerge(sourceBranch, targetBranch string) error {
+	fmt.Printf("\n🚀 正在执行直接 Merge 操作...\n")
+	fmt.Printf("源分支: %s\n", sourceBranch)
+	fmt.Printf("目标分支: %s\n", targetBranch)
+
+	var sourceTable, targetTable string
+
+	if sourceBranch == "main" {
+		sourceTable = "ai_dataset"
+	} else {
+		sourceTable = fmt.Sprintf("mo_branches.test_ai_dataset_%s", sourceBranch)
+	}
+
+	if targetBranch == "main" {
+		targetTable = "ai_dataset"
+	} else {
+		targetTable = fmt.Sprintf("mo_branches.test_ai_dataset_%s", targetBranch)
+	}
+
+	// 直接使用源分支数据更新目标分支
+	updateQuery := fmt.Sprintf(`
+		UPDATE %s 
+		SET label = (SELECT label FROM %s WHERE %s.id = %s.id),
+		    description = (SELECT description FROM %s WHERE %s.id = %s.id),
+		    metadata = (SELECT metadata FROM %s WHERE %s.id = %s.id)
+		WHERE EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.id)`,
+		targetTable, sourceTable, targetTable, sourceTable,
+		sourceTable, targetTable, sourceTable,
+		sourceTable, targetTable, sourceTable,
+		sourceTable, targetTable, sourceTable)
+
+	result, err := d.db.Exec(updateQuery)
+	if err != nil {
+		return fmt.Errorf("failed to execute merge: %v", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	fmt.Printf("✅ 成功更新 %d 条记录\n", rowsAffected)
+	fmt.Println("🎉 直接 Merge 操作完成！")
+
+	// 记录merge事件
+	if err := d.recordMergeEvent(sourceBranch, targetBranch, 0, 0); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to record merge event: %v\n", err)
+	}
+
+	return nil
 }
 
 // deleteBranchMenu 删除分支菜单
