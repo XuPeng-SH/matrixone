@@ -147,6 +147,11 @@ func (d *AIDatasetDemo) Close() error {
 
 // CreateTable 创建 AI 数据集表
 func (d *AIDatasetDemo) CreateTable() error {
+	// 首先确保mo_branches数据库存在
+	if err := d.ensureBranchesDatabase(); err != nil {
+		return fmt.Errorf("failed to create branches database: %v", err)
+	}
+
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS ai_dataset (
 		id INT PRIMARY KEY,
@@ -163,6 +168,110 @@ func (d *AIDatasetDemo) CreateTable() error {
 	}
 
 	fmt.Println("✅ Created ai_dataset table successfully!")
+	return nil
+}
+
+// ensureBranchesDatabase 确保mo_branches数据库存在
+func (d *AIDatasetDemo) ensureBranchesDatabase() error {
+	_, err := d.db.Exec("CREATE DATABASE IF NOT EXISTS mo_branches")
+	if err != nil {
+		return fmt.Errorf("failed to create mo_branches database: %v", err)
+	}
+	return nil
+}
+
+// CreateTableBranch 创建表分支
+func (d *AIDatasetDemo) CreateTableBranch(branchName string) error {
+	// 确保mo_branches数据库存在
+	if err := d.ensureBranchesDatabase(); err != nil {
+		return fmt.Errorf("failed to create branches database: %v", err)
+	}
+
+	// 生成分支表名：test_ai_dataset_$branchname
+	branchTableName := fmt.Sprintf("test_ai_dataset_%s", branchName)
+
+	// 使用CLONE语法创建表分支
+	cloneSQL := fmt.Sprintf("CREATE TABLE mo_branches.%s CLONE test.ai_dataset", branchTableName)
+
+	_, err := d.db.Exec(cloneSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create table branch: %v", err)
+	}
+
+	fmt.Printf("✅ Table branch '%s' created successfully\n", branchName)
+	return nil
+}
+
+// ListTableBranches 列出所有表分支
+func (d *AIDatasetDemo) ListTableBranches() error {
+	branches, err := d.getTableBranches()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("🌿 Table Branches:")
+	fmt.Println(strings.Repeat("=", 40))
+
+	if len(branches) == 0 {
+		fmt.Println("No table branches found.")
+		return nil
+	}
+
+	for i, branch := range branches {
+		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+	}
+
+	fmt.Printf("\n📊 Total branches: %d\n", len(branches))
+	return nil
+}
+
+// getTableBranches 获取所有表分支名称列表
+func (d *AIDatasetDemo) getTableBranches() ([]string, error) {
+	// 确保mo_branches数据库存在
+	if err := d.ensureBranchesDatabase(); err != nil {
+		return nil, fmt.Errorf("failed to create branches database: %v", err)
+	}
+
+	// 查询mo_branches数据库中的所有表
+	query := "SHOW TABLES FROM mo_branches"
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table branches: %v", err)
+	}
+	defer rows.Close()
+
+	var branches []string
+	var tableName string
+	for rows.Next() {
+		err := rows.Scan(&tableName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan table name: %v", err)
+		}
+
+		// 只处理以test_ai_dataset_开头的表
+		if strings.HasPrefix(tableName, "test_ai_dataset_") {
+			branchName := strings.TrimPrefix(tableName, "test_ai_dataset_")
+			branches = append(branches, branchName)
+		}
+	}
+
+	return branches, nil
+}
+
+// DropTableBranch 删除表分支
+func (d *AIDatasetDemo) DropTableBranch(branchName string) error {
+	// 生成分支表名
+	branchTableName := fmt.Sprintf("test_ai_dataset_%s", branchName)
+
+	// 删除表分支
+	dropSQL := fmt.Sprintf("DROP TABLE mo_branches.%s", branchTableName)
+
+	_, err := d.db.Exec(dropSQL)
+	if err != nil {
+		return fmt.Errorf("failed to drop table branch: %v", err)
+	}
+
+	fmt.Printf("✅ Table branch '%s' dropped successfully\n", branchName)
 	return nil
 }
 
@@ -183,7 +292,7 @@ func (d *AIDatasetDemo) generateAnimalDescription(id int) string {
 	descriptions := []string{
 		// 第一个必须是snake的描述
 		"Slithers gracefully with elongated body and no limbs, using muscular contractions to move across surfaces. Possesses heat-sensing abilities to detect temperature changes in the environment.",
-		// 第三个必须是cat的描述  
+		// 第三个必须是cat的描述
 		"Features sharp claws and acute hearing, capable of navigating in complete darkness. Prefers resting in elevated positions and demonstrates exceptional balance and agility.",
 		// 其他30个不同的描述
 		"Displays powerful limbs and keen sense of smell, excels at navigating complex terrain. Typically lives in social groups with strong territorial instincts.",
@@ -1224,6 +1333,7 @@ func (d *AIDatasetDemo) CleanupAllDemoData() error {
 	// 统计信息
 	snapshotCount := 0
 	pitrCount := 0
+	branchCount := 0
 	dataCount := 0
 	errorCount := 0
 
@@ -1265,7 +1375,24 @@ func (d *AIDatasetDemo) CleanupAllDemoData() error {
 		}
 	}
 
-	// 3. 清空ai_dataset表数据
+	// 3. 删除所有demo相关的表分支
+	fmt.Println("\n🌿 正在删除所有demo相关表分支...")
+	branches, err := d.getTableBranches()
+	if err != nil {
+		fmt.Printf("⚠️  获取分支列表失败: %v\n", err)
+	} else {
+		for _, branchName := range branches {
+			err := d.DropTableBranch(branchName)
+			if err != nil {
+				fmt.Printf("❌ 删除分支 '%s' 失败: %v\n", branchName, err)
+				errorCount++
+			} else {
+				branchCount++
+			}
+		}
+	}
+
+	// 4. 清空ai_dataset表数据
 	fmt.Println("\n🗑️  正在清空ai_dataset表数据...")
 	// 先获取数据量
 	dataCount = d.getDataCount()
@@ -1280,6 +1407,7 @@ func (d *AIDatasetDemo) CleanupAllDemoData() error {
 	fmt.Println("📊 清理结果:")
 	fmt.Printf("  📸 删除快照: %d 个\n", snapshotCount)
 	fmt.Printf("  🕐 删除PITR: %d 个\n", pitrCount)
+	fmt.Printf("  🌿 删除分支: %d 个\n", branchCount)
 	fmt.Printf("  🗑️  清空数据: %d 行数据已删除\n", dataCount)
 
 	if errorCount > 0 {
@@ -1794,7 +1922,7 @@ func runInteractiveDemo(config *Config) {
 
 	for {
 		showInteractiveMenu()
-		fmt.Print("请选择操作 (1-13): ")
+		fmt.Print("请选择操作 (1-14): ")
 
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
@@ -1845,10 +1973,14 @@ func runInteractiveDemo(config *Config) {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "12":
-			if err := demo.RunDemo(); err != nil {
+			if err := tableBranchMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "13":
+			if err := demo.RunDemo(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "14":
 			fmt.Println("👋 感谢使用 AI Dataset Demo!")
 			return
 		default:
@@ -1876,9 +2008,109 @@ func showInteractiveMenu() {
 	fmt.Println("9. 🔄 数据恢复")
 	fmt.Println("10. 🧹 一键清空Demo数据")
 	fmt.Println("11. 🔍 向量相似度搜索")
-	fmt.Println("12. 🎬 运行完整演示")
-	fmt.Println("13. 🚪 退出")
+	fmt.Println("12. 🌿 表分支管理")
+	fmt.Println("13. 🎬 运行完整演示")
+	fmt.Println("14. 🚪 退出")
 	fmt.Println(strings.Repeat("=", 50))
+}
+
+// tableBranchMenu 表分支管理菜单
+func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Println("\n🌿 表分支管理")
+	fmt.Println("1. 📋 查看所有分支")
+	fmt.Println("2. ➕ 创建新分支")
+	fmt.Println("3. 🗑️ 删除分支")
+	fmt.Print("请选择操作 (1-3): ")
+
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "1":
+		return demo.ListTableBranches()
+	case "2":
+		return createBranchMenu(demo, reader)
+	case "3":
+		return deleteBranchMenu(demo, reader)
+	default:
+		fmt.Println("❌ 无效选择")
+		return nil
+	}
+}
+
+// createBranchMenu 创建分支菜单
+func createBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Print("请输入分支名称: ")
+	branchName, _ := reader.ReadString('\n')
+	branchName = strings.TrimSpace(branchName)
+
+	if branchName == "" {
+		return fmt.Errorf("分支名称不能为空")
+	}
+
+	return demo.CreateTableBranch(branchName)
+}
+
+// deleteBranchMenu 删除分支菜单
+func deleteBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取所有分支列表
+	branches, err := demo.getTableBranches()
+	if err != nil {
+		return fmt.Errorf("failed to get branches: %v", err)
+	}
+
+	if len(branches) == 0 {
+		fmt.Println("❌ 没有可删除的分支")
+		return nil
+	}
+
+	// 显示所有分支
+	fmt.Println("🌿 可删除的分支:")
+	fmt.Println(strings.Repeat("=", 30))
+	for i, branch := range branches {
+		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+	}
+
+	fmt.Print("\n请输入要删除的分支 (序号或分支名称): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	if input == "" {
+		return fmt.Errorf("输入不能为空")
+	}
+
+	var branchName string
+	// 尝试解析为序号
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(branches) {
+		branchName = branches[num-1]
+		fmt.Printf("✅ 选择分支: %s\n", branchName)
+	} else {
+		// 作为分支名称处理
+		branchName = input
+		// 验证分支是否存在
+		found := false
+		for _, branch := range branches {
+			if branch == branchName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("分支 '%s' 不存在", branchName)
+		}
+	}
+
+	// 确认删除
+	fmt.Printf("确认删除分支 '%s'? (y/N): ", branchName)
+	confirm, _ := reader.ReadString('\n')
+	confirm = strings.TrimSpace(confirm)
+
+	if strings.ToLower(confirm) == "y" || strings.ToLower(confirm) == "yes" {
+		return demo.DropTableBranch(branchName)
+	} else {
+		fmt.Println("❌ 取消删除操作")
+		return nil
+	}
 }
 
 // mockDataMenu 模拟数据菜单
