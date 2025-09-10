@@ -873,6 +873,39 @@ func (d *AIDatasetDemo) AIModelAnnotation(modelName string, annotations []Annota
 	return nil
 }
 
+// AIModelAnnotationOnBranch 在分支上进行AI模型标注
+func (d *AIDatasetDemo) AIModelAnnotationOnBranch(branchName, modelName string, annotations []AnnotationResult) error {
+	branchTable := fmt.Sprintf("mo_branches.test_ai_dataset_%s", branchName)
+
+	fmt.Printf("🤖 正在分支 %s 上进行 AI 标注...\n", branchName)
+
+	for _, annotation := range annotations {
+		// 更新分支表中的记录
+		updateQuery := fmt.Sprintf(`
+			UPDATE %s 
+			SET label = ?, 
+			    metadata = JSON_SET(metadata, '$.annotator', ?, '$.confidence', ?, '$.reason', ?)
+			WHERE id = ?`, branchTable)
+
+		_, err := d.db.Exec(updateQuery,
+			annotation.Label,
+			annotation.Annotator,
+			annotation.Confidence,
+			annotation.Reason,
+			annotation.ID)
+
+		if err != nil {
+			return fmt.Errorf("failed to update branch record %d: %v", annotation.ID, err)
+		}
+
+		fmt.Printf("✅ 记录 %d 已标注: %s (置信度: %.2f)\n",
+			annotation.ID, annotation.Label, annotation.Confidence)
+	}
+
+	fmt.Printf("🎉 分支 %s 上的 AI 标注完成！\n", branchName)
+	return nil
+}
+
 // HumanAnnotation 人类标注
 func (d *AIDatasetDemo) HumanAnnotation(annotations []AnnotationResult) error {
 	fmt.Printf("👤 Human reviewer is annotating %d records...\n", len(annotations))
@@ -905,6 +938,38 @@ func (d *AIDatasetDemo) HumanAnnotation(annotations []AnnotationResult) error {
 		// 继续执行，不因为快照创建失败而停止
 	}
 
+	return nil
+}
+
+// HumanAnnotationOnBranch 在分支上进行人类标注
+func (d *AIDatasetDemo) HumanAnnotationOnBranch(branchName string, annotations []AnnotationResult) error {
+	branchTable := fmt.Sprintf("mo_branches.test_ai_dataset_%s", branchName)
+
+	fmt.Printf("👤 正在分支 %s 上进行人类标注...\n", branchName)
+
+	for _, annotation := range annotations {
+		// 更新分支表中的记录
+		updateQuery := fmt.Sprintf(`
+			UPDATE %s 
+			SET label = ?, 
+			    metadata = JSON_SET(metadata, '$.annotator', ?, '$.reason', ?)
+			WHERE id = ?`, branchTable)
+
+		_, err := d.db.Exec(updateQuery,
+			annotation.Label,
+			annotation.Annotator,
+			annotation.Reason,
+			annotation.ID)
+
+		if err != nil {
+			return fmt.Errorf("failed to update branch record %d: %v", annotation.ID, err)
+		}
+
+		fmt.Printf("✅ 记录 %d 已标注: %s (原因: %s)\n",
+			annotation.ID, annotation.Label, annotation.Reason)
+	}
+
+	fmt.Printf("🎉 分支 %s 上的人类标注完成！\n", branchName)
 	return nil
 }
 
@@ -994,6 +1059,135 @@ func parseTimeToTS(timeStr string) (string, error) {
 	ts := fmt.Sprintf("%d", nanos)
 
 	return ts, nil
+}
+
+// ShowSnapshotState 显示快照状态
+func (d *AIDatasetDemo) ShowSnapshotState(snapshotName string) error {
+	fmt.Printf("\n📸 快照状态: %s\n", snapshotName)
+	fmt.Println(strings.Repeat("=", 60))
+
+	query := fmt.Sprintf(`
+		SELECT id, features, label, description,
+		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
+		       timestamp
+		FROM ai_dataset {Snapshot = '%s'}
+		ORDER BY id 
+		LIMIT 20`, snapshotName)
+
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return fmt.Errorf("failed to query snapshot data: %v", err)
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-4s %-10s %-8s %-35s %-15s %-8s %-20s %-20s\n",
+		"ID", "Vector", "Label", "Description", "Annotator", "Conf", "Reason", "Timestamp")
+	fmt.Println(strings.Repeat("-", 120))
+
+	recordCount := 0
+	for rows.Next() {
+		var id int
+		var features, label, description, timestamp string
+		var annotator, reason sql.NullString
+		var confidence sql.NullFloat64
+
+		err := rows.Scan(&id, &features, &label, &description, &annotator, &confidence, &reason, &timestamp)
+		if err != nil {
+			return fmt.Errorf("failed to scan row: %v", err)
+		}
+
+		// 截断长文本
+		description = truncateText(description, 30)
+		features = truncateText(features, 8)
+		reasonText := "N/A"
+		if reason.Valid {
+			reasonText = truncateText(reason.String, 20)
+		}
+
+		confText := "N/A"
+		if confidence.Valid {
+			confText = fmt.Sprintf("%.2f", confidence.Float64)
+		}
+
+		annotatorText := "N/A"
+		if annotator.Valid {
+			annotatorText = annotator.String
+		}
+
+		fmt.Printf("%-4d %-10s %-8s %-35s %-15s %-8s %-20s %-20s\n",
+			id, features, label, description, annotatorText, confText, reasonText, timestamp)
+		recordCount++
+	}
+
+	fmt.Printf("\n📊 快照 %s 包含 %d 条记录\n", snapshotName, recordCount)
+	return nil
+}
+
+// ShowBranchState 显示分支状态
+func (d *AIDatasetDemo) ShowBranchState(branchName string) error {
+	fmt.Printf("\n🌿 分支状态: %s\n", branchName)
+	fmt.Println(strings.Repeat("=", 60))
+
+	branchTable := fmt.Sprintf("mo_branches.test_ai_dataset_%s", branchName)
+	query := fmt.Sprintf(`
+		SELECT id, features, label, description,
+		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
+		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
+		       JSON_EXTRACT(metadata, '$.reason') as reason,
+		       timestamp
+		FROM %s
+		ORDER BY id 
+		LIMIT 20`, branchTable)
+
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return fmt.Errorf("failed to query branch data: %v", err)
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-4s %-10s %-8s %-35s %-15s %-8s %-20s %-20s\n",
+		"ID", "Vector", "Label", "Description", "Annotator", "Conf", "Reason", "Timestamp")
+	fmt.Println(strings.Repeat("-", 120))
+
+	recordCount := 0
+	for rows.Next() {
+		var id int
+		var features, label, description, timestamp string
+		var annotator, reason sql.NullString
+		var confidence sql.NullFloat64
+
+		err := rows.Scan(&id, &features, &label, &description, &annotator, &confidence, &reason, &timestamp)
+		if err != nil {
+			return fmt.Errorf("failed to scan row: %v", err)
+		}
+
+		// 截断长文本
+		description = truncateText(description, 30)
+		features = truncateText(features, 8)
+		reasonText := "N/A"
+		if reason.Valid {
+			reasonText = truncateText(reason.String, 20)
+		}
+
+		confText := "N/A"
+		if confidence.Valid {
+			confText = fmt.Sprintf("%.2f", confidence.Float64)
+		}
+
+		annotatorText := "N/A"
+		if annotator.Valid {
+			annotatorText = annotator.String
+		}
+
+		fmt.Printf("%-4d %-10s %-8s %-35s %-15s %-8s %-20s %-20s\n",
+			id, features, label, description, annotatorText, confText, reasonText, timestamp)
+		recordCount++
+	}
+
+	fmt.Printf("\n📊 分支 %s 包含 %d 条记录\n", branchName, recordCount)
+	return nil
 }
 
 // TimeTravelQuery 时间旅行查询 - 查询指定时间点的数据状态
@@ -1826,7 +2020,17 @@ func (d *AIDatasetDemo) CleanupAllDemoData() error {
 		}
 	}
 
-	// 4. 清空ai_dataset表数据
+	// 4. 清空分支历史记录
+	fmt.Println("\n📜 正在清空分支历史记录...")
+	_, err = d.db.Exec("DELETE FROM mo_branches.branch_management")
+	if err != nil {
+		fmt.Printf("❌ 清空分支历史失败: %v\n", err)
+		errorCount++
+	} else {
+		fmt.Println("✅ 分支历史记录已清空")
+	}
+
+	// 5. 清空ai_dataset表数据
 	fmt.Println("\n🗑️  正在清空ai_dataset表数据...")
 	// 先获取数据量
 	dataCount = d.getDataCount()
@@ -2375,7 +2579,7 @@ func runInteractiveDemo(config *Config) {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "4":
-			if err := demo.ShowCurrentState(); err != nil {
+			if err := showCurrentStateMenu(demo, reader); err != nil {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "5":
@@ -2733,6 +2937,27 @@ func mockDataMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // aiAnnotationMenu AI 标注菜单
 func aiAnnotationMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Println("\n🤖 AI 标注")
+	fmt.Println("1. 📊 基于主表标注")
+	fmt.Println("2. 🌿 基于分支标注")
+	fmt.Print("请选择标注方式 (1-2): ")
+
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "1":
+		return aiAnnotationOnMainTable(demo, reader)
+	case "2":
+		return aiAnnotationOnBranch(demo, reader)
+	default:
+		fmt.Println("❌ 无效选择，使用主表标注")
+		return aiAnnotationOnMainTable(demo, reader)
+	}
+}
+
+// aiAnnotationOnMainTable 在主表上进行AI标注
+func aiAnnotationOnMainTable(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	fmt.Print("请输入 AI 模型名称 (默认 AI_model_v1): ")
 	modelName, _ := reader.ReadString('\n')
 	modelName = strings.TrimSpace(modelName)
@@ -2781,8 +3006,109 @@ func aiAnnotationMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	return demo.AIModelAnnotation(modelName, annotations)
 }
 
+// aiAnnotationOnBranch 在分支上进行AI标注
+func aiAnnotationOnBranch(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取所有分支列表
+	branches, err := demo.getTableBranches()
+	if err != nil {
+		return fmt.Errorf("failed to get branches: %v", err)
+	}
+
+	if len(branches) == 0 {
+		return fmt.Errorf("没有可用的分支")
+	}
+
+	// 显示所有分支
+	fmt.Println("🌿 可用的分支:")
+	fmt.Println(strings.Repeat("=", 30))
+	for i, branch := range branches {
+		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+	}
+
+	// 选择分支
+	fmt.Print("\n请选择分支 (序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var branchName string
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(branches) {
+		branchName = branches[num-1]
+		fmt.Printf("✅ 选择分支: %s\n", branchName)
+	} else {
+		return fmt.Errorf("无效的分支序号")
+	}
+
+	fmt.Print("请输入 AI 模型名称 (默认 AI_model_v1): ")
+	modelName, _ := reader.ReadString('\n')
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		modelName = "AI_model_v1"
+	}
+
+	fmt.Print("请输入要标注的记录 ID (用逗号分隔，如 1,2,3): ")
+	idInput, _ := reader.ReadString('\n')
+	idInput = strings.TrimSpace(idInput)
+
+	if idInput == "" {
+		return fmt.Errorf("请输入至少一个记录 ID")
+	}
+
+	ids := strings.Split(idInput, ",")
+	var annotations []AnnotationResult
+
+	for _, idStr := range ids {
+		id, err := strconv.Atoi(strings.TrimSpace(idStr))
+		if err != nil {
+			return fmt.Errorf("无效的 ID: %s", idStr)
+		}
+
+		fmt.Printf("记录 %d 的标签: ", id)
+		label, _ := reader.ReadString('\n')
+		label = strings.TrimSpace(label)
+
+		fmt.Printf("记录 %d 的置信度 (0-1): ", id)
+		confStr, _ := reader.ReadString('\n')
+		confStr = strings.TrimSpace(confStr)
+
+		confidence := 0.9
+		if conf, err := strconv.ParseFloat(confStr, 64); err == nil {
+			confidence = conf
+		}
+
+		annotations = append(annotations, AnnotationResult{
+			ID:         id,
+			Label:      label,
+			Confidence: confidence,
+			Annotator:  modelName,
+		})
+	}
+
+	return demo.AIModelAnnotationOnBranch(branchName, modelName, annotations)
+}
+
 // humanAnnotationMenu 人类标注菜单
 func humanAnnotationMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Println("\n👤 人类标注")
+	fmt.Println("1. 📊 基于主表标注")
+	fmt.Println("2. 🌿 基于分支标注")
+	fmt.Print("请选择标注方式 (1-2): ")
+
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "1":
+		return humanAnnotationOnMainTable(demo, reader)
+	case "2":
+		return humanAnnotationOnBranch(demo, reader)
+	default:
+		fmt.Println("❌ 无效选择，使用主表标注")
+		return humanAnnotationOnMainTable(demo, reader)
+	}
+}
+
+// humanAnnotationOnMainTable 在主表上进行人类标注
+func humanAnnotationOnMainTable(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	fmt.Print("请输入要标注的记录 ID (用逗号分隔，如 1,2,3): ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
@@ -2817,6 +3143,171 @@ func humanAnnotationMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	}
 
 	return demo.HumanAnnotation(annotations)
+}
+
+// humanAnnotationOnBranch 在分支上进行人类标注
+func humanAnnotationOnBranch(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取所有分支列表
+	branches, err := demo.getTableBranches()
+	if err != nil {
+		return fmt.Errorf("failed to get branches: %v", err)
+	}
+
+	if len(branches) == 0 {
+		return fmt.Errorf("没有可用的分支")
+	}
+
+	// 显示所有分支
+	fmt.Println("🌿 可用的分支:")
+	fmt.Println(strings.Repeat("=", 30))
+	for i, branch := range branches {
+		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+	}
+
+	// 选择分支
+	fmt.Print("\n请选择分支 (序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var branchName string
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(branches) {
+		branchName = branches[num-1]
+		fmt.Printf("✅ 选择分支: %s\n", branchName)
+	} else {
+		return fmt.Errorf("无效的分支序号")
+	}
+
+	fmt.Print("请输入要标注的记录 ID (用逗号分隔，如 1,2,3): ")
+	idInput, _ := reader.ReadString('\n')
+	idInput = strings.TrimSpace(idInput)
+
+	if idInput == "" {
+		return fmt.Errorf("请输入至少一个记录 ID")
+	}
+
+	ids := strings.Split(idInput, ",")
+	var annotations []AnnotationResult
+
+	for _, idStr := range ids {
+		id, err := strconv.Atoi(strings.TrimSpace(idStr))
+		if err != nil {
+			return fmt.Errorf("无效的 ID: %s", idStr)
+		}
+
+		fmt.Printf("记录 %d 的标签: ", id)
+		label, _ := reader.ReadString('\n')
+		label = strings.TrimSpace(label)
+
+		fmt.Printf("记录 %d 的标注原因: ", id)
+		reason, _ := reader.ReadString('\n')
+		reason = strings.TrimSpace(reason)
+
+		annotations = append(annotations, AnnotationResult{
+			ID:        id,
+			Label:     label,
+			Annotator: "human_reviewer",
+			Reason:    reason,
+		})
+	}
+
+	return demo.HumanAnnotationOnBranch(branchName, annotations)
+}
+
+// showCurrentStateMenu 查看当前状态菜单
+func showCurrentStateMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	fmt.Println("\n📊 查看数据状态")
+	fmt.Println("1. 📊 主表状态")
+	fmt.Println("2. 📸 快照状态")
+	fmt.Println("3. 🌿 分支状态")
+	fmt.Print("请选择查看方式 (1-3): ")
+
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "1":
+		return demo.ShowCurrentState()
+	case "2":
+		return showSnapshotStateMenu(demo, reader)
+	case "3":
+		return showBranchStateMenu(demo, reader)
+	default:
+		fmt.Println("❌ 无效选择，显示主表状态")
+		return demo.ShowCurrentState()
+	}
+}
+
+// showSnapshotStateMenu 显示快照状态菜单
+func showSnapshotStateMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取可用快照列表
+	snapshots, err := demo.getSnapshotInfoList()
+	if err != nil {
+		return fmt.Errorf("failed to get snapshots: %v", err)
+	}
+
+	if len(snapshots) == 0 {
+		return fmt.Errorf("没有可用的快照")
+	}
+
+	// 显示可用快照
+	fmt.Println("\n📸 可用的快照:")
+	fmt.Println(strings.Repeat("=", 50))
+	for i, snapshot := range snapshots {
+		if i >= 10 { // 最多显示10个快照
+			break
+		}
+		fmt.Printf("%d. %s (创建时间: %s)\n", i+1, snapshot.Name, snapshot.Timestamp)
+	}
+
+	// 选择快照
+	fmt.Print("\n请选择快照 (序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var snapshotName string
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(snapshots) {
+		snapshotName = snapshots[num-1].Name
+		fmt.Printf("✅ 选择快照: %s\n", snapshotName)
+	} else {
+		return fmt.Errorf("无效的快照序号")
+	}
+
+	return demo.ShowSnapshotState(snapshotName)
+}
+
+// showBranchStateMenu 显示分支状态菜单
+func showBranchStateMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取所有分支列表
+	branches, err := demo.getTableBranches()
+	if err != nil {
+		return fmt.Errorf("failed to get branches: %v", err)
+	}
+
+	if len(branches) == 0 {
+		return fmt.Errorf("没有可用的分支")
+	}
+
+	// 显示所有分支
+	fmt.Println("\n🌿 可用的分支:")
+	fmt.Println(strings.Repeat("=", 30))
+	for i, branch := range branches {
+		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+	}
+
+	// 选择分支
+	fmt.Print("\n请选择分支 (序号): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var branchName string
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(branches) {
+		branchName = branches[num-1]
+		fmt.Printf("✅ 选择分支: %s\n", branchName)
+	} else {
+		return fmt.Errorf("无效的分支序号")
+	}
+
+	return demo.ShowBranchState(branchName)
 }
 
 // timeTravelMenu 时间旅行菜单
