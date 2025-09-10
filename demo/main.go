@@ -177,11 +177,39 @@ func (d *AIDatasetDemo) ensureBranchesDatabase() error {
 	if err != nil {
 		return fmt.Errorf("failed to create mo_branches database: %v", err)
 	}
+
+	// 确保分支管理表存在
+	if err := d.ensureBranchManagementTable(); err != nil {
+		return fmt.Errorf("failed to create branch management table: %v", err)
+	}
+
 	return nil
 }
 
-// CreateTableBranch 创建表分支
-func (d *AIDatasetDemo) CreateTableBranch(branchName string) error {
+// ensureBranchManagementTable 确保分支管理表存在
+func (d *AIDatasetDemo) ensureBranchManagementTable() error {
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS mo_branches.branch_management (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		event_type VARCHAR(50) NOT NULL,
+		source_database VARCHAR(100) NOT NULL,
+		source_table VARCHAR(100) NOT NULL,
+		branch_name VARCHAR(100) NOT NULL,
+		snapshot_name VARCHAR(200),
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_branch_name (branch_name),
+		INDEX idx_created_at (created_at)
+	);`
+
+	_, err := d.db.Exec(createTableSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create branch_management table: %v", err)
+	}
+	return nil
+}
+
+// CreateTableBranch 创建表分支（必须基于快照）
+func (d *AIDatasetDemo) CreateTableBranch(branchName, snapshotName string) error {
 	// 确保mo_branches数据库存在
 	if err := d.ensureBranchesDatabase(); err != nil {
 		return fmt.Errorf("failed to create branches database: %v", err)
@@ -190,15 +218,35 @@ func (d *AIDatasetDemo) CreateTableBranch(branchName string) error {
 	// 生成分支表名：test_ai_dataset_$branchname
 	branchTableName := fmt.Sprintf("test_ai_dataset_%s", branchName)
 
-	// 使用CLONE语法创建表分支
-	cloneSQL := fmt.Sprintf("CREATE TABLE mo_branches.%s CLONE test.ai_dataset", branchTableName)
+	// 使用CLONE语法创建表分支，基于指定快照
+	cloneSQL := fmt.Sprintf("CREATE TABLE mo_branches.%s CLONE test.ai_dataset {Snapshot = '%s'}", branchTableName, snapshotName)
 
 	_, err := d.db.Exec(cloneSQL)
 	if err != nil {
 		return fmt.Errorf("failed to create table branch: %v", err)
 	}
 
-	fmt.Printf("✅ Table branch '%s' created successfully\n", branchName)
+	// 记录分支创建事件到管理表
+	if err := d.recordBranchEvent("CREATE", "test", "ai_dataset", branchName, snapshotName); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to record branch event: %v\n", err)
+		// 不因为记录失败而停止分支创建
+	}
+
+	fmt.Printf("✅ Table branch '%s' created successfully based on snapshot '%s'\n", branchName, snapshotName)
+	return nil
+}
+
+// recordBranchEvent 记录分支事件到管理表
+func (d *AIDatasetDemo) recordBranchEvent(eventType, sourceDB, sourceTable, branchName, snapshotName string) error {
+	insertSQL := `
+		INSERT INTO mo_branches.branch_management 
+		(event_type, source_database, source_table, branch_name, snapshot_name) 
+		VALUES (?, ?, ?, ?, ?)`
+
+	_, err := d.db.Exec(insertSQL, eventType, sourceDB, sourceTable, branchName, snapshotName)
+	if err != nil {
+		return fmt.Errorf("failed to record branch event: %v", err)
+	}
 	return nil
 }
 
@@ -271,7 +319,72 @@ func (d *AIDatasetDemo) DropTableBranch(branchName string) error {
 		return fmt.Errorf("failed to drop table branch: %v", err)
 	}
 
+	// 记录分支删除事件到管理表
+	if err := d.recordBranchEvent("DROP", "test", "ai_dataset", branchName, ""); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to record branch event: %v\n", err)
+		// 不因为记录失败而停止分支删除
+	}
+
 	fmt.Printf("✅ Table branch '%s' dropped successfully\n", branchName)
+	return nil
+}
+
+// ShowBranchHistory 显示分支历史记录（类似git log）
+func (d *AIDatasetDemo) ShowBranchHistory() error {
+	// 确保mo_branches数据库存在
+	if err := d.ensureBranchesDatabase(); err != nil {
+		return fmt.Errorf("failed to create branches database: %v", err)
+	}
+
+	query := `
+		SELECT id, event_type, source_database, source_table, branch_name, snapshot_name, created_at
+		FROM mo_branches.branch_management 
+		ORDER BY created_at DESC 
+		LIMIT 50`
+
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return fmt.Errorf("failed to query branch history: %v", err)
+	}
+	defer rows.Close()
+
+	fmt.Println("📜 Branch History (类似 git log):")
+	fmt.Println(strings.Repeat("=", 80))
+
+	var id int
+	var eventType, sourceDB, sourceTable, branchName, snapshotName, createdAt string
+	recordCount := 0
+
+	for rows.Next() {
+		err := rows.Scan(&id, &eventType, &sourceDB, &sourceTable, &branchName, &snapshotName, &createdAt)
+		if err != nil {
+			return fmt.Errorf("failed to scan branch history row: %v", err)
+		}
+
+		// 格式化显示
+		eventIcon := "➕"
+		if eventType == "DROP" {
+			eventIcon = "🗑️"
+		}
+
+		fmt.Printf("%s %s | Branch: %s | Source: %s.%s\n",
+			eventIcon, eventType, branchName, sourceDB, sourceTable)
+
+		if snapshotName != "" {
+			fmt.Printf("   📸 Based on snapshot: %s\n", snapshotName)
+		}
+
+		fmt.Printf("   ⏰ %s\n", createdAt)
+		fmt.Println(strings.Repeat("-", 60))
+		recordCount++
+	}
+
+	if recordCount == 0 {
+		fmt.Println("No branch history found.")
+	} else {
+		fmt.Printf("\n📊 Total records: %d\n", recordCount)
+	}
+
 	return nil
 }
 
@@ -2020,7 +2133,8 @@ func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	fmt.Println("1. 📋 查看所有分支")
 	fmt.Println("2. ➕ 创建新分支")
 	fmt.Println("3. 🗑️ 删除分支")
-	fmt.Print("请选择操作 (1-3): ")
+	fmt.Println("4. 📜 查看分支历史")
+	fmt.Print("请选择操作 (1-4): ")
 
 	choice, _ := reader.ReadString('\n')
 	choice = strings.TrimSpace(choice)
@@ -2032,6 +2146,8 @@ func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		return createBranchMenu(demo, reader)
 	case "3":
 		return deleteBranchMenu(demo, reader)
+	case "4":
+		return demo.ShowBranchHistory()
 	default:
 		fmt.Println("❌ 无效选择")
 		return nil
@@ -2040,6 +2156,38 @@ func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // createBranchMenu 创建分支菜单
 func createBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	// 获取可用快照列表
+	snapshots, err := demo.getSnapshotInfoList()
+	if err != nil {
+		return fmt.Errorf("failed to get snapshots: %v", err)
+	}
+
+	if len(snapshots) == 0 {
+		return fmt.Errorf("没有可用的快照，请先创建快照")
+	}
+
+	// 显示可用快照
+	fmt.Println("📸 可用的快照:")
+	fmt.Println(strings.Repeat("=", 50))
+	for i, snapshot := range snapshots {
+		if i >= 10 { // 最多显示10个快照
+			break
+		}
+		fmt.Printf("%d. %s (创建时间: %s)\n", i+1, snapshot.Name, snapshot.Timestamp)
+	}
+
+	fmt.Print("\n请选择快照 (输入序号): ")
+	snapshotInput, _ := reader.ReadString('\n')
+	snapshotInput = strings.TrimSpace(snapshotInput)
+
+	var snapshotName string
+	if num, err := strconv.Atoi(snapshotInput); err == nil && num >= 1 && num <= len(snapshots) {
+		snapshotName = snapshots[num-1].Name
+		fmt.Printf("✅ 选择快照: %s\n", snapshotName)
+	} else {
+		return fmt.Errorf("无效的快照序号")
+	}
+
 	fmt.Print("请输入分支名称: ")
 	branchName, _ := reader.ReadString('\n')
 	branchName = strings.TrimSpace(branchName)
@@ -2048,7 +2196,7 @@ func createBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		return fmt.Errorf("分支名称不能为空")
 	}
 
-	return demo.CreateTableBranch(branchName)
+	return demo.CreateTableBranch(branchName, snapshotName)
 }
 
 // deleteBranchMenu 删除分支菜单
