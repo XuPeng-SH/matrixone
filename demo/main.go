@@ -270,10 +270,10 @@ func (d *AIDatasetDemo) ListTableBranches() error {
 	for i, branch := range branches {
 		// 查询分支管理表获取快照信息
 		snapshotInfo := d.getBranchSnapshotInfo(branch)
-		fmt.Printf("%-4d %-20s %-30s %-20s\n", 
-			i+1, 
-			branch, 
-			snapshotInfo.SnapshotName, 
+		fmt.Printf("%-4d %-20s %-30s %-20s\n",
+			i+1,
+			branch,
+			snapshotInfo.SnapshotName,
 			snapshotInfo.CreatedAt)
 	}
 
@@ -2519,7 +2519,6 @@ func createBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 	return demo.CreateTableBranch(branchName, snapshotName)
 }
-
 
 // branchVsBranchMenu 分支与分支比较菜单
 func branchVsBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
