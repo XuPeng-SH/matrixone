@@ -257,20 +257,65 @@ func (d *AIDatasetDemo) ListTableBranches() error {
 		return err
 	}
 
-	fmt.Println("🌿 Table Branches:")
-	fmt.Println(strings.Repeat("=", 40))
+	fmt.Println("🌿 表分支列表:")
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Printf("%-4s %-20s %-30s %-20s\n", "序号", "分支名称", "基于快照", "创建时间")
+	fmt.Println(strings.Repeat("-", 80))
 
 	if len(branches) == 0 {
-		fmt.Println("No table branches found.")
+		fmt.Println("📋 没有找到任何分支")
 		return nil
 	}
 
 	for i, branch := range branches {
-		fmt.Printf("%d. 📋 %s\n", i+1, branch)
+		// 查询分支管理表获取快照信息
+		snapshotInfo := d.getBranchSnapshotInfo(branch)
+		fmt.Printf("%-4d %-20s %-30s %-20s\n", 
+			i+1, 
+			branch, 
+			snapshotInfo.SnapshotName, 
+			snapshotInfo.CreatedAt)
 	}
 
-	fmt.Printf("\n📊 Total branches: %d\n", len(branches))
+	fmt.Printf("\n📊 总计: %d 个分支\n", len(branches))
 	return nil
+}
+
+// BranchSnapshotInfo 分支快照信息
+type BranchSnapshotInfo struct {
+	SnapshotName string
+	CreatedAt    string
+}
+
+// getBranchSnapshotInfo 获取分支的快照信息
+func (d *AIDatasetDemo) getBranchSnapshotInfo(branchName string) BranchSnapshotInfo {
+	query := `
+		SELECT snapshot_name, created_at
+		FROM mo_branches.branch_management
+		WHERE branch_name = ? AND event_type = 'CREATE'
+		ORDER BY created_at DESC
+		LIMIT 1`
+
+	var snapshotName, createdAt string
+	err := d.db.QueryRow(query, branchName).Scan(&snapshotName, &createdAt)
+	if err != nil {
+		return BranchSnapshotInfo{
+			SnapshotName: "未知",
+			CreatedAt:    "未知",
+		}
+	}
+
+	// 格式化时间
+	if createdAt != "" {
+		if t, err := time.Parse("2006-01-02 15:04:05", createdAt); err == nil {
+			createdAt = t.Format("01-02 15:04")
+		}
+	}
+
+	return BranchSnapshotInfo{
+		SnapshotName: snapshotName,
+		CreatedAt:    createdAt,
+	}
 }
 
 // getTableBranches 获取所有表分支名称列表
@@ -2410,8 +2455,7 @@ func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	fmt.Println("2. ➕ 创建新分支")
 	fmt.Println("3. 🗑️ 删除分支")
 	fmt.Println("4. 📜 查看分支历史")
-	fmt.Println("5. 🔄 分支比较")
-	fmt.Print("请选择操作 (1-5): ")
+	fmt.Print("请选择操作 (1-4): ")
 
 	choice, _ := reader.ReadString('\n')
 	choice = strings.TrimSpace(choice)
@@ -2425,8 +2469,6 @@ func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		return deleteBranchMenu(demo, reader)
 	case "4":
 		return demo.ShowBranchHistory()
-	case "5":
-		return branchCompareMenu(demo, reader)
 	default:
 		fmt.Println("❌ 无效选择")
 		return nil
@@ -2478,26 +2520,6 @@ func createBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	return demo.CreateTableBranch(branchName, snapshotName)
 }
 
-// branchCompareMenu 分支比较菜单
-func branchCompareMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Println("\n🔄 分支比较")
-	fmt.Println("1. 🌿 分支 vs 分支")
-	fmt.Println("2. 🌿 分支 vs 快照")
-	fmt.Print("请选择比较类型 (1-2): ")
-
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(choice)
-
-	switch choice {
-	case "1":
-		return branchVsBranchMenu(demo, reader)
-	case "2":
-		return branchVsSnapshotMenu(demo, reader)
-	default:
-		fmt.Println("❌ 无效选择")
-		return nil
-	}
-}
 
 // branchVsBranchMenu 分支与分支比较菜单
 func branchVsBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
@@ -3049,10 +3071,12 @@ func unifiedCompareMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 		fmt.Println("1. 📸 快照 vs 📸 快照")
 		fmt.Println("2. 📸 快照 vs ⏰ 时间戳")
 		fmt.Println("3. ⏰ 时间戳 vs ⏰ 时间戳")
-		fmt.Println("4. 🔙 返回主菜单")
+		fmt.Println("4. 🌿 分支 vs 🌿 分支")
+		fmt.Println("5. 🌿 分支 vs 📸 快照")
+		fmt.Println("6. 🔙 返回主菜单")
 		fmt.Println(strings.Repeat("=", 60))
 
-		fmt.Print("请选择比较类型 (1-4): ")
+		fmt.Print("请选择比较类型 (1-6): ")
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
 
@@ -3070,6 +3094,14 @@ func unifiedCompareMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 				fmt.Printf("❌ 错误: %v\n", err)
 			}
 		case "4":
+			if err := branchVsBranchMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "5":
+			if err := branchVsSnapshotMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "6":
 			return nil
 		default:
 			fmt.Println("❌ 无效选择，请重新输入")
