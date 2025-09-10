@@ -152,6 +152,7 @@ func (d *AIDatasetDemo) CreateTable() error {
 		id INT PRIMARY KEY,
 		features vecf32(128),
 		label VARCHAR(50) DEFAULT 'unlabeled',
+		description TEXT NOT NULL,
 		metadata JSON,
 		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);`
@@ -174,6 +175,68 @@ func (d *AIDatasetDemo) generateRandomVector(dim int) string {
 		values = append(values, fmt.Sprintf("%.2f", value))
 	}
 	return "[" + strings.Join(values, ", ") + "]"
+}
+
+// generateAnimalDescription 生成动物描述文字
+func (d *AIDatasetDemo) generateAnimalDescription(id int) string {
+	// 预定义的动物描述（不包含动物名称，每个都有不同的开头）
+	descriptions := []string{
+		// 第一个必须是snake的描述
+		"Slithers gracefully with elongated body and no limbs, using muscular contractions to move across surfaces. Possesses heat-sensing abilities to detect temperature changes in the environment.",
+		// 第三个必须是cat的描述  
+		"Features sharp claws and acute hearing, capable of navigating in complete darkness. Prefers resting in elevated positions and demonstrates exceptional balance and agility.",
+		// 其他30个不同的描述
+		"Displays powerful limbs and keen sense of smell, excels at navigating complex terrain. Typically lives in social groups with strong territorial instincts.",
+		"Exhibits thick fur and powerful jaws, survives harsh environmental conditions. Undergoes hibernation with significantly reduced metabolic rates.",
+		"Demonstrates long neck and strong legs, capable of rapid running speeds. Feeds primarily on vegetation with complex digestive systems.",
+		"Possesses sharp beak and powerful wings, capable of extended aerial flight. Shows excellent navigational skills for long-distance migration.",
+		"Shows streamlined body and powerful tail fin, excels at rapid swimming. Has acute hearing to detect vibrations in water.",
+		"Presents thick skin and strong limbs, adapts to both aquatic and terrestrial environments. Demonstrates excellent swimming abilities and enjoys mud baths.",
+		"Reveals long trunk and massive size, represents the largest land mammal. Exhibits remarkable memory to remember water sources and food locations.",
+		"Displays black and white coloration with rounded body shape, primarily feeds on bamboo. Shows gentle temperament and prefers solitary living.",
+		"Manifests long neck and spotted pattern, stands as the world's tallest animal. Features strong legs capable of powerful kicks against predators.",
+		"Shows striped pattern and powerful jumping ability, excels at rapid running across grasslands. Possesses keen vision to spot prey from great distances.",
+		"Carries thick blubber layer and white coloration, survives in polar environments. Demonstrates excellent swimming skills and feeds mainly on fish.",
+		"Displays long tail and strong limbs, moves agilely through tree canopies. Has acute vision and hearing for forest foraging.",
+		"Equips sharp teeth and powerful jaws, serves as apex predator in marine environments. Possesses keen sense of smell to detect blood in water.",
+		"Features massive wingspan and robust skeletal structure, capable of extended high-altitude soaring. Has exceptional vision to spot small animals from great heights.",
+		"Utilizes superior night vision and silent flight techniques, serves as perfect nocturnal hunter. Features rotatable head with wide field of view.",
+		"Employs unique echolocation system for precise navigation in complete darkness. Has flexible wing membranes for precise flight control.",
+		"Adopts hard shell and retractable head, withdraws into protective ball when threatened. Moves slowly but steadily with lifespan reaching several decades.",
+		"Uses variable coloration and soft tentacles for perfect environmental camouflage. Possesses highly developed nervous system and learning capabilities.",
+		"Configures sharp horns and powerful hind legs, delivers powerful kicks when threatened. Shows exceptional jumping ability over great distances.",
+		"Equips heavy armor and powerful claws, survives in both aquatic and terrestrial environments. Has complex social structure and territorial behavior.",
+		"Blooms with colorful plumage and powerful flight capability, performs complex aerial maneuvers. Demonstrates high intelligence and vocal mimicry skills.",
+		"Carries sensitive antennae and hard shell, detects subtle environmental changes. Features spiral shell for complete body protection.",
+		"Maintains slimy skin and powerful regeneration ability, regrows lost limbs. Has unique respiratory system for both aquatic and terrestrial life.",
+		"Equips sharp spines and bright warning colors to deter potential predators. Possesses special venom glands for toxin release.",
+		"Uses extremely long tongue and sticky secretions, specializes in catching small insects. Has color-changing ability to match environment.",
+		"Demonstrates powerful chewing ability and complex social organization, builds intricate nest structures. Shows high level of teamwork and cooperation.",
+		"Maintains transparent body and graceful swimming posture, appears like floating spirit in water. Has simple but effective neural network system.",
+		"Features multiple hearts and blue blood, possesses extremely high intelligence and learning ability. Can use tools and shows complex problem-solving skills.",
+		"Exerts powerful visual system and rapid running speed, serves as speed king of grasslands. Has sophisticated group hunting tactics and cooperation.",
+		"Uses sharp claws and strong arms, excels at rapid movement through tree canopies. Possesses complex social behavior and emotional expression.",
+		"Adopts thick scales and powerful defense capability, resists most external attacks. Has ancient lineage and long evolutionary history.",
+	}
+
+	// 确保第一个和第三个是特定的描述
+	if id == 1 {
+		return descriptions[0] // snake描述
+	} else if id == 3 {
+		return descriptions[1] // cat描述
+	} else {
+		// 其他随机选择
+		rand.Seed(time.Now().UnixNano() + int64(id))
+		return descriptions[rand.Intn(len(descriptions))]
+	}
+}
+
+// truncateText 截断文本并添加省略号
+func truncateText(text string, maxLen int) string {
+	if len(text) <= maxLen {
+		return text
+	}
+	return text[:maxLen] + fmt.Sprintf("(...%d字)", len(text)-maxLen)
 }
 
 // MockData 生成指定行数的模拟数据
@@ -203,10 +266,13 @@ func (d *AIDatasetDemo) MockData(rowCount int) error {
 		var values []string
 		for j := i; j < end; j++ {
 			vector := d.generateRandomVector(128)
-			values = append(values, fmt.Sprintf("(%d, '%s', 'unlabeled', NULL, CURRENT_TIMESTAMP)", j+1, vector))
+			description := d.generateAnimalDescription(j + 1)
+			// 转义单引号
+			description = strings.ReplaceAll(description, "'", "''")
+			values = append(values, fmt.Sprintf("(%d, '%s', 'unlabeled', '%s', NULL, CURRENT_TIMESTAMP)", j+1, vector, description))
 		}
 
-		insertSQL := fmt.Sprintf("INSERT INTO ai_dataset (id, features, label, metadata, timestamp) VALUES %s",
+		insertSQL := fmt.Sprintf("INSERT INTO ai_dataset (id, features, label, description, metadata, timestamp) VALUES %s",
 			strings.Join(values, ", "))
 
 		_, err := d.db.Exec(insertSQL)
@@ -305,14 +371,14 @@ func (d *AIDatasetDemo) ShowCurrentState() error {
 	fmt.Println(strings.Repeat("=", 60))
 
 	query := `
-		SELECT id, label, 
+		SELECT id, features, label, description,
 		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
 		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
 		       JSON_EXTRACT(metadata, '$.reason') as reason,
 		       timestamp
 		FROM ai_dataset 
 		ORDER BY id 
-		LIMIT 10`
+		LIMIT 5`
 
 	rows, err := d.db.Query(query)
 	if err != nil {
@@ -320,17 +386,17 @@ func (d *AIDatasetDemo) ShowCurrentState() error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-4s %-12s %-15s %-10s %-20s %-20s\n",
-		"ID", "Label", "Annotator", "Confidence", "Reason", "Timestamp")
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Printf("%-4s %-10s %-12s %-35s %-15s %-10s %-20s %-20s\n",
+		"ID", "Vector", "Label", "Description", "Annotator", "Confidence", "Reason", "Timestamp")
+	fmt.Println(strings.Repeat("-", 150))
 
 	for rows.Next() {
 		var id int
-		var label, timestamp string
+		var features, label, description, timestamp string
 		var annotator, reason sql.NullString
 		var confidence sql.NullFloat64
 
-		err := rows.Scan(&id, &label, &annotator, &confidence, &reason, &timestamp)
+		err := rows.Scan(&id, &features, &label, &description, &annotator, &confidence, &reason, &timestamp)
 		if err != nil {
 			return fmt.Errorf("failed to scan row: %v", err)
 		}
@@ -350,8 +416,13 @@ func (d *AIDatasetDemo) ShowCurrentState() error {
 			reasonStr = strings.Trim(reason.String, `"`)
 		}
 
-		fmt.Printf("%-4d %-12s %-15s %-10s %-20s %-20s\n",
-			id, label, annotatorStr, confStr, reasonStr, timestamp)
+		// 截断长文本
+		descStr := truncateText(description, 30)
+		reasonStr = truncateText(reasonStr, 20)
+		featuresStr := truncateText(features, 8) // 向量显示8个字符
+
+		fmt.Printf("%-4d %-10s %-12s %-35s %-15s %-10s %-20s %-20s\n",
+			id, featuresStr, label, descStr, annotatorStr, confStr, reasonStr, timestamp)
 	}
 
 	// 显示统计信息
@@ -403,7 +474,7 @@ func (d *AIDatasetDemo) TimeTravelQueryFromSnapshot(snapshotName string) error {
 
 	// 使用快照查询
 	query := fmt.Sprintf(`
-		SELECT id, label, 
+		SELECT id, label, description,
 		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
 		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
 		       JSON_EXTRACT(metadata, '$.reason') as reason,
@@ -418,17 +489,17 @@ func (d *AIDatasetDemo) TimeTravelQueryFromSnapshot(snapshotName string) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-4s %-12s %-15s %-10s %-20s %-20s\n",
-		"ID", "Label", "Annotator", "Confidence", "Reason", "Timestamp")
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Printf("%-4s %-12s %-35s %-15s %-10s %-20s %-20s\n",
+		"ID", "Label", "Description", "Annotator", "Confidence", "Reason", "Timestamp")
+	fmt.Println(strings.Repeat("-", 140))
 
 	for rows.Next() {
 		var id int
-		var label, timestamp string
+		var label, description, timestamp string
 		var annotator, reason sql.NullString
 		var confidence sql.NullFloat64
 
-		err := rows.Scan(&id, &label, &annotator, &confidence, &reason, &timestamp)
+		err := rows.Scan(&id, &label, &description, &annotator, &confidence, &reason, &timestamp)
 		if err != nil {
 			return fmt.Errorf("failed to scan row: %v", err)
 		}
@@ -448,8 +519,12 @@ func (d *AIDatasetDemo) TimeTravelQueryFromSnapshot(snapshotName string) error {
 			reasonStr = strings.Trim(reason.String, `"`)
 		}
 
-		fmt.Printf("%-4d %-12s %-15s %-10s %-20s %-20s\n",
-			id, label, annotatorStr, confStr, reasonStr, timestamp)
+		// 截断长文本
+		descStr := truncateText(description, 30)
+		reasonStr = truncateText(reasonStr, 20)
+
+		fmt.Printf("%-4d %-12s %-35s %-15s %-10s %-20s %-20s\n",
+			id, label, descStr, annotatorStr, confStr, reasonStr, timestamp)
 	}
 
 	return nil
@@ -472,7 +547,7 @@ func (d *AIDatasetDemo) TimeTravelQueryFromTimestamp(targetTime string) error {
 
 	// 使用 MatrixOne 的 Time Travel 语法
 	query := fmt.Sprintf(`
-		SELECT id, label, 
+		SELECT id, label, description,
 		       JSON_EXTRACT(metadata, '$.annotator') as annotator,
 		       JSON_EXTRACT(metadata, '$.confidence') as confidence,
 		       JSON_EXTRACT(metadata, '$.reason') as reason,
@@ -490,17 +565,17 @@ func (d *AIDatasetDemo) TimeTravelQueryFromTimestamp(targetTime string) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-4s %-12s %-15s %-10s %-20s %-20s\n",
-		"ID", "Label", "Annotator", "Confidence", "Reason", "Timestamp")
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Printf("%-4s %-12s %-35s %-15s %-10s %-20s %-20s\n",
+		"ID", "Label", "Description", "Annotator", "Confidence", "Reason", "Timestamp")
+	fmt.Println(strings.Repeat("-", 140))
 
 	for rows.Next() {
 		var id int
-		var label, timestamp string
+		var label, description, timestamp string
 		var annotator, reason sql.NullString
 		var confidence sql.NullFloat64
 
-		err := rows.Scan(&id, &label, &annotator, &confidence, &reason, &timestamp)
+		err := rows.Scan(&id, &label, &description, &annotator, &confidence, &reason, &timestamp)
 		if err != nil {
 			return fmt.Errorf("failed to scan row: %v", err)
 		}
@@ -520,8 +595,12 @@ func (d *AIDatasetDemo) TimeTravelQueryFromTimestamp(targetTime string) error {
 			reasonStr = strings.Trim(reason.String, `"`)
 		}
 
-		fmt.Printf("%-4d %-12s %-15s %-10s %-20s %-20s\n",
-			id, label, annotatorStr, confStr, reasonStr, timestamp)
+		// 截断长文本
+		descStr := truncateText(description, 30)
+		reasonStr = truncateText(reasonStr, 20)
+
+		fmt.Printf("%-4d %-12s %-35s %-15s %-10s %-20s %-20s\n",
+			id, label, descStr, annotatorStr, confStr, reasonStr, timestamp)
 	}
 
 	return nil
