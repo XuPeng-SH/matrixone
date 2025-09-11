@@ -3328,29 +3328,53 @@ func showInteractiveMenu() {
 
 // tableBranchMenu 表分支管理菜单
 func tableBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Println("\n🌿 表分支管理")
-	fmt.Println("1. 📋 查看所有分支")
-	fmt.Println("2. ➕ 创建新分支")
-	fmt.Println("3. 🗑️ 删除分支")
-	fmt.Println("4. 📜 查看分支历史")
-	fmt.Print("请选择操作 (1-4): ")
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("🌿 表分支管理")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 📋 查看所有分支")
+		fmt.Println("2. ➕ 创建新分支")
+		fmt.Println("3. 🗑️ 删除分支")
+		fmt.Println("4. 📜 查看分支历史")
+		fmt.Println("5. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
 
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(choice)
+		fmt.Print("请选择操作 (1-5): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
 
-	switch choice {
-	case "1":
-		return demo.ListTableBranches()
-	case "2":
-		return createBranchMenu(demo, reader)
-	case "3":
-		return deleteBranchMenu(demo, reader)
-	case "4":
-		return demo.ShowBranchHistory()
-	default:
-		fmt.Println("❌ 无效选择")
-		return nil
+		switch choice {
+		case "1":
+			if err := demo.ListTableBranches(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := createBranchMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			if err := deleteBranchMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "4":
+			if err := demo.ShowBranchHistory(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "5":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		// 只有选择返回主菜单时才退出循环，其他操作后继续显示菜单
+		if choice == "5" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
 	}
+	return nil
 }
 
 // createBranchMenu 创建分支菜单
@@ -3573,6 +3597,42 @@ func branchVsMainTableMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // mergeMenu merge菜单
 func mergeMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("🔀 分支 Merge")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 🔀 执行分支合并")
+		fmt.Println("2. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
+
+		fmt.Print("请选择操作 (1-2): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			if err := executeMergeOperation(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		// 只有选择返回主菜单时才退出循环
+		if choice == "2" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
+	}
+	return nil
+}
+
+// executeMergeOperation 执行合并操作
+func executeMergeOperation(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	// 获取所有分支列表
 	branches, err := demo.getTableBranches()
 	if err != nil {
@@ -3791,40 +3851,91 @@ func deleteBranchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // mockDataMenu 模拟数据菜单
 func mockDataMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Print("请输入要生成的数据行数 (默认 100): ")
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("📊 生成模拟数据")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 📊 生成模拟数据")
+		fmt.Println("2. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
 
-	rowCount := 100
-	if input != "" {
-		if count, err := strconv.Atoi(input); err == nil && count > 0 {
-			rowCount = count
+		fmt.Print("请选择操作 (1-2): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			fmt.Print("请输入要生成的数据行数 (默认 100): ")
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(input)
+
+			rowCount := 100
+			if input != "" {
+				if count, err := strconv.Atoi(input); err == nil && count > 0 {
+					rowCount = count
+				}
+			}
+
+			fmt.Printf("🔄 正在生成 %d 行模拟数据...\n", rowCount)
+			if err := demo.MockData(rowCount); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
 		}
-	}
 
-	fmt.Printf("🔄 正在生成 %d 行模拟数据...\n", rowCount)
-	return demo.MockData(rowCount)
+		// 只有选择返回主菜单时才退出循环
+		if choice == "2" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
+	}
+	return nil
 }
 
 // aiAnnotationMenu AI 标注菜单
 func aiAnnotationMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Println("\n🤖 AI 标注")
-	fmt.Println("1. 📊 基于主表标注")
-	fmt.Println("2. 🌿 基于分支标注")
-	fmt.Print("请选择标注方式 (1-2): ")
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("🤖 AI 标注")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 📊 基于主表标注")
+		fmt.Println("2. 🌿 基于分支标注")
+		fmt.Println("3. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
 
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(choice)
+		fmt.Print("请选择操作 (1-3): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
 
-	switch choice {
-	case "1":
-		return aiAnnotationOnMainTable(demo, reader)
-	case "2":
-		return aiAnnotationOnBranch(demo, reader)
-	default:
-		fmt.Println("❌ 无效选择，使用主表标注")
-		return aiAnnotationOnMainTable(demo, reader)
+		switch choice {
+		case "1":
+			if err := aiAnnotationOnMainTable(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := aiAnnotationOnBranch(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		// 只有选择返回主菜单时才退出循环
+		if choice == "3" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
 	}
+	return nil
 }
 
 // aiAnnotationOnMainTable 在主表上进行AI标注
@@ -3959,23 +4070,43 @@ func aiAnnotationOnBranch(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // humanAnnotationMenu 人类标注菜单
 func humanAnnotationMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Println("\n👤 人类标注")
-	fmt.Println("1. 📊 基于主表标注")
-	fmt.Println("2. 🌿 基于分支标注")
-	fmt.Print("请选择标注方式 (1-2): ")
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("👤 人类标注")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 📊 基于主表标注")
+		fmt.Println("2. 🌿 基于分支标注")
+		fmt.Println("3. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
 
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(choice)
+		fmt.Print("请选择操作 (1-3): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
 
-	switch choice {
-	case "1":
-		return humanAnnotationOnMainTable(demo, reader)
-	case "2":
-		return humanAnnotationOnBranch(demo, reader)
-	default:
-		fmt.Println("❌ 无效选择，使用主表标注")
-		return humanAnnotationOnMainTable(demo, reader)
+		switch choice {
+		case "1":
+			if err := humanAnnotationOnMainTable(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := humanAnnotationOnBranch(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		// 只有选择返回主菜单时才退出循环
+		if choice == "3" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
 	}
+	return nil
 }
 
 // humanAnnotationOnMainTable 在主表上进行人类标注
@@ -4086,26 +4217,48 @@ func humanAnnotationOnBranch(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // showCurrentStateMenu 查看当前状态菜单
 func showCurrentStateMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Println("\n📊 查看数据状态")
-	fmt.Println("1. 📊 主表状态")
-	fmt.Println("2. 📸 快照状态")
-	fmt.Println("3. 🌿 分支状态")
-	fmt.Print("请选择查看方式 (1-3): ")
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("📊 查看数据状态")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 📊 主表状态")
+		fmt.Println("2. 📸 快照状态")
+		fmt.Println("3. 🌿 分支状态")
+		fmt.Println("4. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
 
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(choice)
+		fmt.Print("请选择操作 (1-4): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
 
-	switch choice {
-	case "1":
-		return demo.ShowCurrentState()
-	case "2":
-		return showSnapshotStateMenu(demo, reader)
-	case "3":
-		return showBranchStateMenu(demo, reader)
-	default:
-		fmt.Println("❌ 无效选择，显示主表状态")
-		return demo.ShowCurrentState()
+		switch choice {
+		case "1":
+			if err := demo.ShowCurrentState(); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := showSnapshotStateMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			if err := showBranchStateMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "4":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		// 只有选择返回主菜单时才退出循环
+		if choice == "4" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
 	}
+	return nil
 }
 
 // showSnapshotStateMenu 显示快照状态菜单
@@ -4183,23 +4336,43 @@ func showBranchStateMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // timeTravelMenu 时间旅行菜单
 func timeTravelMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Println("⏰ 时间旅行查询")
-	fmt.Println("1. 📸 从快照查询")
-	fmt.Println("2. 🕐 从时间戳查询")
-	fmt.Print("请选择查询方式 (1-2): ")
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("⏰ 时间旅行查询")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 📸 从快照查询")
+		fmt.Println("2. 🕐 从时间戳查询")
+		fmt.Println("3. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
 
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(choice)
+		fmt.Print("请选择操作 (1-3): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
 
-	switch choice {
-	case "1":
-		return timeTravelFromSnapshotMenu(demo, reader)
-	case "2":
-		return timeTravelFromTimestampMenu(demo, reader)
-	default:
-		fmt.Println("❌ 无效选择，使用默认时间戳查询")
-		return timeTravelFromTimestampMenu(demo, reader)
+		switch choice {
+		case "1":
+			if err := timeTravelFromSnapshotMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			if err := timeTravelFromTimestampMenu(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "3":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		// 只有选择返回主菜单时才退出循环
+		if choice == "3" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
 	}
+	return nil
 }
 
 // timeTravelFromSnapshotMenu 从快照进行时间旅行查询菜单
@@ -4873,6 +5046,42 @@ func restoreFromPITRMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // cleanupMenu 清空数据菜单
 func cleanupMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("🧹 一键清空Demo数据")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 🧹 清空所有Demo数据")
+		fmt.Println("2. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
+
+		fmt.Print("请选择操作 (1-2): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			if err := executeCleanup(demo, reader); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		// 只有选择返回主菜单时才退出循环
+		if choice == "2" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
+	}
+	return nil
+}
+
+// executeCleanup 执行清理操作
+func executeCleanup(demo *AIDatasetDemo, reader *bufio.Reader) error {
 	// 显示当前状态
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("🧹 一键清空Demo数据")
@@ -4918,23 +5127,54 @@ func cleanupMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
 
 // vectorSearchMenu 向量搜索菜单
 func vectorSearchMenu(demo *AIDatasetDemo, reader *bufio.Reader) error {
-	fmt.Print("请输入查询记录 ID: ")
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
+	for {
+		fmt.Println("\n" + strings.Repeat("=", 40))
+		fmt.Println("🔍 向量相似度搜索")
+		fmt.Println(strings.Repeat("=", 40))
+		fmt.Println("1. 🔍 执行向量搜索")
+		fmt.Println("2. 🔙 返回主菜单")
+		fmt.Println(strings.Repeat("=", 40))
 
-	queryID := 1
-	if id, err := strconv.Atoi(input); err == nil {
-		queryID = id
+		fmt.Print("请选择操作 (1-2): ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			fmt.Print("请输入查询记录 ID: ")
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(input)
+
+			queryID := 1
+			if id, err := strconv.Atoi(input); err == nil {
+				queryID = id
+			}
+
+			fmt.Print("请输入返回结果数量 (默认 5): ")
+			input, _ = reader.ReadString('\n')
+			input = strings.TrimSpace(input)
+
+			topK := 5
+			if k, err := strconv.Atoi(input); err == nil && k > 0 {
+				topK = k
+			}
+
+			if err := demo.VectorSimilaritySearch(queryID, topK); err != nil {
+				fmt.Printf("❌ 错误: %v\n", err)
+			}
+		case "2":
+			return nil
+		default:
+			fmt.Println("❌ 无效选择，请重新输入")
+		}
+
+		// 只有选择返回主菜单时才退出循环
+		if choice == "2" {
+			break
+		}
+
+		fmt.Println("\n按回车键继续...")
+		reader.ReadString('\n')
 	}
-
-	fmt.Print("请输入返回结果数量 (默认 5): ")
-	input, _ = reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-
-	topK := 5
-	if k, err := strconv.Atoi(input); err == nil && k > 0 {
-		topK = k
-	}
-
-	return demo.VectorSimilaritySearch(queryID, topK)
+	return nil
 }
