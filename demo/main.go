@@ -2394,6 +2394,25 @@ func (d *AIDatasetDemo) CreateSnapshot(suffix string) error {
 	timestamp := time.Now().Format("20060102_150405")
 	snapshotName := fmt.Sprintf("ai_dataset_%s_%s", timestamp, suffix)
 
+	// 如果快照名称超过64个字符，进行截断
+	const maxSnapshotNameLength = 64
+	if len(snapshotName) > maxSnapshotNameLength {
+		// 保留前缀和时间戳，截断后缀
+		prefixWithTimestamp := fmt.Sprintf("ai_dataset_%s_", timestamp)
+		remainingLength := maxSnapshotNameLength - len(prefixWithTimestamp)
+		if remainingLength > 0 {
+			truncatedSuffix := suffix
+			if len(truncatedSuffix) > remainingLength {
+				truncatedSuffix = truncatedSuffix[:remainingLength]
+			}
+			snapshotName = prefixWithTimestamp + truncatedSuffix
+		} else {
+			// 如果前缀本身太长，只保留前缀
+			snapshotName = prefixWithTimestamp[:maxSnapshotNameLength]
+		}
+		fmt.Printf("⚠️  Snapshot name truncated to fit 64 character limit: %s\n", snapshotName)
+	}
+
 	fmt.Printf("📸 Creating Snapshot: %s\n", snapshotName)
 	fmt.Println(strings.Repeat("=", 60))
 
