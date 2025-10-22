@@ -142,9 +142,10 @@ func IsShuffleLocalityStatsEnabled() bool {
 // Command format:
 //
 //	mo_ctl("cn", "shuffle_monitor", "enable")  - Enable statistics for all CNs
-//	mo_ctl("cn", "shuffle_monitor", "disable") - Disable statistics for all CNs
+//	mo_ctl("cn", "shuffle_monitor", "disable") - Disable statistics and clear data for all CNs
 //	mo_ctl("cn", "shuffle_monitor", "reset")   - Reset statistics for all CNs
 //	mo_ctl("cn", "shuffle_monitor", "query")   - Query statistics from all CNs
+//	mo_ctl("cn", "shuffle_monitor", "status")  - Get enabled status from all CNs
 func handleShuffleMonitor(
 	proc *process.Process,
 	service serviceType,
@@ -232,8 +233,9 @@ func processShuffleMonitorCmd(cmd string) map[string]interface{} {
 
 	case "disable":
 		DisableShuffleLocalityStats()
+		ResetShuffleLocalityStats() // Also clear data when disabling
 		result["success"] = true
-		result["message"] = "shuffle stats disabled"
+		result["message"] = "shuffle stats disabled and data cleared"
 		result["enabled"] = false
 
 	case "reset":
@@ -243,42 +245,78 @@ func processShuffleMonitorCmd(cmd string) map[string]interface{} {
 		stats := GetShuffleLocalityStats()
 		result["stats"] = convertStatsToMap(stats)
 
+	case "status":
+		result["success"] = true
+		result["enabled"] = IsShuffleLocalityStatsEnabled()
+		result["message"] = fmt.Sprintf("shuffle monitor is %s",
+			map[bool]string{true: "enabled", false: "disabled"}[IsShuffleLocalityStatsEnabled()])
+
 	case "query":
 		stats := GetShuffleLocalityStats()
 		result["success"] = true
 		result["message"] = "query success"
 		result["stats"] = convertStatsToMap(stats)
 
-		// Calculate locality ratios
+		// Calculate locality ratios and percentages
 		if stats.TotalObjects > 0 {
 			localityInfo := make(map[string]interface{})
 
 			// Range shuffle locality
 			rangeTotal := stats.RangeShuffleLocal + stats.RangeShuffleRemote
 			if rangeTotal > 0 {
-				localityInfo["range_locality_rate"] = float64(stats.RangeShuffleLocal) / float64(rangeTotal)
+				rangeLocalRate := float64(stats.RangeShuffleLocal) / float64(rangeTotal)
+				localityInfo["range_locality_rate"] = fmt.Sprintf("%.2f%%", rangeLocalRate*100)
+				localityInfo["range_local_objects"] = stats.RangeShuffleLocal
+				localityInfo["range_remote_objects"] = stats.RangeShuffleRemote
+				localityInfo["range_total_objects"] = rangeTotal
 			}
 
 			// Hash shuffle locality
 			hashTotal := stats.HashShuffleLocal + stats.HashShuffleRemote
 			if hashTotal > 0 {
-				localityInfo["hash_locality_rate"] = float64(stats.HashShuffleLocal) / float64(hashTotal)
+				hashLocalRate := float64(stats.HashShuffleLocal) / float64(hashTotal)
+				localityInfo["hash_locality_rate"] = fmt.Sprintf("%.2f%%", hashLocalRate*100)
+				localityInfo["hash_local_objects"] = stats.HashShuffleLocal
+				localityInfo["hash_remote_objects"] = stats.HashShuffleRemote
+				localityInfo["hash_total_objects"] = hashTotal
 			}
 
-			// Overall locality
+			// Appendable objects
+			appendableTotal := stats.AppendableLocal + stats.AppendableRemote
+			if appendableTotal > 0 {
+				appendableLocalRate := float64(stats.AppendableLocal) / float64(appendableTotal)
+				localityInfo["appendable_locality_rate"] = fmt.Sprintf("%.2f%%", appendableLocalRate*100)
+				localityInfo["appendable_local_objects"] = stats.AppendableLocal
+				localityInfo["appendable_remote_objects"] = stats.AppendableRemote
+				localityInfo["appendable_total_objects"] = appendableTotal
+			}
+
+			// Overall locality (excluding no_shuffle objects)
 			totalLocal := stats.RangeShuffleLocal + stats.HashShuffleLocal + stats.AppendableLocal
 			totalRemote := stats.RangeShuffleRemote + stats.HashShuffleRemote + stats.AppendableRemote
 			totalShuffled := totalLocal + totalRemote
 			if totalShuffled > 0 {
-				localityInfo["overall_locality_rate"] = float64(totalLocal) / float64(totalShuffled)
+				overallLocalRate := float64(totalLocal) / float64(totalShuffled)
+				localityInfo["overall_locality_rate"] = fmt.Sprintf("%.2f%%", overallLocalRate*100)
+				localityInfo["total_local_objects"] = totalLocal
+				localityInfo["total_remote_objects"] = totalRemote
+				localityInfo["total_shuffled_objects"] = totalShuffled
 			}
 
+			// Summary
+			localityInfo["no_shuffle_objects"] = stats.NoShuffleObjects
+			localityInfo["total_objects_processed"] = stats.TotalObjects
+
 			result["locality_info"] = localityInfo
+		} else {
+			result["locality_info"] = map[string]interface{}{
+				"message": "no data collected yet",
+			}
 		}
 
 	default:
 		result["success"] = false
-		result["message"] = fmt.Sprintf("unknown command: %s, supported: enable, disable, reset, query", cmd)
+		result["message"] = fmt.Sprintf("unknown command: %s, supported: enable, disable, reset, query, status", cmd)
 	}
 
 	return result
