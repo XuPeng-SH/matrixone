@@ -24,9 +24,11 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/clusterservice"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/pb/query"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
+	"go.uber.org/zap"
 )
 
 // ShuffleLocalityStats is used to track object shuffle locality statistics
@@ -45,8 +47,105 @@ type ShuffleLocalityStats struct {
 }
 
 var (
-	globalShuffleLocalityStats = &ShuffleLocalityStats{}
+	globalShuffleLocalityStats = &ShuffleLocalityStats{
+		Enabled: true, // Default enabled for testing
+	}
+	stopPeriodicReport chan struct{}
+	periodicReportOnce sync.Once
 )
+
+func init() {
+	// Start periodic reporting goroutine
+	StartPeriodicShuffleReport()
+}
+
+// StartPeriodicShuffleReport starts a goroutine that reports shuffle statistics every minute
+func StartPeriodicShuffleReport() {
+	periodicReportOnce.Do(func() {
+		stopPeriodicReport = make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(1 * time.Minute)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					if globalShuffleLocalityStats.Enabled {
+						reportShuffleStats()
+					}
+				case <-stopPeriodicReport:
+					return
+				}
+			}
+		}()
+	})
+}
+
+// StopPeriodicShuffleReport stops the periodic reporting
+func StopPeriodicShuffleReport() {
+	if stopPeriodicReport != nil {
+		close(stopPeriodicReport)
+	}
+}
+
+// reportShuffleStats logs the current shuffle statistics
+func reportShuffleStats() {
+	stats := GetShuffleLocalityStats()
+
+	if stats.TotalObjects == 0 {
+		return // No data to report
+	}
+
+	rangeTotal := stats.RangeShuffleLocal + stats.RangeShuffleRemote
+	hashTotal := stats.HashShuffleLocal + stats.HashShuffleRemote
+	appendableTotal := stats.AppendableLocal + stats.AppendableRemote
+	totalLocal := stats.RangeShuffleLocal + stats.HashShuffleLocal + stats.AppendableLocal
+	totalRemote := stats.RangeShuffleRemote + stats.HashShuffleRemote + stats.AppendableRemote
+	totalShuffled := totalLocal + totalRemote
+
+	fields := []zap.Field{
+		zap.Int64("total_objects", stats.TotalObjects),
+		zap.Int64("no_shuffle", stats.NoShuffleObjects),
+	}
+
+	if rangeTotal > 0 {
+		rangeLocalRate := float64(stats.RangeShuffleLocal) / float64(rangeTotal) * 100
+		fields = append(fields,
+			zap.Int64("range_local", stats.RangeShuffleLocal),
+			zap.Int64("range_remote", stats.RangeShuffleRemote),
+			zap.Float64("range_locality_rate", rangeLocalRate),
+		)
+	}
+
+	if hashTotal > 0 {
+		hashLocalRate := float64(stats.HashShuffleLocal) / float64(hashTotal) * 100
+		fields = append(fields,
+			zap.Int64("hash_local", stats.HashShuffleLocal),
+			zap.Int64("hash_remote", stats.HashShuffleRemote),
+			zap.Float64("hash_locality_rate", hashLocalRate),
+		)
+	}
+
+	if appendableTotal > 0 {
+		appendableLocalRate := float64(stats.AppendableLocal) / float64(appendableTotal) * 100
+		fields = append(fields,
+			zap.Int64("appendable_local", stats.AppendableLocal),
+			zap.Int64("appendable_remote", stats.AppendableRemote),
+			zap.Float64("appendable_locality_rate", appendableLocalRate),
+		)
+	}
+
+	if totalShuffled > 0 {
+		overallLocalRate := float64(totalLocal) / float64(totalShuffled) * 100
+		fields = append(fields,
+			zap.Int64("total_local", totalLocal),
+			zap.Int64("total_remote", totalRemote),
+			zap.Float64("overall_locality_rate", overallLocalRate),
+		)
+	}
+
+	logutil.Info("[SHUFFLE_MONITOR] Periodic Statistics Report", fields...)
+}
 
 // RecordShuffleLocalityStats records shuffle locality statistics
 // This function is called from ShouldSkipObjByShuffle
