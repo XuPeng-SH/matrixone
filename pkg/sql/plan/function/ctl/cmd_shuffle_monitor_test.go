@@ -137,11 +137,23 @@ func TestProcessShuffleMonitorCmd_Enable(t *testing.T) {
 func TestProcessShuffleMonitorCmd_Disable(t *testing.T) {
 	EnableShuffleLocalityStats()
 
+	// Add some data first
+	RecordShuffleLocalityStats("range", true)
+	RecordShuffleLocalityStats("hash", false)
+	stats := GetShuffleLocalityStats()
+	assert.Equal(t, int64(2), stats.TotalObjects, "Should have data before disable")
+
 	result := processShuffleMonitorCmd("disable")
 	assert.True(t, result["success"].(bool))
-	assert.Equal(t, "shuffle stats disabled", result["message"])
+	assert.Contains(t, result["message"].(string), "disabled and data cleared")
 	assert.False(t, result["enabled"].(bool))
 	assert.False(t, IsShuffleLocalityStatsEnabled())
+
+	// Verify data is cleared
+	stats = GetShuffleLocalityStats()
+	assert.Equal(t, int64(0), stats.TotalObjects, "Data should be cleared after disable")
+	assert.Equal(t, int64(0), stats.RangeShuffleLocal)
+	assert.Equal(t, int64(0), stats.HashShuffleRemote)
 }
 
 func TestProcessShuffleMonitorCmd_Reset(t *testing.T) {
@@ -188,15 +200,26 @@ func TestProcessShuffleMonitorCmd_Query(t *testing.T) {
 	assert.NotNil(t, localityInfo["hash_locality_rate"])
 	assert.NotNil(t, localityInfo["overall_locality_rate"])
 
-	// Check locality rates
-	rangeRate := localityInfo["range_locality_rate"].(float64)
-	assert.InDelta(t, 2.0/3.0, rangeRate, 0.001)
+	// Check locality rates are strings with percentage
+	rangeRate := localityInfo["range_locality_rate"].(string)
+	assert.Contains(t, rangeRate, "%")
+	assert.Contains(t, rangeRate, "66.67") // 2/3 ≈ 66.67%
 
-	hashRate := localityInfo["hash_locality_rate"].(float64)
-	assert.InDelta(t, 1.0/3.0, hashRate, 0.001)
+	hashRate := localityInfo["hash_locality_rate"].(string)
+	assert.Contains(t, hashRate, "%")
+	assert.Contains(t, hashRate, "33.33") // 1/3 ≈ 33.33%
 
-	overallRate := localityInfo["overall_locality_rate"].(float64)
-	assert.InDelta(t, 3.0/6.0, overallRate, 0.001)
+	overallRate := localityInfo["overall_locality_rate"].(string)
+	assert.Contains(t, overallRate, "%")
+	assert.Contains(t, overallRate, "50.00") // 3/6 = 50%
+
+	// Check detailed counts
+	assert.Equal(t, int64(2), localityInfo["range_local_objects"])
+	assert.Equal(t, int64(1), localityInfo["range_remote_objects"])
+	assert.Equal(t, int64(3), localityInfo["range_total_objects"])
+	assert.Equal(t, int64(1), localityInfo["hash_local_objects"])
+	assert.Equal(t, int64(2), localityInfo["hash_remote_objects"])
+	assert.Equal(t, int64(3), localityInfo["hash_total_objects"])
 }
 
 func TestProcessShuffleMonitorCmd_QueryEmpty(t *testing.T) {
@@ -206,15 +229,32 @@ func TestProcessShuffleMonitorCmd_QueryEmpty(t *testing.T) {
 	result := processShuffleMonitorCmd("query")
 	assert.True(t, result["success"].(bool))
 	assert.NotNil(t, result["stats"])
-	// locality_info should not exist when TotalObjects is 0
-	_, hasLocalityInfo := result["locality_info"]
-	assert.False(t, hasLocalityInfo)
+	// locality_info should show "no data collected yet"
+	localityInfo := result["locality_info"].(map[string]interface{})
+	assert.Equal(t, "no data collected yet", localityInfo["message"])
+}
+
+func TestProcessShuffleMonitorCmd_Status(t *testing.T) {
+	// Test when disabled
+	DisableShuffleLocalityStats()
+	result := processShuffleMonitorCmd("status")
+	assert.True(t, result["success"].(bool))
+	assert.False(t, result["enabled"].(bool))
+	assert.Contains(t, result["message"].(string), "disabled")
+
+	// Test when enabled
+	EnableShuffleLocalityStats()
+	result = processShuffleMonitorCmd("status")
+	assert.True(t, result["success"].(bool))
+	assert.True(t, result["enabled"].(bool))
+	assert.Contains(t, result["message"].(string), "enabled")
 }
 
 func TestProcessShuffleMonitorCmd_UnknownCommand(t *testing.T) {
 	result := processShuffleMonitorCmd("unknown")
 	assert.False(t, result["success"].(bool))
 	assert.Contains(t, result["message"].(string), "unknown command")
+	assert.Contains(t, result["message"].(string), "status") // Should mention status in help
 }
 
 func TestConvertStatsToMap(t *testing.T) {
@@ -300,7 +340,7 @@ func TestHandleShuffleMonitorRequest_MarshalError(t *testing.T) {
 }
 
 func TestHandleShuffleMonitorRequest_AllCommands(t *testing.T) {
-	commands := []string{"enable", "disable", "reset", "query"}
+	commands := []string{"enable", "disable", "reset", "query", "status"}
 
 	for _, cmd := range commands {
 		t.Run(cmd, func(t *testing.T) {
@@ -406,6 +446,7 @@ func TestProcessShuffleMonitorCmd_AllCommands(t *testing.T) {
 		{"disable", "disable", false},
 		{"reset", "reset", false},
 		{"query", "query", false},
+		{"status", "status", false},
 		{"invalid", "invalid", true},
 		{"empty", "", true},
 	}

@@ -170,6 +170,11 @@ func handleShuffleMonitor(
 	)
 
 	info := make(map[string]interface{})
+	cnResults := make(map[string]interface{})
+
+	successCount := 0
+	failedCount := 0
+	totalCNs := len(cns)
 
 	for idx := range cns {
 		cnID := cns[idx]
@@ -177,7 +182,12 @@ func handleShuffleMonitor(
 		// Process directly on current CN
 		if cnID == proc.GetQueryClient().ServiceID() {
 			result := processShuffleMonitorCmd(cmd)
-			info[cnID] = result
+			cnResults[cnID] = result
+			if success, ok := result["success"].(bool); ok && success {
+				successCount++
+			} else {
+				failedCount++
+			}
 		} else {
 			// Process on other CNs via RPC
 			request := proc.GetQueryClient().NewRequest(query.CmdMethod_ShuffleMonitor)
@@ -195,24 +205,56 @@ func handleShuffleMonitor(
 
 			resp, err := TransferRequest2OtherCNs(proc, cnID, request)
 			if resp == nil || err != nil {
-				info[cnID] = map[string]interface{}{
+				cnResults[cnID] = map[string]interface{}{
 					"success": false,
 					"message": fmt.Sprintf("transfer failed: %v", err),
 				}
+				failedCount++
 			} else if resp.ShuffleMonitorResponse != nil {
 				var respData map[string]interface{}
 				if err := json.Unmarshal([]byte(resp.ShuffleMonitorResponse.Data), &respData); err == nil {
-					info[cnID] = respData
+					cnResults[cnID] = respData
+					if success, ok := respData["success"].(bool); ok && success {
+						successCount++
+					} else {
+						failedCount++
+					}
 				} else {
-					info[cnID] = map[string]interface{}{
+					cnResults[cnID] = map[string]interface{}{
 						"success": resp.ShuffleMonitorResponse.Success,
 						"message": resp.ShuffleMonitorResponse.Message,
 						"data":    resp.ShuffleMonitorResponse.Data,
+					}
+					if resp.ShuffleMonitorResponse.Success {
+						successCount++
+					} else {
+						failedCount++
 					}
 				}
 			}
 		}
 	}
+
+	// Build summary
+	summary := map[string]interface{}{
+		"total_cns":       totalCNs,
+		"success_count":   successCount,
+		"failed_count":    failedCount,
+		"all_successful":  failedCount == 0,
+		"partial_success": successCount > 0 && failedCount > 0,
+		"all_failed":      successCount == 0,
+	}
+
+	// Add warnings for partial failures
+	if failedCount > 0 && successCount > 0 {
+		summary["warning"] = fmt.Sprintf("Command executed on %d/%d CNs. %d CNs failed. Cluster state is inconsistent!",
+			successCount, totalCNs, failedCount)
+	} else if failedCount > 0 {
+		summary["warning"] = fmt.Sprintf("Command failed on all %d CNs", totalCNs)
+	}
+
+	info["summary"] = summary
+	info["cn_details"] = cnResults
 
 	return Result{
 		Method: ShuffleMonitorMethod,

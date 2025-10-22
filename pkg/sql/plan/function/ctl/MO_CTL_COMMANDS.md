@@ -833,7 +833,150 @@ This ensures:
 - No stale data confusion
 - Zero overhead when disabled
 
-**Note**: This command is automatically distributed to all CN services in the cluster, providing cluster-wide visibility into shuffle behavior.
+**Handling Partial Failures (Important)**:
+
+Since commands are distributed to all CN nodes, partial failures can occur:
+
+**Scenario 1: Some CNs succeed, some fail (enable/disable/reset)**
+
+Example output when 1 out of 3 CNs fails:
+```json
+{
+  "method": "SHUFFLE_MONITOR",
+  "result": {
+    "summary": {
+      "total_cns": 3,
+      "success_count": 2,
+      "failed_count": 1,
+      "all_successful": false,
+      "partial_success": true,
+      "all_failed": false,
+      "warning": "Command executed on 2/3 CNs. 1 CNs failed. Cluster state is inconsistent!"
+    },
+    "cn_details": {
+      "cn-uuid-1": {
+        "success": true,
+        "message": "shuffle stats enabled",
+        "enabled": true
+      },
+      "cn-uuid-2": {
+        "success": true,
+        "message": "shuffle stats enabled",
+        "enabled": true
+      },
+      "cn-uuid-3": {
+        "success": false,
+        "message": "transfer failed: context deadline exceeded"
+      }
+    }
+  }
+}
+```
+
+**What this means**:
+- ⚠️ **Inconsistent state**: Some CNs are enabled, others are not
+- 📊 **Partial data**: `query` will show data only from enabled CNs
+- 🔧 **Action required**: Retry the failed command or investigate the failure
+
+**Scenario 2: Status command with inconsistent state**
+
+```json
+{
+  "summary": {
+    "total_cns": 3,
+    "success_count": 3,
+    "failed_count": 0,
+    "all_successful": true
+  },
+  "cn_details": {
+    "cn-uuid-1": { "enabled": true, ... },
+    "cn-uuid-2": { "enabled": true, ... },
+    "cn-uuid-3": { "enabled": false, ... }  // Inconsistent!
+  }
+}
+```
+
+**What to do**:
+1. Check `summary.all_successful` first
+2. If `partial_success: true`, check `warning` message
+3. Review `cn_details` to see which CNs failed
+4. Retry the command for consistency
+
+**Scenario 3: Disable behavior with partial failures**
+
+If `disable` partially fails:
+```
+- CN1: Disabled + data cleared ✓
+- CN2: Disabled + data cleared ✓  
+- CN3: Still enabled (command failed) ✗
+```
+
+**Consequences**:
+- CN3 continues collecting statistics
+- `query` will show data from CN3 only
+- Creates confusion about monitoring state
+
+**Recommended recovery**:
+```sql
+-- 1. Check current status
+SELECT mo_ctl('cn', 'shuffle_monitor', 'status');
+
+-- 2. If inconsistent, retry disable
+SELECT mo_ctl('cn', 'shuffle_monitor', 'disable');
+
+-- 3. Verify all CNs are disabled
+SELECT mo_ctl('cn', 'shuffle_monitor', 'status');
+```
+
+**Best Practices for Consistency**:
+
+1. **Always check summary**:
+   ```sql
+   -- Look for "all_successful": true in results
+   SELECT mo_ctl('cn', 'shuffle_monitor', 'enable');
+   ```
+
+2. **Use status to verify**:
+   ```sql
+   -- After enable/disable, verify state
+   SELECT mo_ctl('cn', 'shuffle_monitor', 'status');
+   ```
+
+3. **Retry on partial failure**:
+   - If you see `partial_success: true`, retry the command
+   - Individual CN operations are idempotent (safe to retry)
+
+4. **Handle inconsistent states**:
+   - For monitoring: Can still use data, but be aware some CNs may be missing
+   - For disable: Retry until all CNs are disabled
+   - For enable: Retry until all CNs are enabled
+
+5. **Production deployment**:
+   - Consider scripting with retry logic
+   - Monitor for `partial_success` warnings
+   - Alert on failed CN operations
+
+**Example: Robust enable with verification**:
+```sql
+-- Enable
+SELECT mo_ctl('cn', 'shuffle_monitor', 'enable');
+-- Check result for "all_successful": true
+
+-- Verify
+SELECT mo_ctl('cn', 'shuffle_monitor', 'status');
+-- All CNs should show "enabled": true
+
+-- If inconsistent, retry
+SELECT mo_ctl('cn', 'shuffle_monitor', 'enable');
+```
+
+**Why partial failures happen**:
+- Network timeouts (default: 5 seconds)
+- CN node temporarily unavailable
+- RPC service issues
+- CN node restarting
+
+**Note**: This command is automatically distributed to all CN services in the cluster. The command returns results from all CNs, including both successes and failures, allowing you to detect and handle inconsistent cluster states.
 
 ---
 
