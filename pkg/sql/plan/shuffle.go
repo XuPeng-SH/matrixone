@@ -26,6 +26,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/statsinfo"
+	"github.com/matrixorigin/matrixone/pkg/sql/plan/function/ctl"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 )
@@ -162,17 +163,43 @@ func ShouldSkipObjByShuffle(rsp *engine.RangesShuffleParam, objstats *objectio.O
 	if rsp == nil || rsp.CNCNT <= 1 || rsp.Node == nil {
 		return false
 	}
+
+	var shouldSkip bool
+	var shuffleType string
+
 	if objstats.GetAppendable() {
 		//aobj always shuffle to local CN
-		return !rsp.IsLocalCN
+		shouldSkip = !rsp.IsLocalCN
+		shuffleType = "appendable"
+	} else if rsp.Node.Stats.HashmapStats.ShuffleType == plan.ShuffleType_Range {
+		//shuffle by range
+		shouldSkip = CalcRangeShuffleIDXForObj(rsp, objstats, int(rsp.CNCNT)) != uint64(rsp.CNIDX)
+		shuffleType = "range"
+	} else {
+		//shuffle by hash
+		objID := objstats.ObjectLocation().ObjectId()
+		shouldSkip = SimpleCharHashToRange(objID[:], uint64(rsp.CNCNT)) != uint64(rsp.CNIDX)
+		shuffleType = "hash"
+	}
+
+	// Collect statistics (only when enabled)
+	ctl.RecordShuffleLocalityStats(shuffleType, !shouldSkip)
+
+	return shouldSkip
+}
+
+// GetShuffleTypeForObj returns the shuffle type of an object (for monitoring)
+func GetShuffleTypeForObj(rsp *engine.RangesShuffleParam, objstats *objectio.ObjectStats) string {
+	if rsp == nil || rsp.CNCNT <= 1 || rsp.Node == nil {
+		return "none"
+	}
+	if objstats.GetAppendable() {
+		return "appendable"
 	}
 	if rsp.Node.Stats.HashmapStats.ShuffleType == plan.ShuffleType_Range {
-		//shuffle by range
-		return CalcRangeShuffleIDXForObj(rsp, objstats, int(rsp.CNCNT)) != uint64(rsp.CNIDX)
+		return "range"
 	}
-	//shuffle by hash
-	objID := objstats.ObjectLocation().ObjectId()
-	return SimpleCharHashToRange(objID[:], uint64(rsp.CNCNT)) != uint64(rsp.CNIDX)
+	return "hash"
 }
 
 func GetCenterValueForZMSigned(zm objectio.ZoneMap) int64 {

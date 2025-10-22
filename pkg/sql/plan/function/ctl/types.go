@@ -59,6 +59,7 @@ var (
 	MoTableStats             = strings.ToUpper("MoTableStats")
 	WorkspaceThreshold       = strings.ToUpper("WorkspaceThreshold")
 	TableExtra               = strings.ToUpper("table-extra")
+	ShuffleMonitorMethod     = strings.ToUpper("shuffle_monitor")
 )
 
 var (
@@ -102,6 +103,7 @@ var (
 		MoTableStats:             handleMoTableStats,
 		WorkspaceThreshold:       handleWorkspaceThreshold,
 		TableExtra:               handleTableExtra,
+		ShuffleMonitorMethod:     handleShuffleMonitor,
 	}
 )
 

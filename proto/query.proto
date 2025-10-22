@@ -101,6 +101,8 @@ enum CmdMethod {
   CtlMoTableStats = 33;
   WorkspaceThreshold = 34;
   MinTimestamp = 35;
+  // ShuffleMonitor handle shuffle monitor request
+  ShuffleMonitor = 36;
 }
 
 // QueryRequest is the common query request. It contains the query
@@ -240,6 +242,7 @@ message Request {
   FaultInjectRequest FaultInjectRequest = 35;
   CtlMoTableStatsRequest CtlMoTableStatsRequest = 36 [ (gogoproto.nullable) = false ];
   WorkspaceThresholdRequest WorkspaceThresholdRequest = 37;
+  ShuffleMonitorRequest ShuffleMonitorRequest = 38;
 }
 
 // ShowProcessListResponse is the response of command ShowProcessList.
@@ -304,6 +307,7 @@ message Response {
   CtlMoTableStatsResponse CtlMoTableStatsResponse = 36 [ (gogoproto.nullable) = false ];
   WorkspaceThresholdResponse WorkspaceThresholdResponse = 37;
   MinTimestampResponse MinTimestampResponse = 38;
+  ShuffleMonitorResponse ShuffleMonitorResponse = 39;
 }
 
 // AlterAccountRequest is the "alter account restricted" query request.
@@ -658,4 +662,15 @@ message WorkspaceThresholdResponse {
 message MinTimestampResponse {
   // LatestCommitTS update latest commit ts.
   timestamp.Timestamp MinTimestamp = 1 [(gogoproto.nullable) = false];
+}
+
+message ShuffleMonitorRequest {
+  string Cmd = 1;
+  string Parameter = 2;
+}
+
+message ShuffleMonitorResponse {
+  bool Success = 1;
+  string Message = 2;
+  string Data = 3;
 }

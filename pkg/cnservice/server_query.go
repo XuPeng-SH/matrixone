@@ -100,6 +100,7 @@ func (s *service) initQueryCommandHandler() {
 	s.queryService.AddHandleFunc(query.CmdMethod_CtlMoTableStats, s.handleMoTableStats, false)
 	s.queryService.AddHandleFunc(query.CmdMethod_WorkspaceThreshold, s.handleWorkspaceThresholdRequest, false)
 	s.queryService.AddHandleFunc(query.CmdMethod_MinTimestamp, s.handleGetMinTimestamp, false)
+	s.queryService.AddHandleFunc(query.CmdMethod_ShuffleMonitor, s.handleShuffleMonitor, false)
 }
 
 func (s *service) handleKillConn(ctx context.Context, req *query.Request, resp *query.Response, _ *morpc.Buffer) error {
@@ -176,6 +177,14 @@ func (s *service) handleCtlReader(ctx context.Context, req *query.Request, resp 
 	resp.CtlReaderResponse.Resp = ctl.UpdateCurrentCNReader(
 		req.CtlReaderRequest.Cmd, extra...)
 
+	return nil
+}
+
+func (s *service) handleShuffleMonitor(ctx context.Context, req *query.Request, resp *query.Response, _ *morpc.Buffer) error {
+	if req == nil || req.ShuffleMonitorRequest == nil {
+		return moerr.NewInternalError(ctx, "bad request")
+	}
+	resp.ShuffleMonitorResponse = ctl.HandleShuffleMonitorRequest(req.ShuffleMonitorRequest)
 	return nil
 }
 
