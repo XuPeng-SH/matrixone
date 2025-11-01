@@ -581,7 +581,14 @@ func (gs *GlobalStats) doUpdate(ctx context.Context, ps *logtailreplay.Partition
 	return true
 }
 
-func getMinMaxValueByFloat64(typ types.Type, buf []byte) float64 {
+func getMinMaxValueByFloat64(typ types.Type, zm objectio.ZoneMap, isMin bool) float64 {
+	var buf []byte
+	if isMin {
+		buf = zm.GetMinBuf()
+	} else {
+		buf = zm.GetMaxBuf()
+	}
+
 	switch typ.Oid {
 	case types.T_bit:
 		return float64(types.DecodeUint64(buf))
@@ -610,13 +617,15 @@ func getMinMaxValueByFloat64(typ types.Type, buf []byte) float64 {
 	case types.T_datetime:
 		return float64(types.DecodeDatetime(buf))
 	case types.T_decimal64:
-		// Fix: Use Decimal64ToFloat64 to handle negative values correctly
+		// CRITICAL FIX: Use ZoneMap's scale, not tableDef's scale
+		// ZoneMap stores the scale from when the data was written
+		// tableDef's scale might have changed (e.g., via ALTER TABLE)
 		dec := types.DecodeDecimal64(buf)
-		return types.Decimal64ToFloat64(dec, typ.Scale)
+		return types.Decimal64ToFloat64(dec, zm.GetScale())
 	case types.T_decimal128:
-		// Fix: Use Decimal128ToFloat64 to handle negative values correctly
+		// CRITICAL FIX: Use ZoneMap's scale, not tableDef's scale
 		dec := types.DecodeDecimal128(buf)
-		return types.Decimal128ToFloat64(dec, typ.Scale)
+		return types.Decimal128ToFloat64(dec, zm.GetScale())
 	//case types.T_char, types.T_varchar, types.T_text:
 	//return float64(plan2.ByteSliceToUint64(buf)), true
 	default:
@@ -674,8 +683,8 @@ func updateInfoFromZoneMap(
 					case types.T_int64, types.T_int32, types.T_int16, types.T_uint64, types.T_uint32, types.T_uint16, types.T_time, types.T_timestamp, types.T_date, types.T_datetime, types.T_decimal64, types.T_decimal128:
 						info.ShuffleRanges[idx] = plan2.NewShuffleRange(false)
 						if info.ColumnZMs[idx].IsInited() {
-							minvalue := getMinMaxValueByFloat64(info.DataTypes[idx], info.ColumnZMs[idx].GetMinBuf())
-							maxvalue := getMinMaxValueByFloat64(info.DataTypes[idx], info.ColumnZMs[idx].GetMaxBuf())
+							minvalue := getMinMaxValueByFloat64(info.DataTypes[idx], info.ColumnZMs[idx], true)
+							maxvalue := getMinMaxValueByFloat64(info.DataTypes[idx], info.ColumnZMs[idx], false)
 							info.ShuffleRanges[idx].Update(minvalue, maxvalue, int64(meta.BlockHeader().Rows()), int64(objColMeta.NullCnt()))
 						}
 					case types.T_varchar, types.T_char, types.T_text:
@@ -718,8 +727,8 @@ func updateInfoFromZoneMap(
 				if info.ShuffleRanges[idx] != nil {
 					switch info.DataTypes[idx].Oid {
 					case types.T_int64, types.T_int32, types.T_int16, types.T_uint64, types.T_uint32, types.T_uint16, types.T_time, types.T_timestamp, types.T_date, types.T_datetime, types.T_decimal64, types.T_decimal128:
-						minvalue := getMinMaxValueByFloat64(info.DataTypes[idx], zm.GetMinBuf())
-						maxvalue := getMinMaxValueByFloat64(info.DataTypes[idx], zm.GetMaxBuf())
+						minvalue := getMinMaxValueByFloat64(info.DataTypes[idx], zm, true)
+						maxvalue := getMinMaxValueByFloat64(info.DataTypes[idx], zm, false)
 						info.ShuffleRanges[idx].Update(minvalue, maxvalue, int64(meta.BlockHeader().Rows()), int64(objColMeta.NullCnt()))
 					case types.T_varchar, types.T_char, types.T_text:
 						info.ShuffleRanges[idx].UpdateString(zm.GetMinBuf(), zm.GetMaxBuf(), int64(meta.BlockHeader().Rows()), int64(objColMeta.NullCnt()))
