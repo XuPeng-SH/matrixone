@@ -353,31 +353,17 @@ func UpdateStatsInfo(info *InfoFromZoneMap, tableDef *plan.TableDef, s *pb.Stats
 			// Fix: Use Decimal64ToFloat64 with proper scale to handle negative values correctly
 			// Direct cast to float64 treats negative values (stored as two's complement) as large positive numbers
 			scale := coldef.Typ.Scale
-			zmScale := info.ColumnZMs[i].GetScale()
 			minDec := types.DecodeDecimal64(info.ColumnZMs[i].GetMinBuf())
 			maxDec := types.DecodeDecimal64(info.ColumnZMs[i].GetMaxBuf())
 			s.MinValMap[colName] = types.Decimal64ToFloat64(minDec, scale)
 			s.MaxValMap[colName] = types.Decimal64ToFloat64(maxDec, scale)
-
-			// DEBUG: Log scale mismatch
-			if scale != zmScale {
-				logutil.Warnf("[DECIMAL_DEBUG] %s.%s: TableDef scale=%d, ZoneMap scale=%d, min_internal=%d, max_internal=%d, min_float=%.4f, max_float=%.4f",
-					s.TableName, colName, scale, zmScale, minDec, maxDec, s.MinValMap[colName], s.MaxValMap[colName])
-			}
 		case types.T_decimal128:
 			// Fix: Use actual scale from column definition instead of hardcoded 0
 			scale := coldef.Typ.Scale
-			zmScale := info.ColumnZMs[i].GetScale()
 			minDec := types.DecodeDecimal128(info.ColumnZMs[i].GetMinBuf())
 			maxDec := types.DecodeDecimal128(info.ColumnZMs[i].GetMaxBuf())
 			s.MinValMap[colName] = types.Decimal128ToFloat64(minDec, scale)
 			s.MaxValMap[colName] = types.Decimal128ToFloat64(maxDec, scale)
-
-			// DEBUG: Log scale mismatch
-			if scale != zmScale {
-				logutil.Warnf("[DECIMAL_DEBUG] %s.%s: TableDef scale=%d, ZoneMap scale=%d, min_float=%.4f, max_float=%.4f",
-					s.TableName, colName, scale, zmScale, s.MinValMap[colName], s.MaxValMap[colName])
-			}
 		}
 
 		if info.ShuffleRanges[i] != nil {
@@ -389,12 +375,6 @@ func UpdateStatsInfo(info *InfoFromZoneMap, tableDef *plan.TableDef, s *pb.Stats
 				info.ShuffleRanges[i].Eval()
 				info.ShuffleRanges[i].ReleaseUnused()
 				s.ShuffleRangeMap[colName] = info.ShuffleRanges[i]
-
-				// DEBUG: Log ShuffleRange usage for decimal
-				if info.DataTypes[i].Oid == types.T_decimal64 || info.DataTypes[i].Oid == types.T_decimal128 {
-					logutil.Infof("[DECIMAL_DEBUG] ShuffleRange enabled for %s.%s: min=%.4f, max=%.4f, ndv=%.0f, overlap=%.4f",
-						s.TableName, colName, s.MinValMap[colName], s.MaxValMap[colName], info.ColumnNDVs[i], info.ShuffleRanges[i].Overlap)
-				}
 			}
 			info.ShuffleRanges[i] = nil
 		}
