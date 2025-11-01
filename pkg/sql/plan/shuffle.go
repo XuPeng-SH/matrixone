@@ -744,7 +744,8 @@ func determineShuffleForScan(node *plan.Node, builder *QueryBuilder) {
 	if !ok {
 		return
 	}
-	switch types.T(node.TableDef.Cols[firstSortColID].Typ.Id) {
+	colType := types.T(node.TableDef.Cols[firstSortColID].Typ.Id)
+	switch colType {
 	case types.T_int64, types.T_int32, types.T_int16, types.T_uint64,
 		types.T_uint32, types.T_uint16, types.T_char, types.T_varchar, types.T_text:
 		node.Stats.HashmapStats.ShuffleType = plan.ShuffleType_Range
@@ -753,6 +754,17 @@ func determineShuffleForScan(node *plan.Node, builder *QueryBuilder) {
 		node.Stats.HashmapStats.ShuffleColMax = int64(w.Stats.MaxValMap[firstSortColName])
 		node.Stats.HashmapStats.Ranges = shouldUseShuffleRanges(w.Stats.ShuffleRangeMap[firstSortColName], firstSortColName)
 		node.Stats.HashmapStats.Nullcnt = int64(w.Stats.NullCntMap[firstSortColName])
+
+		// DEBUG: Log shuffle decision
+		logutil.Infof("[SHUFFLE_DEBUG] %s.%s: ShuffleType=Range, min=%d, max=%d, hasRanges=%v",
+			node.TableDef.Name, firstSortColName, node.Stats.HashmapStats.ShuffleColMin, node.Stats.HashmapStats.ShuffleColMax,
+			node.Stats.HashmapStats.Ranges != nil)
+	default:
+		// DEBUG: Log when decimal or other types are NOT using Range shuffle
+		if colType == types.T_decimal64 || colType == types.T_decimal128 {
+			logutil.Infof("[SHUFFLE_DEBUG] %s.%s (%v): NOT using Range shuffle (decimal not supported in determineShuffleForScan)",
+				node.TableDef.Name, firstSortColName, colType)
+		}
 	}
 }
 

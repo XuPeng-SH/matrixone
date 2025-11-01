@@ -621,11 +621,27 @@ func getMinMaxValueByFloat64(typ types.Type, zm objectio.ZoneMap, isMin bool) fl
 		// ZoneMap stores the scale from when the data was written
 		// tableDef's scale might have changed (e.g., via ALTER TABLE)
 		dec := types.DecodeDecimal64(buf)
-		return types.Decimal64ToFloat64(dec, zm.GetScale())
+		zmScale := zm.GetScale()
+		result := types.Decimal64ToFloat64(dec, zmScale)
+
+		// DEBUG: Log every conversion to trace the issue
+		if typ.Scale != zmScale {
+			logutil.Warnf("[DECIMAL_DEBUG] getMinMaxValueByFloat64: typ.Scale=%d, zm.Scale=%d, internal=%d, result=%.4f",
+				typ.Scale, zmScale, dec, result)
+		}
+		return result
 	case types.T_decimal128:
 		// CRITICAL FIX: Use ZoneMap's scale, not tableDef's scale
 		dec := types.DecodeDecimal128(buf)
-		return types.Decimal128ToFloat64(dec, zm.GetScale())
+		zmScale := zm.GetScale()
+		result := types.Decimal128ToFloat64(dec, zmScale)
+
+		// DEBUG: Log every conversion
+		if typ.Scale != zmScale {
+			logutil.Warnf("[DECIMAL_DEBUG] getMinMaxValueByFloat64 (128): typ.Scale=%d, zm.Scale=%d, result=%.4f",
+				typ.Scale, zmScale, result)
+		}
+		return result
 	//case types.T_char, types.T_varchar, types.T_text:
 	//return float64(plan2.ByteSliceToUint64(buf)), true
 	default:
