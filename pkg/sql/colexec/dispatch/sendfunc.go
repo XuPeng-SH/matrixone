@@ -254,7 +254,7 @@ func sendToAnyRemoteFunc(bat *batch.Batch, ap *Dispatch, proc *process.Process) 
 	}
 	select {
 	case <-proc.Ctx.Done():
-		return true, nil
+		return true, proc.Ctx.Err()
 
 	default:
 	}
