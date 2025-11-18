@@ -2582,11 +2582,25 @@ func executeStmtWithResponse(ses *Session,
 		trace.WithKind(trace.SpanKindStatement))
 	defer span.End(trace.WithStatementExtra(ses.GetTxnId(), ses.GetStmtId(), ses.GetSqlOfStmt()))
 
+	queryStart := time.Now()
 	ses.SetQueryInProgress(true)
-	ses.SetQueryStart(time.Now())
+	ses.SetQueryStart(queryStart)
 	ses.SetQueryInExecute(true)
-	defer ses.SetQueryEnd(time.Now())
-	defer ses.SetQueryInProgress(false)
+	defer func() {
+		queryEnd := time.Now()
+		ses.SetQueryEnd(queryEnd)
+		ses.SetQueryInProgress(false)
+		queryDuration := queryEnd.Sub(queryStart)
+		ses.Info(execCtx.reqCtx, "SQL query execution completed",
+			zap.String("sql", ses.GetSqlOfStmt()),
+			zap.Duration("duration", queryDuration),
+			zap.Error(err),
+		)
+	}()
+
+	ses.Info(execCtx.reqCtx, "SQL query execution start",
+		zap.String("sql", ses.GetSqlOfStmt()),
+	)
 
 	err = executeStmtWithTxn(ses, nil, execCtx)
 	if err != nil {
@@ -3023,7 +3037,24 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 	input.genSqlSourceType(ses)
 	ses.SetShowStmtType(NotShowStatement)
 	resper := ses.GetResponser()
-	ses.SetSql(input.getSql())
+	sqlStr := input.getSql()
+	ses.SetSql(sqlStr)
+
+	// Info log for SQL query start
+	ses.Info(execCtx.reqCtx, "doComQuery start",
+		zap.String("sql", sqlStr),
+		zap.String("database", ses.GetDatabaseName()),
+	)
+
+	defer func() {
+		queryDuration := time.Since(beginInstant)
+		ses.Info(execCtx.reqCtx, "doComQuery completed",
+			zap.String("sql", sqlStr),
+			zap.Duration("duration", queryDuration),
+			zap.Error(retErr),
+		)
+	}()
+
 	input.genHash()
 	version := ses.GetCreateVersion()
 	if len(version) == 0 {

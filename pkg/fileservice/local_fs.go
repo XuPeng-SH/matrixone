@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/matrixorigin/matrixone/pkg/common/malloc"
 	"io"
 	"io/fs"
 	"iter"
@@ -30,6 +29,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/matrixorigin/matrixone/pkg/common/malloc"
 
 	"go.uber.org/zap"
 
@@ -331,24 +332,65 @@ func (l *LocalFS) Read(ctx context.Context, vector *IOVector) (err error) {
 
 	bytesCounter := new(atomic.Int64)
 	t0 := time.Now()
+
+	// Calculate total size for debug logging
+	var totalSize int64
+	for _, entry := range vector.Entries {
+		if entry.Size > 0 {
+			totalSize += entry.Size
+		}
+	}
+
 	defer func() {
 		metric.LocalReadIOBytesHistogram.Observe(float64(bytesCounter.Load()))
 		metric.FSReadDurationGetContent.Observe(time.Since(t0).Seconds())
+
+		// Info log for IO operations
+		logutil.Info("LocalFS.Read completed",
+			zap.String("file", vector.FilePath),
+			zap.Int64("total-size", totalSize),
+			zap.Int64("bytes-read", bytesCounter.Load()),
+			zap.Duration("total-duration", time.Since(t0)),
+			zap.Duration("io-duration", time.Since(ioStart)),
+			zap.Int("entries-count", len(vector.Entries)),
+		)
 	}()
 
 	if len(vector.Entries) == 0 {
 		return moerr.NewEmptyVectorNoCtx()
 	}
 
-	for _, cache := range vector.Caches {
+	// Info log for read start
+	logutil.Info("LocalFS.Read start",
+		zap.String("file", vector.FilePath),
+		zap.Int64("total-size", totalSize),
+		zap.Int("entries-count", len(vector.Entries)),
+	)
 
-		t0 := time.Now()
+	for _, cache := range vector.Caches {
+		cacheStart := time.Now()
+		entriesBefore := countDoneEntries(vector.Entries)
 		err := readCache(ctx, cache, vector)
-		metric.FSReadDurationReadVectorCache.Observe(time.Since(t0).Seconds())
+		cacheDuration := time.Since(cacheStart)
+		entriesAfter := countDoneEntries(vector.Entries)
+		cacheHit := entriesAfter > entriesBefore
+
+		metric.FSReadDurationReadVectorCache.Observe(cacheDuration.Seconds())
+		logutil.Info("LocalFS.Read vector cache",
+			zap.String("file", vector.FilePath),
+			zap.Bool("cache-hit", cacheHit),
+			zap.Int("entries-before", entriesBefore),
+			zap.Int("entries-after", entriesAfter),
+			zap.Duration("duration", cacheDuration),
+		)
+
 		if err != nil {
 			return err
 		}
 		if vector.allDone() {
+			logutil.Info("LocalFS.Read all entries satisfied by vector cache",
+				zap.String("file", vector.FilePath),
+			)
 			return nil
 		}
 
@@ -364,14 +406,29 @@ func (l *LocalFS) Read(ctx context.Context, vector *IOVector) (err error) {
 
 read_memory_cache:
 	if l.memCache != nil {
-
-		t0 := time.Now()
+		memCacheStart := time.Now()
+		entriesBefore := countDoneEntries(vector.Entries)
 		err := readCache(ctx, l.memCache, vector)
-		metric.FSReadDurationReadMemoryCache.Observe(time.Since(t0).Seconds())
+		memCacheDuration := time.Since(memCacheStart)
+		entriesAfter := countDoneEntries(vector.Entries)
+		memCacheHit := entriesAfter > entriesBefore
+
+		metric.FSReadDurationReadMemoryCache.Observe(memCacheDuration.Seconds())
+		logutil.Info("LocalFS.Read memory cache",
+			zap.String("file", vector.FilePath),
+			zap.Bool("cache-hit", memCacheHit),
+			zap.Int("entries-before", entriesBefore),
+			zap.Int("entries-after", entriesAfter),
+			zap.Duration("duration", memCacheDuration),
+		)
+
 		if err != nil {
 			return err
 		}
 		if vector.allDone() {
+			logutil.Info("LocalFS.Read all entries satisfied by memory cache",
+				zap.String("file", vector.FilePath),
+			)
 			return nil
 		}
 
@@ -386,14 +443,29 @@ read_memory_cache:
 	}
 read_disk_cache:
 	if l.diskCache != nil {
-
-		t0 := time.Now()
+		diskCacheStart := time.Now()
+		entriesBefore := countDoneEntries(vector.Entries)
 		err := readCache(ctx, l.diskCache, vector)
-		metric.FSReadDurationReadDiskCache.Observe(time.Since(t0).Seconds())
+		diskCacheDuration := time.Since(diskCacheStart)
+		entriesAfter := countDoneEntries(vector.Entries)
+		diskCacheHit := entriesAfter > entriesBefore
+
+		metric.FSReadDurationReadDiskCache.Observe(diskCacheDuration.Seconds())
+		logutil.Info("LocalFS.Read disk cache",
+			zap.String("file", vector.FilePath),
+			zap.Bool("cache-hit", diskCacheHit),
+			zap.Int("entries-before", entriesBefore),
+			zap.Int("entries-after", entriesAfter),
+			zap.Duration("duration", diskCacheDuration),
+		)
+
 		if err != nil {
 			return err
 		}
 		if vector.allDone() {
+			logutil.Info("LocalFS.Read all entries satisfied by disk cache",
+				zap.String("file", vector.FilePath),
+			)
 			return nil
 		}
 
@@ -408,13 +480,29 @@ read_disk_cache:
 	}
 
 	if l.remoteCache != nil {
-		t0 := time.Now()
+		remoteCacheStart := time.Now()
+		entriesBefore := countDoneEntries(vector.Entries)
 		err := readCache(ctx, l.remoteCache, vector)
-		metric.FSReadDurationReadRemoteCache.Observe(time.Since(t0).Seconds())
+		remoteCacheDuration := time.Since(remoteCacheStart)
+		entriesAfter := countDoneEntries(vector.Entries)
+		remoteCacheHit := entriesAfter > entriesBefore
+
+		metric.FSReadDurationReadRemoteCache.Observe(remoteCacheDuration.Seconds())
+		logutil.Info("LocalFS.Read remote cache",
+			zap.String("file", vector.FilePath),
+			zap.Bool("cache-hit", remoteCacheHit),
+			zap.Int("entries-before", entriesBefore),
+			zap.Int("entries-after", entriesAfter),
+			zap.Duration("duration", remoteCacheDuration),
+		)
+
 		if err != nil {
 			return err
 		}
 		if vector.allDone() {
+			logutil.Info("LocalFS.Read all entries satisfied by remote cache",
+				zap.String("file", vector.FilePath),
+			)
 			return nil
 		}
 	}
@@ -431,6 +519,10 @@ read_disk_cache:
 		} else {
 			wait()
 			stats.AddLocalFSReadIOMergerTimeConsumption(time.Since(startLock))
+			logutil.Info("LocalFS.Read waiting for IO merger",
+				zap.String("file", vector.FilePath),
+				zap.Duration("wait-duration", time.Since(startLock)),
+			)
 			if mayReadMemoryCache {
 				goto read_memory_cache
 			} else {
@@ -439,10 +531,30 @@ read_disk_cache:
 		}
 	}
 
+	// All caches missed, need to read from disk
+	logutil.Info("LocalFS.Read cache miss, reading from disk",
+		zap.String("file", vector.FilePath),
+		zap.Int("pending-entries", len(vector.Entries)-countDoneEntries(vector.Entries)),
+	)
+
+	diskReadStart := time.Now()
 	err = l.read(ctx, vector, bytesCounter)
+	diskReadDuration := time.Since(diskReadStart)
+
 	if err != nil {
+		logutil.Info("LocalFS.Read disk read failed",
+			zap.String("file", vector.FilePath),
+			zap.Duration("duration", diskReadDuration),
+			zap.Error(err),
+		)
 		return err
 	}
+
+	logutil.Info("LocalFS.Read disk read completed",
+		zap.String("file", vector.FilePath),
+		zap.Duration("duration", diskReadDuration),
+		zap.Int64("bytes-read", bytesCounter.Load()),
+	)
 
 	return nil
 }
@@ -499,18 +611,51 @@ func (l *LocalFS) read(ctx context.Context, vector *IOVector, bytesCounter *atom
 	}
 	nativePath := l.toNativeFilePath(path.File)
 
+	// Calculate total size to read from disk
+	var totalDiskReadSize int64
+	for _, entry := range vector.Entries {
+		if !entry.done && entry.Size > 0 {
+			totalDiskReadSize += entry.Size
+		}
+	}
+
+	fileOpenStart := time.Now()
 	file, err := os.Open(nativePath)
+	fileOpenDuration := time.Since(fileOpenStart)
+
 	if os.IsNotExist(err) {
+		logutil.Info("LocalFS.read file not found",
+			zap.String("file", vector.FilePath),
+			zap.String("native-path", nativePath),
+		)
 		return moerr.NewFileNotFoundNoCtx(path.File)
 	}
 	if err != nil {
+		logutil.Info("LocalFS.read file open failed",
+			zap.String("file", vector.FilePath),
+			zap.String("native-path", nativePath),
+			zap.Duration("open-duration", fileOpenDuration),
+			zap.Error(err),
+		)
 		return err
 	}
 	defer file.Close()
 
+	logutil.Info("LocalFS.read file opened",
+		zap.String("file", vector.FilePath),
+		zap.String("native-path", nativePath),
+		zap.Duration("open-duration", fileOpenDuration),
+		zap.Int64("total-size-to-read", totalDiskReadSize),
+	)
+
 	numNotDoneEntries := 0
 	defer func() {
 		metric.FSReadLocalCounter.Add(float64(numNotDoneEntries))
+		logutil.Info("LocalFS.read completed",
+			zap.String("file", vector.FilePath),
+			zap.Int("entries-read", numNotDoneEntries),
+			zap.Int64("bytes-read", bytesCounter.Load()),
+		)
 	}()
 
 	for i, entry := range vector.Entries {
@@ -522,6 +667,14 @@ func (l *LocalFS) read(ctx context.Context, vector *IOVector, bytesCounter *atom
 			continue
 		}
 		numNotDoneEntries++
+
+		entryReadStart := time.Now()
+		logutil.Info("LocalFS.read reading entry",
+			zap.String("file", vector.FilePath),
+			zap.Int64("offset", entry.Offset),
+			zap.Int64("size", entry.Size),
+			zap.Int("entry-index", i),
+		)
 
 		if entry.WriterForRead != nil {
 			fileWithChecksum, put := NewFileWithChecksumOSFile(ctx, file, _BlockContentSize, l.perfCounterSets)
@@ -592,10 +745,22 @@ func (l *LocalFS) read(ctx context.Context, vector *IOVector, bytesCounter *atom
 			defer put.Put()
 
 			if entry.Offset > 0 {
+				seekStart := time.Now()
 				_, err = fileWithChecksum.Seek(int64(entry.Offset), io.SeekStart)
 				if err != nil {
+					logutil.Info("LocalFS.read entry seek failed",
+						zap.String("file", vector.FilePath),
+						zap.Int64("offset", entry.Offset),
+						zap.Duration("seek-duration", time.Since(seekStart)),
+						zap.Error(err),
+					)
 					return err
 				}
+				logutil.Info("LocalFS.read entry seek",
+					zap.String("file", vector.FilePath),
+					zap.Int64("offset", entry.Offset),
+					zap.Duration("seek-duration", time.Since(seekStart)),
+				)
 			}
 			r := (io.Reader)(fileWithChecksum)
 			if entry.Size > 0 {
@@ -607,25 +772,55 @@ func (l *LocalFS) read(ctx context.Context, vector *IOVector, bytesCounter *atom
 			}
 
 			if entry.Size < 0 {
+				readStart := time.Now()
 				var data []byte
 				data, err = io.ReadAll(r)
+				readDuration := time.Since(readStart)
 				if err != nil {
+					logutil.Info("LocalFS.read entry read failed",
+						zap.String("file", vector.FilePath),
+						zap.Int64("offset", entry.Offset),
+						zap.Duration("read-duration", readDuration),
+						zap.Error(err),
+					)
 					return err
 				}
 				entry.Data = data
 				entry.Size = int64(len(data))
+				logutil.Info("LocalFS.read entry read completed",
+					zap.String("file", vector.FilePath),
+					zap.Int64("offset", entry.Offset),
+					zap.Int64("size", entry.Size),
+					zap.Duration("read-duration", readDuration),
+				)
 
 			} else {
 				finally := entry.prepareData(ctx)
 				defer finally(&err)
+				readStart := time.Now()
 				var n int
 				n, err = io.ReadFull(r, entry.Data)
+				readDuration := time.Since(readStart)
 				if err != nil {
+					logutil.Info("LocalFS.read entry read failed",
+						zap.String("file", vector.FilePath),
+						zap.Int64("offset", entry.Offset),
+						zap.Int64("size", entry.Size),
+						zap.Duration("read-duration", readDuration),
+						zap.Error(err),
+					)
 					return err
 				}
 				if int64(n) != entry.Size {
 					return moerr.NewUnexpectedEOFNoCtx(path.File)
 				}
+				logutil.Info("LocalFS.read entry read completed",
+					zap.String("file", vector.FilePath),
+					zap.Int64("offset", entry.Offset),
+					zap.Int64("size", entry.Size),
+					zap.Int("bytes-read", n),
+					zap.Duration("read-duration", readDuration),
+				)
 			}
 
 			if err = entry.setCachedData(ctx, l); err != nil {
@@ -635,6 +830,15 @@ func (l *LocalFS) read(ctx context.Context, vector *IOVector, bytesCounter *atom
 			vector.Entries[i] = entry
 
 		}
+
+		entryReadDuration := time.Since(entryReadStart)
+		logutil.Info("LocalFS.read entry completed",
+			zap.String("file", vector.FilePath),
+			zap.Int("entry-index", i),
+			zap.Int64("offset", entry.Offset),
+			zap.Int64("size", entry.Size),
+			zap.Duration("total-duration", entryReadDuration),
+		)
 
 	}
 
@@ -1217,4 +1421,15 @@ func entryIsDir(path string, name string, entry fs.FileInfo) (bool, error) {
 		return entryIsDir(path, name, stat)
 	}
 	return false, nil
+}
+
+// countDoneEntries counts the number of entries that are marked as done
+func countDoneEntries(entries []IOEntry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.done {
+			count++
+		}
+	}
+	return count
 }
