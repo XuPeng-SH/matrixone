@@ -452,13 +452,25 @@ func (th *TxnHandler) Commit(execCtx *ExecCtx) error {
 	defer th.mu.Unlock()
 	/*
 		Commit Rules:
-		1, if it is in single-statement mode:
-			it commits.
+		1, if it is in single-statement mode (autocommit=1 and no explicit BEGIN):
+			it commits. This is checked by: !bitsIsSet(OPTION_BEGIN|OPTION_NOT_AUTOCOMMIT)
 		2, if it is in multi-statement mode:
 			if the statement is the one can be executed in the active transaction,
 				the transaction need to be committed at the end of the statement.
+		3, if autocommit=1 for the current statement AND not in a BEGIN block:
+			it commits. This ensures autocommit works correctly even if optionBits
+			are stale due to previous transaction state.
+			Note: We check execCtx.txnOpt.autoCommit (current statement's autocommit value)
+			instead of relying solely on optionBits, which may be stale.
+			This condition handles the case where optionBits show autocommit=0 (OPTION_NOT_AUTOCOMMIT=1)
+			but the actual autocommit=1 (execCtx.txnOpt.autoCommit=true), ensuring correct behavior.
+		4, if the statement needs to be committed in active transaction:
+			it commits. This is for statements like Create/Drop Sequence.
+		5, if explicit COMMIT statement:
+			it commits.
 	*/
 	if !bitsIsSet(th.optionBits, OPTION_BEGIN|OPTION_NOT_AUTOCOMMIT) ||
+		(execCtx.txnOpt.autoCommit && !execCtx.txnOpt.byBegin && !bitsIsSet(th.optionBits, OPTION_BEGIN)) ||
 		th.inActiveTxnUnsafe() && NeedToBeCommittedInActiveTransaction(execCtx.stmt) ||
 		execCtx.txnOpt.byCommit {
 		execCtx.ses.EnterFPrint(FPCommitBeforeCommitUnsafe)
@@ -573,8 +585,11 @@ func (th *TxnHandler) Rollback(execCtx *ExecCtx) error {
 			2, if it is in multi-statement mode (Case1,Case3,Case4):
 		        the transaction need to be rollback at the end of the statement.
 				(every error will abort the transaction.)
+			3, if autocommit=1 for the current statement AND not in a BEGIN block:
+				it rollbacks. This ensures autocommit mode works correctly.
 	*/
 	if !bitsIsSet(th.optionBits, OPTION_BEGIN|OPTION_NOT_AUTOCOMMIT) ||
+		(execCtx.txnOpt.autoCommit && !execCtx.txnOpt.byBegin && !bitsIsSet(th.optionBits, OPTION_BEGIN)) ||
 		th.inActiveTxnUnsafe() && NeedToBeCommittedInActiveTransaction(execCtx.stmt) ||
 		execCtx.txnOpt.byRollback {
 		execCtx.ses.EnterFPrint(FPRollbackUnsafe1)

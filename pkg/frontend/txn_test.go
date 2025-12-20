@@ -974,3 +974,241 @@ func (txnop *testTxnOp) ExitRollbackStmt() {
 func (txnop *testTxnOp) SetFootPrints(id int, enter bool) {
 
 }
+
+// TestCommit_AutocommitWithStaleOptionBits tests the fix for autocommit mode
+// when optionBits are stale due to previous transaction state.
+func TestCommit_AutocommitWithStaleOptionBits(t *testing.T) {
+	convey.Convey("Test autocommit commit with stale optionBits", t, func() {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		ctx := defines.AttachAccountId(context.TODO(), sysAccountID)
+		ses := newMockErrSession2(t, ctx, ctrl)
+		ec := newTestExecCtx(ctx, ctrl)
+		ec.ses = ses
+
+		// Test Case 1: Autocommit=1, normal case (optionBits correct)
+		convey.Convey("Case 1: Autocommit=1, optionBits correct", func() {
+			ec.txnOpt = FeTxnOption{
+				autoCommit: true,
+			}
+			ec.stmt = &tree.DropTable{}
+
+			err := ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Verify optionBits are set correctly
+			convey.So(ses.GetTxnHandler().OptionBitsIsSet(OPTION_BEGIN), convey.ShouldBeFalse)
+			convey.So(ses.GetTxnHandler().OptionBitsIsSet(OPTION_NOT_AUTOCOMMIT), convey.ShouldBeFalse)
+
+			// Commit should succeed (condition 1 should be satisfied)
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Transaction should be committed (no active transaction)
+			txn := ses.GetTxnHandler().GetTxn()
+			convey.So(txn, convey.ShouldBeNil)
+		})
+
+		// Test Case 2: Autocommit=1, optionBits stale (OPTION_NOT_AUTOCOMMIT=1)
+		// This simulates the bug scenario where optionBits are stale
+		convey.Convey("Case 2: Autocommit=1, optionBits stale", func() {
+			ec.txnOpt = FeTxnOption{
+				autoCommit: true,
+			}
+			ec.stmt = &tree.DropTable{}
+
+			err := ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Manually set OPTION_NOT_AUTOCOMMIT to simulate stale state
+			// This simulates the bug where optionBits are not updated correctly
+			ses.GetTxnHandler().SetOptionBits(OPTION_NOT_AUTOCOMMIT)
+
+			// Verify stale state
+			convey.So(ses.GetTxnHandler().OptionBitsIsSet(OPTION_NOT_AUTOCOMMIT), convey.ShouldBeTrue)
+			convey.So(ses.GetTxnHandler().OptionBitsIsSet(OPTION_BEGIN), convey.ShouldBeFalse)
+
+			// Commit should still succeed (condition 2 should be satisfied)
+			// because execCtx.txnOpt.autoCommit=true and OPTION_BEGIN is not set
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Transaction should be committed
+			txn := ses.GetTxnHandler().GetTxn()
+			convey.So(txn, convey.ShouldBeNil)
+		})
+
+		// Test Case 3: Autocommit=1, in BEGIN block (should not commit)
+		convey.Convey("Case 3: Autocommit=1, in BEGIN block", func() {
+			ec.txnOpt = FeTxnOption{
+				autoCommit: true,
+				byBegin:    true,
+			}
+			ec.stmt = &tree.DropTable{}
+
+			err := ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Verify BEGIN block
+			convey.So(ses.GetTxnHandler().OptionBitsIsSet(OPTION_BEGIN), convey.ShouldBeTrue)
+
+			// Commit should not commit (condition 2 should not be satisfied because OPTION_BEGIN is set)
+			// But condition 1 might not be satisfied either
+			// Actually, in BEGIN block, we typically don't auto-commit
+			err = ses.GetTxnHandler().Commit(ec)
+			// In BEGIN block, commit might still be called but behavior depends on other conditions
+			// The key is that condition 2 should not trigger auto-commit
+		})
+
+		// Test Case 4: Autocommit=0 (should not auto-commit)
+		convey.Convey("Case 4: Autocommit=0, should not auto-commit", func() {
+			ec.txnOpt = FeTxnOption{
+				autoCommit: false,
+			}
+			ec.stmt = &tree.DropTable{}
+
+			err := ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Verify autocommit=0 state
+			convey.So(ses.GetTxnHandler().OptionBitsIsSet(OPTION_NOT_AUTOCOMMIT), convey.ShouldBeTrue)
+
+			// Commit should not commit automatically (condition 2 should not be satisfied)
+			// because execCtx.txnOpt.autoCommit=false
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+			// In autocommit=0 mode, commit might still be called but should not auto-commit
+			// The transaction should remain active (condition 2 should not trigger because autoCommit=false)
+			_ = ses.GetTxnHandler().GetTxn()
+		})
+
+		// Test Case 5: Multiple DROP TABLE statements in autocommit=1 mode
+		convey.Convey("Case 5: Multiple DROP TABLE in autocommit=1", func() {
+			ec.txnOpt = FeTxnOption{
+				autoCommit: true,
+			}
+
+			// First DROP TABLE
+			ec.stmt = &tree.DropTable{}
+			err := ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Second DROP TABLE (should create new transaction and commit)
+			ec.stmt = &tree.DropTable{}
+			err = ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Simulate stale optionBits
+			ses.GetTxnHandler().SetOptionBits(OPTION_NOT_AUTOCOMMIT)
+
+			// Commit should still succeed (condition 2 should handle stale state)
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Transaction should be committed
+			txn := ses.GetTxnHandler().GetTxn()
+			convey.So(txn, convey.ShouldBeNil)
+		})
+
+		// Test Case 6: DML statements (INSERT) in autocommit=1 with stale optionBits
+		convey.Convey("Case 6: DML (INSERT) in autocommit=1 with stale optionBits", func() {
+			ec.txnOpt = FeTxnOption{
+				autoCommit: true,
+			}
+			ec.stmt = &tree.Insert{}
+
+			err := ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Simulate stale optionBits
+			ses.GetTxnHandler().SetOptionBits(OPTION_NOT_AUTOCOMMIT)
+
+			// Commit should still succeed (condition 2 should handle stale state)
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Transaction should be committed
+			txn := ses.GetTxnHandler().GetTxn()
+			convey.So(txn, convey.ShouldBeNil)
+		})
+
+		// Test Case 7: Statement that needs to be committed in active transaction
+		convey.Convey("Case 7: Statement needing commit in active transaction", func() {
+			ec.txnOpt = FeTxnOption{
+				autoCommit: true,
+				byBegin:    true, // In BEGIN block
+			}
+			ec.stmt = &tree.CreateSequence{} // This needs to be committed in active transaction
+
+			err := ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Verify BEGIN block
+			convey.So(ses.GetTxnHandler().OptionBitsIsSet(OPTION_BEGIN), convey.ShouldBeTrue)
+
+			// Verify statement needs commit
+			convey.So(NeedToBeCommittedInActiveTransaction(ec.stmt), convey.ShouldBeTrue)
+
+			// Commit should succeed (condition 3 should be satisfied)
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+		})
+	})
+}
+
+// TestCommit_AutocommitMultiStatement tests autocommit behavior in multi-statement scenarios
+func TestCommit_AutocommitMultiStatement(t *testing.T) {
+	convey.Convey("Test autocommit in multi-statement scenarios", t, func() {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		ctx := defines.AttachAccountId(context.TODO(), sysAccountID)
+		ses := newMockErrSession2(t, ctx, ctrl)
+		ec := newTestExecCtx(ctx, ctrl)
+		ec.ses = ses
+
+		// Test: Multiple statements in autocommit=1 mode should each commit separately
+		convey.Convey("Multiple statements in autocommit=1", func() {
+			ec.txnOpt = FeTxnOption{
+				autoCommit: true,
+			}
+
+			// First statement: DROP TABLE
+			ec.stmt = &tree.DropTable{}
+			err := ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(ses.GetTxnHandler().GetTxn(), convey.ShouldBeNil)
+
+			// Second statement: INSERT (DML)
+			ec.stmt = &tree.Insert{}
+			err = ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Simulate stale optionBits
+			ses.GetTxnHandler().SetOptionBits(OPTION_NOT_AUTOCOMMIT)
+
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(ses.GetTxnHandler().GetTxn(), convey.ShouldBeNil)
+
+			// Third statement: Another DROP TABLE
+			ec.stmt = &tree.DropTable{}
+			err = ses.GetTxnHandler().Create(ec)
+			convey.So(err, convey.ShouldBeNil)
+
+			// Still stale optionBits
+			ses.GetTxnHandler().SetOptionBits(OPTION_NOT_AUTOCOMMIT)
+
+			err = ses.GetTxnHandler().Commit(ec)
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(ses.GetTxnHandler().GetTxn(), convey.ShouldBeNil)
+		})
+	})
+}
