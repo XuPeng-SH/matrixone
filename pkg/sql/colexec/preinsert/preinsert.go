@@ -269,14 +269,12 @@ func genAutoIncrCol(bat *batch.Batch, proc *proc, preInsert *PreInsert) error {
 	// which would cause PrimaryKeysMayBeUpserted to check a narrower time range
 	// and miss manual inserts that happened between the old and new allocation.
 	lastAllocateTSMap := make(map[string]timestamp.Timestamp)
-	if len(needReCheck) > 0 {
-		for col := range needReCheck {
-			ts, err := proc.GetIncrService().GetLastAllocateTS(proc.Ctx, tableID, col)
-			if err != nil {
-				return err
-			}
-			lastAllocateTSMap[col] = ts
+	for col := range needReCheck {
+		ts, err := proc.GetIncrService().GetLastAllocateTS(proc.Ctx, tableID, col)
+		if err != nil {
+			return err
 		}
+		lastAllocateTSMap[col] = ts
 	}
 
 	lastInsertValue, err := proc.GetIncrService().InsertValues(
