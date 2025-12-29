@@ -483,6 +483,10 @@ message Stats {
   int32 dop = 8;
   HashMapStats hashmapStats = 9;
   string sql = 10;
+  // object count from StatsInfo (for IVF entries optimization)
+  int64 object_number = 11;
+  // estimated size in MB (for IVF entries optimization)
+  double estimated_size_mb = 12;
 }
 
 message RowsetExpr {

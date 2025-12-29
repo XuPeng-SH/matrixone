@@ -59,6 +59,14 @@ const RowSizeThreshold = 128
 const LargeBlockThresholdForOneCN = 4
 const LargeBlockThresholdForMultiCN = 32
 
+// IVF entries optimization thresholds
+const (
+	IvfEntriesMinObjectCount     = 2      // Minimum object count to trigger optimization
+	IvfEntriesMinSizeMB          = 100.0 // Minimum size in MB to trigger optimization
+	IvfEntriesMultiCNObjectCount = 10    // Object count threshold for multi-CN
+	IvfEntriesMultiCNSizeMB      = 500.0 // Size threshold for multi-CN
+)
+
 // for test
 var ForceScanOnMultiCN atomic.Bool
 
@@ -1573,7 +1581,112 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 			stats.Rowsize = 0
 		}
 	}
+
+	// Populate object number and estimated size for IVF entries optimization
+	// Prefer AccurateObjectNumber, fallback to ApproxObjectNumber
+	stats.ObjectNumber = s.AccurateObjectNumber
+	if stats.ObjectNumber == 0 {
+		stats.ObjectNumber = s.ApproxObjectNumber
+	}
+	
+	if node.TableDef != nil && node.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries {
+		logutil.Infof("[IVF_OPT] calcScanStats: IVF entries table - AccurateObjectNumber=%d, ApproxObjectNumber=%d, final ObjectNumber=%d",
+			s.AccurateObjectNumber, s.ApproxObjectNumber, stats.ObjectNumber)
+	}
+
+	// Calculate estimated size in MB from SizeMap (more accurate)
+	var totalSizeMB uint64
+	for colName, v := range s.SizeMap {
+		totalSizeMB += v
+		if node.TableDef != nil && node.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries {
+			logutil.Infof("[IVF_OPT] calcScanStats: SizeMap[%s]=%d bytes", colName, v)
+		}
+	}
+	stats.EstimatedSizeMb = float64(totalSizeMB) / (1024 * 1024)
+
+	// For IVF entries table, SizeMap may only contain metadata size, not actual vector data size
+	// If ObjectNumber > 2 and EstimatedSizeMb seems too small (< 100MB), use object-based estimation
+	if node.TableDef != nil && node.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries &&
+		stats.ObjectNumber > 2 && stats.EstimatedSizeMb < 100.0 {
+		// Estimate: average object size is typically 50-100MB for entries tables
+		// Use a conservative estimate: ObjectNumber * 50MB
+		estimatedFromObjects := float64(stats.ObjectNumber) * 50.0
+		logutil.Infof("[IVF_OPT] calcScanStats: SizeMap-based size (%.2f MB) seems too small for %d objects, using object-based estimation: %.2f MB",
+			stats.EstimatedSizeMb, stats.ObjectNumber, estimatedFromObjects)
+		stats.EstimatedSizeMb = estimatedFromObjects
+	}
+
+	// Fallback: use Rowsize * TableCnt if SizeMap is empty
+	if stats.EstimatedSizeMb == 0 && stats.TableCnt > 0 {
+		stats.EstimatedSizeMb = (stats.Rowsize * stats.TableCnt) / (1024 * 1024)
+		if node.TableDef != nil && node.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries {
+			logutil.Infof("[IVF_OPT] calcScanStats: Using fallback size calculation: Rowsize=%.2f * TableCnt=%.2f = %.2f MB",
+				stats.Rowsize, stats.TableCnt, stats.EstimatedSizeMb)
+		}
+	}
+	
+	if node.TableDef != nil && node.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries {
+		logutil.Infof("[IVF_OPT] calcScanStats: IVF entries table stats - ObjectNumber=%d, EstimatedSizeMb=%.2f, TableCnt=%.2f, Rowsize=%.2f, BlockNum=%d",
+			stats.ObjectNumber, stats.EstimatedSizeMb, stats.TableCnt, stats.Rowsize, stats.BlockNum)
+	}
+
 	return stats
+}
+
+// hasIvfIndexQueryInPlan checks if the query contains an IVF index search
+// with ORDER BY and LIMIT clause. IVF index queries are identified by:
+// 1. FUNCTION_SCAN nodes with IndexReaderParam that has Limit
+// 2. AND either IndexReaderParam.OrderBy exists OR there's a SORT node in the query
+func hasIvfIndexQueryInPlan(qry *plan.Query) bool {
+	if qry == nil {
+		logutil.Infof("[IVF_OPT] hasIvfIndexQueryInPlan: query is nil")
+		return false
+	}
+	
+	logutil.Infof("[IVF_OPT] hasIvfIndexQueryInPlan: checking %d nodes", len(qry.GetNodes()))
+	
+	// First, check for FUNCTION_SCAN with IndexReaderParam and Limit
+	hasFunctionScanWithLimit := false
+	hasSortNode := false
+	
+	for i, node := range qry.GetNodes() {
+		if node.NodeType == plan.Node_FUNCTION_SCAN {
+			logutil.Infof("[IVF_OPT] hasIvfIndexQueryInPlan: node[%d] is FUNCTION_SCAN, IndexReaderParam=%v",
+				i, node.IndexReaderParam != nil)
+			
+			if node.IndexReaderParam != nil {
+				hasOrderByInParam := len(node.IndexReaderParam.OrderBy) > 0
+				hasLimit := node.IndexReaderParam.Limit != nil
+				logutil.Infof("[IVF_OPT] hasIvfIndexQueryInPlan: node[%d] has OrderBy in IndexReaderParam: %v (len=%d), has Limit: %v",
+					i, hasOrderByInParam, len(node.IndexReaderParam.OrderBy), hasLimit)
+				
+				if hasLimit {
+					hasFunctionScanWithLimit = true
+					// If OrderBy is also in IndexReaderParam, we're done
+					if hasOrderByInParam {
+						logutil.Infof("[IVF_OPT] hasIvfIndexQueryInPlan: ✅ IVF index query detected in node[%d] (OrderBy in IndexReaderParam)", i)
+						return true
+					}
+				}
+			}
+		}
+		
+		// Also check for SORT nodes (which indicate ORDER BY in the query)
+		if node.NodeType == plan.Node_SORT && len(node.OrderBy) > 0 {
+			hasSortNode = true
+			logutil.Infof("[IVF_OPT] hasIvfIndexQueryInPlan: node[%d] is SORT with OrderBy (len=%d)", i, len(node.OrderBy))
+		}
+	}
+	
+	// If we have FUNCTION_SCAN with Limit AND (OrderBy in param OR SORT node), it's an IVF query
+	if hasFunctionScanWithLimit && hasSortNode {
+		logutil.Infof("[IVF_OPT] hasIvfIndexQueryInPlan: ✅ IVF index query detected (FUNCTION_SCAN with Limit + SORT node)")
+		return true
+	}
+	
+	logutil.Infof("[IVF_OPT] hasIvfIndexQueryInPlan: ❌ No IVF index query found (hasFunctionScanWithLimit=%v, hasSortNode=%v)",
+		hasFunctionScanWithLimit, hasSortNode)
+	return false
 }
 
 func forceScanNodeStatsTP(nodeID int32, builder *QueryBuilder) {
@@ -1916,9 +2029,15 @@ func CalcQueryDOP(p *plan.Plan, ncpu int32, lencn int, typ ExecType) {
 
 func GetExecType(qry *plan.Query, txnHaveDDL bool, isPrepare bool) ExecType {
 	if GetForceScanOnMultiCN() {
+		logutil.Infof("[IVF_OPT] GetExecType: ForceScanOnMultiCN enabled, returning AP_MULTICN")
 		return ExecTypeAP_MULTICN
 	}
 	ret := ExecTypeTP
+
+	// Check if this is an IVF index query (with ORDER BY LIMIT)
+	isIvfIndexQuery := hasIvfIndexQueryInPlan(qry)
+	logutil.Infof("[IVF_OPT] GetExecType: isIvfIndexQuery=%v, totalNodes=%d", isIvfIndexQuery, len(qry.GetNodes()))
+
 	for _, node := range qry.GetNodes() {
 		switch node.NodeType {
 		case plan.Node_RECURSIVE_CTE, plan.Node_RECURSIVE_SCAN:
@@ -1943,18 +2062,78 @@ func GetExecType(qry *plan.Query, txnHaveDDL bool, isPrepare bool) ExecType {
 		}
 		if node.NodeType == plan.Node_TABLE_SCAN &&
 			// due to the inaccuracy of stats.Rowsize, currently only vector index tables are supported
-			(node.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries || node.TableDef.TableType == catalog.Hnsw_TblType_Storage) &&
-			stats.Rowsize > RowSizeThreshold &&
-			stats.BlockNum > LargeBlockThresholdForOneCN {
-			ret = ExecTypeAP_ONECN
-			if stats.BlockNum > LargeBlockThresholdForMultiCN {
-				ret = ExecTypeAP_MULTICN
+			(node.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries || node.TableDef.TableType == catalog.Hnsw_TblType_Storage) {
+			logutil.Infof("[IVF_OPT] GetExecType: Found vector index table scan, tableType=%s, tableName=%s",
+				node.TableDef.TableType, node.TableDef.Name)
+			
+			// NEW: Enhanced optimization for IVF entries table with IVF index queries
+			if node.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries {
+				logutil.Infof("[IVF_OPT] GetExecType: IVF entries table detected, checking optimization conditions...")
+				logutil.Infof("[IVF_OPT] GetExecType: isIvfIndexQuery=%v, ObjectNumber=%d (threshold=%d), EstimatedSizeMb=%.2f (threshold=%.2f)",
+					isIvfIndexQuery, stats.ObjectNumber, IvfEntriesMinObjectCount, stats.EstimatedSizeMb, IvfEntriesMinSizeMB)
+				
+				if isIvfIndexQuery &&
+					stats.ObjectNumber > IvfEntriesMinObjectCount &&
+					stats.EstimatedSizeMb >= IvfEntriesMinSizeMB {
+					logutil.Infof("[IVF_OPT] GetExecType: Basic optimization conditions met, checking multi-CN conditions...")
+					// Apply new optimization criteria based on data volume
+					ret = ExecTypeAP_ONECN
+					// Consider multi-CN for very large tables
+					multiCNByObject := stats.ObjectNumber > IvfEntriesMultiCNObjectCount
+					multiCNBySize := stats.EstimatedSizeMb >= IvfEntriesMultiCNSizeMB
+					logutil.Infof("[IVF_OPT] GetExecType: MultiCN check - ObjectNumber=%d > %d: %v, EstimatedSizeMb=%.2f >= %.2f: %v",
+						stats.ObjectNumber, IvfEntriesMultiCNObjectCount, multiCNByObject,
+						stats.EstimatedSizeMb, IvfEntriesMultiCNSizeMB, multiCNBySize)
+					
+					if multiCNByObject || multiCNBySize {
+						ret = ExecTypeAP_MULTICN
+						logutil.Infof("[IVF_OPT] GetExecType: ✅ MultiCN optimization triggered! ObjectNumber=%d, EstimatedSizeMb=%.2f",
+							stats.ObjectNumber, stats.EstimatedSizeMb)
+					} else {
+						logutil.Infof("[IVF_OPT] GetExecType: Using AP_ONECN (MultiCN conditions not met)")
+					}
+				} else {
+					logutil.Infof("[IVF_OPT] GetExecType: Basic optimization conditions NOT met:")
+					logutil.Infof("[IVF_OPT] GetExecType:   - isIvfIndexQuery: %v (need true)", isIvfIndexQuery)
+					logutil.Infof("[IVF_OPT] GetExecType:   - ObjectNumber: %d > %d: %v", stats.ObjectNumber, IvfEntriesMinObjectCount, stats.ObjectNumber > IvfEntriesMinObjectCount)
+					logutil.Infof("[IVF_OPT] GetExecType:   - EstimatedSizeMb: %.2f >= %.2f: %v", stats.EstimatedSizeMb, IvfEntriesMinSizeMB, stats.EstimatedSizeMb >= IvfEntriesMinSizeMB)
+					
+					// Fallback to existing logic
+					if stats.Rowsize > RowSizeThreshold &&
+						stats.BlockNum > LargeBlockThresholdForOneCN {
+						logutil.Infof("[IVF_OPT] GetExecType: Falling back to existing logic (Rowsize=%.2f > %.2f, BlockNum=%d > %d)",
+							stats.Rowsize, RowSizeThreshold, stats.BlockNum, LargeBlockThresholdForOneCN)
+						// Existing logic as fallback
+						ret = ExecTypeAP_ONECN
+						if stats.BlockNum > LargeBlockThresholdForMultiCN {
+							ret = ExecTypeAP_MULTICN
+							logutil.Infof("[IVF_OPT] GetExecType: Existing logic triggered MultiCN (BlockNum=%d > %d)",
+								stats.BlockNum, LargeBlockThresholdForMultiCN)
+						}
+					} else {
+						logutil.Infof("[IVF_OPT] GetExecType: Existing logic also not met, keeping TP")
+					}
+				}
+			} else if stats.Rowsize > RowSizeThreshold &&
+				stats.BlockNum > LargeBlockThresholdForOneCN {
+				// Existing logic as fallback
+				logutil.Infof("[IVF_OPT] GetExecType: HNSW table using existing logic (Rowsize=%.2f, BlockNum=%d)",
+					stats.Rowsize, stats.BlockNum)
+				ret = ExecTypeAP_ONECN
+				if stats.BlockNum > LargeBlockThresholdForMultiCN {
+					ret = ExecTypeAP_MULTICN
+					logutil.Infof("[IVF_OPT] GetExecType: HNSW table triggered MultiCN (BlockNum=%d > %d)",
+						stats.BlockNum, LargeBlockThresholdForMultiCN)
+				}
 			}
 		}
 		if node.NodeType != plan.Node_TABLE_SCAN && stats.HashmapStats != nil && stats.HashmapStats.Shuffle {
 			ret = ExecTypeAP_ONECN
 		}
 	}
+	
+	logutil.Infof("[IVF_OPT] GetExecType: Final decision: %v (TP=%d, AP_ONECN=%d, AP_MULTICN=%d)",
+		ret, ExecTypeTP, ExecTypeAP_ONECN, ExecTypeAP_MULTICN)
 	return ret
 }
 

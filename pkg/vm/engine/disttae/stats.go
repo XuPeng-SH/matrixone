@@ -28,10 +28,11 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/gossip"
 	"github.com/matrixorigin/matrixone/pkg/pb/logtail"
 	"github.com/matrixorigin/matrixone/pkg/pb/query"
-	pb "github.com/matrixorigin/matrixone/pkg/pb/statsinfo"
+	pb 	"github.com/matrixorigin/matrixone/pkg/pb/statsinfo"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 	"github.com/matrixorigin/matrixone/pkg/queryservice/client"
+	"github.com/matrixorigin/matrixone/pkg/catalog"
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace/statistic"
@@ -641,6 +642,7 @@ func updateInfoFromZoneMap(
 
 	var updateMu sync.Mutex
 	var init bool
+	isEntriesTable := req.tableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries
 	onObjFn := func(obj objectio.ObjectEntry) error {
 		location := obj.Location()
 		objMeta, err := objectio.FastLoadObjectMeta(ctx, &location, false, fs)
@@ -654,6 +656,15 @@ func updateInfoFromZoneMap(
 		info.BlockNumber += int64(obj.BlkCnt())
 		objSize := meta.BlockHeader().Rows()
 		info.TableCnt += float64(objSize)
+		
+		// For IVF entries table, use actual object size (OriginSize) instead of Location().Length()
+		// Location().Length() may only contain metadata/compressed size, not actual vector data size
+		var objActualSize uint64
+		if isEntriesTable {
+			objActualSize = obj.OriginSize()
+			logutil.Infof("[IVF_OPT] updateInfoFromZoneMap: entries table object - OriginSize=%d bytes, Location().Length() would be smaller", objActualSize)
+		}
+		
 		if !init {
 			init = true
 			for idx, col := range req.tableDef.Cols[:lenCols] {
@@ -668,8 +679,15 @@ func updateInfoFromZoneMap(
 				info.NDVinMaxOBJ[idx] = ndv
 				info.MaxOBJSize = objSize
 				info.MinOBJSize = objSize
-				info.ColumnSize[idx] = int64(meta.BlockHeader().ZoneMapArea().Length() +
-					meta.BlockHeader().BFExtent().Length() + objColMeta.Location().Length())
+				if isEntriesTable && objActualSize > 0 {
+					// For entries table, use actual object size divided by number of columns
+					// This gives a more accurate estimate of the actual data size
+					info.ColumnSize[idx] = int64(objActualSize) / int64(lenCols)
+					logutil.Infof("[IVF_OPT] updateInfoFromZoneMap: entries table col[%d] - using OriginSize/%d = %d bytes", idx, lenCols, info.ColumnSize[idx])
+				} else {
+					info.ColumnSize[idx] = int64(meta.BlockHeader().ZoneMapArea().Length() +
+						meta.BlockHeader().BFExtent().Length() + objColMeta.Location().Length())
+				}
 				if info.ColumnNDVs[idx] > 100 || info.ColumnNDVs[idx] > 0.1*float64(meta.BlockHeader().Rows()) {
 					switch info.DataTypes[idx].Oid {
 					case types.T_int64, types.T_int32, types.T_int16, types.T_uint64, types.T_uint32, types.T_uint16, types.T_time, types.T_timestamp, types.T_date, types.T_datetime, types.T_decimal64, types.T_decimal128:
@@ -712,10 +730,15 @@ func updateInfoFromZoneMap(
 				if objSize < info.MinOBJSize {
 					info.MinOBJSize = objSize
 					info.NDVinMinOBJ[idx] = ndv
-				} else if objSize == info.MinOBJSize && ndv < info.NDVinMinOBJ[idx] {
+				} else 				if objSize == info.MinOBJSize && ndv < info.NDVinMinOBJ[idx] {
 					info.NDVinMinOBJ[idx] = ndv
 				}
-				info.ColumnSize[idx] += int64(objColMeta.Location().Length())
+				if isEntriesTable && objActualSize > 0 {
+					// For entries table, accumulate actual object size divided by number of columns
+					info.ColumnSize[idx] += int64(objActualSize) / int64(lenCols)
+				} else {
+					info.ColumnSize[idx] += int64(objColMeta.Location().Length())
+				}
 				if info.ShuffleRanges[idx] != nil {
 					switch info.DataTypes[idx].Oid {
 					case types.T_int64, types.T_int32, types.T_int16, types.T_uint64, types.T_uint32, types.T_uint16, types.T_time, types.T_timestamp, types.T_date, types.T_datetime, types.T_decimal64, types.T_decimal128:
