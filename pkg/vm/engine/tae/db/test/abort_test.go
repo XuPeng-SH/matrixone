@@ -218,3 +218,97 @@ func TestTransferWithAbortedRows(t *testing.T) {
 	assert.NoError(t, err, "Transfer should handle aborted rows correctly")
 	assert.NoError(t, txn.Commit(ctx))
 }
+
+// TestMergeFiltersAbortedRows verifies that Flush already filters out aborted rows
+func TestMergeFiltersAbortedRows(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	testutils.EnsureNoLeak(t)
+	ctx := context.Background()
+
+	opts := config.WithLongScanAndCKPOpts(nil)
+	tae := testutil.NewTestEngine(ctx, ModuleName, t, opts)
+	defer tae.Close()
+
+	schema := catalog.MockSchemaAll(2, 1)
+	schema.Extra.BlockMaxRows = 10
+	schema.Extra.ObjectMaxBlocks = 2
+	tae.BindSchema(schema)
+	testutil.CreateRelation(t, tae.DB, "db", schema, true)
+
+	// Txn1: Insert 5 rows and commit
+	{
+		bat1 := catalog.MockBatch(schema, 5)
+		defer bat1.Close()
+		txn, _ := tae.DB.StartTxn(nil)
+		database, _ := txn.GetDatabase("db")
+		rel, _ := database.GetRelationByName(schema.Name)
+		err := rel.Append(ctx, bat1)
+		assert.NoError(t, err)
+		assert.NoError(t, txn.Commit(ctx))
+	}
+
+	// Txn2: Insert 5 rows and rollback
+	{
+		bat2 := catalog.MockBatch(schema, 5)
+		defer bat2.Close()
+		pkVec := bat2.GetVectorByName(schema.GetPrimaryKey().GetName())
+		for i := 0; i < pkVec.Length(); i++ {
+			oldVal := pkVec.Get(i).(int16)
+			pkVec.Update(i, oldVal+1000, false)
+		}
+		txn, _ := tae.DB.StartTxn(nil)
+		database, _ := txn.GetDatabase("db")
+		rel, _ := database.GetRelationByName(schema.Name)
+		err := rel.Append(ctx, bat2)
+		assert.NoError(t, err)
+		assert.NoError(t, txn.Rollback(ctx))
+	}
+
+	// Txn3: Insert 5 rows and commit
+	{
+		bat3 := catalog.MockBatch(schema, 5)
+		defer bat3.Close()
+		pkVec := bat3.GetVectorByName(schema.GetPrimaryKey().GetName())
+		for i := 0; i < pkVec.Length(); i++ {
+			oldVal := pkVec.Get(i).(int16)
+			pkVec.Update(i, oldVal+2000, false)
+		}
+		txn, _ := tae.DB.StartTxn(nil)
+		database, _ := txn.GetDatabase("db")
+		rel, _ := database.GetRelationByName(schema.Name)
+		err := rel.Append(ctx, bat3)
+		assert.NoError(t, err)
+		assert.NoError(t, txn.Commit(ctx))
+	}
+
+	// Flush: aobj -> nobj (should filter aborted rows via holes bitmap)
+	{
+		txn, rel := testutil.GetDefaultRelation(t, tae.DB, schema.Name)
+		blkMetas := testutil.GetAllBlockMetas(rel, false)
+		tombstoneMetas := testutil.GetAllBlockMetas(rel, true)
+		task, err := jobs.NewFlushTableTailTask(tasks.WaitableCtx, txn, blkMetas, tombstoneMetas, tae.DB.Runtime)
+		assert.NoError(t, err)
+		err = task.OnExec(ctx)
+		assert.NoError(t, err)
+		assert.NoError(t, txn.Commit(ctx))
+	}
+
+	// Verify: nobj should only have 10 rows (aborted rows already filtered by Flush)
+	{
+		txn, rel := testutil.GetDefaultRelation(t, tae.DB, schema.Name)
+		it := rel.MakeObjectIt(false)
+		totalRows := 0
+		for it.Next() {
+			obj := it.GetObject()
+			if !obj.IsAppendable() {
+				stats := obj.GetMeta().(*catalog.ObjectEntry).GetObjectStats()
+				totalRows += int(stats.Rows())
+			}
+		}
+		it.Close()
+		assert.NoError(t, txn.Commit(ctx))
+		// Should only have 10 committed rows (5 from txn1 + 5 from txn3)
+		// Flush already filtered aborted rows via GetVisibleRowLocked holes bitmap
+		assert.Equal(t, 10, totalRows, "Flush should filter out aborted rows")
+	}
+}
