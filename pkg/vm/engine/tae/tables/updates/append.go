@@ -213,7 +213,9 @@ func (node *AppendNode) ReadFrom(r io.Reader) (n int64, err error) {
 func (node *AppendNode) PrepareRollback() (err error) {
 	node.mvcc.Lock()
 	defer node.mvcc.Unlock()
-	node.mvcc.DeleteAppendNodeLocked(node)
+	// Keep the node instead of deleting it to maintain row number continuity
+	// This enables concurrent ApplyAppend by preserving aborted rows
+	node.TxnMVCCNode.PrepareRollback()  // Set Aborted = true
 	return
 }
 func (node *AppendNode) MakeCommand(id uint32) (cmd txnif.TxnCmd, err error) {
