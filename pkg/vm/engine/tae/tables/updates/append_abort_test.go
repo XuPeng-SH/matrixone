@@ -108,10 +108,10 @@ func TestFillInCommitTS_FillsZeroForAborted(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		assert.Equal(t, node1.GetCommitTS(), tss[i])
 	}
-	// Middle 5 rows should be zero TS (aborted)
-	zeroTS := types.TS{}
+	// Middle 5 rows should be MaxTS (aborted)
+	maxTS := types.MaxTs()
 	for i := 5; i < 10; i++ {
-		assert.Equal(t, zeroTS, tss[i], "Row %d should have zero TS", i)
+		assert.Equal(t, maxTS, tss[i], "Row %d should have MaxTS", i)
 	}
 	// Last 5 rows should be node3's commitTS
 	for i := 10; i < 15; i++ {

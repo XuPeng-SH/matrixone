@@ -159,10 +159,10 @@ func (n *AppendMVCCHandle) FillInCommitTSVecLocked(commitTSVec containers.Vector
 			if node.maxRow > maxrow {
 				return false
 			}
-			// For aborted nodes, fill with zero TS to mark them as invalid
+			// For aborted nodes, fill with MaxTS to mark them as invalid
 			ts := node.GetCommitTS()
 			if node.IsAborted() {
-				ts = types.TS{} // Zero TS indicates aborted row
+				ts = types.MaxTs() // MaxTS indicates aborted row
 			}
 			for i := 0; i < int(node.maxRow-node.startRow); i++ {
 				commitTSVec.Append(ts, false)
