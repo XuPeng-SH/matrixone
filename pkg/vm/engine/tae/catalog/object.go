@@ -418,10 +418,10 @@ func NewInMemoryObject(table *TableEntry, ts types.TS, isTombstone bool) *Object
 	id := uuid.Must(uuid.NewV7())
 	var objectID objectio.ObjectId
 	copy(objectID[:], id[:])
-	
+
 	// Create ObjectStats without Location (keeps Empty for in-memory)
 	stats := objectio.NewObjectStatsWithObjectID(&objectID, true, false, false)
-	
+
 	e := &ObjectEntry{
 		table: table,
 		ObjectNode: ObjectNode{
@@ -456,7 +456,7 @@ func (entry *ObjectEntry) HasPersistedData() bool {
 }
 
 func (entry *ObjectEntry) IsInMemory() bool {
-	return entry.IsAppendable() && entry.ObjectStats.ObjectLocation().IsEmpty()
+	return entry.IsAppendable() && !entry.ObjectPersisted()
 }
 
 func (entry *ObjectEntry) GetObjectData() data.Object { return entry.objData }
@@ -473,6 +473,50 @@ func (entry *ObjectEntry) Less(b *ObjectEntry) bool {
 	if t2.LT(&b.DeletedAt) {
 		t2 = b.DeletedAt
 	}
+	if !t1.EQ(&t2) {
+		return t1.LT(&t2)
+	}
+
+	return bytes.Compare(entry.ObjectShortName()[:], b.ObjectShortName()[:]) < 0
+}
+
+func (entry *ObjectEntry) Less2(b *ObjectEntry) bool {
+	aInMem := entry.IsInMemory()
+	bInMem := b.IsInMemory()
+	aUncommitted := entry.IsLocal && !aInMem
+	bUncommitted := b.IsLocal && !bInMem
+	aAppendable := entry.IsAppendable()
+	bAppendable := b.IsAppendable()
+
+	// 1. Uncommitted non-in-memory goes last
+	if aUncommitted != bUncommitted {
+		return !aUncommitted
+	}
+
+	// 2. Appendable objects (both committed and in-memory) go second to last
+	//    They must be sorted together by CreatedAt for early break correctness
+	if aAppendable != bAppendable {
+		return !aAppendable
+	}
+
+	// 3. Within appendable objects: sort by CreatedAt (monotonic for early break)
+	if aAppendable && bAppendable {
+		if !entry.CreatedAt.EQ(&b.CreatedAt) {
+			return entry.CreatedAt.LT(&b.CreatedAt)
+		}
+		return bytes.Compare(entry.ObjectShortName()[:], b.ObjectShortName()[:]) < 0
+	}
+
+	// 4. Within non-appendable committed objects: sort by max(CreatedAt, DeletedAt)
+	t1 := entry.CreatedAt
+	if t1.LT(&entry.DeletedAt) {
+		t1 = entry.DeletedAt
+	}
+	t2 := b.CreatedAt
+	if t2.LT(&b.DeletedAt) {
+		t2 = b.DeletedAt
+	}
+
 	if !t1.EQ(&t2) {
 		return t1.LT(&t2)
 	}
