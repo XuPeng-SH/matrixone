@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -412,6 +413,33 @@ func NewStandaloneObject(table *TableEntry, ts types.TS, isTombstone bool) *Obje
 	return e
 }
 
+func NewInMemoryObject(table *TableEntry, ts types.TS, isTombstone bool) *ObjectEntry {
+	// Use UUID v7 for monotonic increasing ObjectID
+	id := uuid.Must(uuid.NewV7())
+	var objectID objectio.ObjectId
+	copy(objectID[:], id[:])
+	
+	// Create ObjectStats without Location (keeps Empty for in-memory)
+	stats := objectio.NewObjectStatsWithObjectID(&objectID, true, false, false)
+	
+	e := &ObjectEntry{
+		table: table,
+		ObjectNode: ObjectNode{
+			IsLocal:     true,
+			IsTombstone: isTombstone,
+		},
+		EntryMVCCNode: EntryMVCCNode{
+			CreatedAt: ts,
+		},
+		CreateNode:  txnbase.NewTxnMVCCNodeWithTS(ts),
+		ObjectState: ObjectState_Create_ApplyCommit,
+		ObjectMVCCNode: ObjectMVCCNode{
+			ObjectStats: *stats,
+		},
+	}
+	return e
+}
+
 func (entry *ObjectEntry) GetLocation() objectio.Location {
 	location := entry.ObjectStats.ObjectLocation()
 	return location
@@ -426,6 +454,11 @@ func (entry *ObjectEntry) InitData(factory DataFactory) {
 func (entry *ObjectEntry) HasPersistedData() bool {
 	return entry.ObjectPersisted()
 }
+
+func (entry *ObjectEntry) IsInMemory() bool {
+	return entry.IsAppendable() && entry.ObjectStats.ObjectLocation().IsEmpty()
+}
+
 func (entry *ObjectEntry) GetObjectData() data.Object { return entry.objData }
 func (entry *ObjectEntry) GetObjectStats() (stats *objectio.ObjectStats) {
 	return &entry.ObjectStats
