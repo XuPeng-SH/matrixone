@@ -524,6 +524,19 @@ func (entry *ObjectEntry) Less2(b *ObjectEntry) bool {
 	return bytes.Compare(entry.ObjectShortName()[:], b.ObjectShortName()[:]) < 0
 }
 
+func (entry *ObjectEntry) IsSharedAobj() bool {
+	objID := entry.ID()
+	// UUID v7 的版本号在第 7 个字节的高 4 位
+	version := (objID[6] >> 4) & 0x0F
+	return version == 0x07
+}
+
+func (entry *ObjectEntry) GetMinCommitTS() types.TS {
+	// TODO: 需要访问 aobject 的 appendMVCC 来获取最小 CommitTS
+	// 当前先返回 CreatedAt 作为占位
+	return entry.CreatedAt
+}
+
 func (entry *ObjectEntry) UpdateObjectInfo(txn txnif.TxnReader, stats *objectio.ObjectStats) (isNewNode bool, err error) {
 	return entry.table.getObjectList(entry.IsTombstone).UpdateObjectInfo(entry, txn, stats)
 }
