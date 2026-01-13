@@ -240,6 +240,30 @@ func (store *replayTxnStore) replayAppend(cmd *updates.UpdateCmd, observer wal.R
 			panic(err)
 		}
 	}
+	// If obj is nil, try to create shared aobj
+	if obj == nil {
+		// Get Table
+		table, err := database.GetTableEntryByID(id.TableID)
+		if err != nil {
+			// Table not found, skip (wait for later replay)
+			return
+		}
+
+		// Create shared aobj ObjectEntry
+		obj = catalog.NewInMemoryObject(
+			table,
+			appendNode.GetStart(),
+			cmd.GetAppendNode().IsTombstone(),
+		)
+
+		// Add to Table
+		table.Lock()
+		table.AddEntryLocked(obj)
+		table.Unlock()
+
+		// Initialize aobject
+		obj.InitData(store.catalog.DataFactory)
+	}
 	if !obj.IsActive() {
 		return
 	}

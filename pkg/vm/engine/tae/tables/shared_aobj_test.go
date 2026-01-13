@@ -134,6 +134,6 @@ func TestSharedAobj_GetMinCommitTS(t *testing.T) {
 		"GetMinCommitTS should return min(commitTS1, commitTS2), got %v, expected %v",
 		minCommitTS, expectedMinTS)
 
-	t.Logf("✅ GetMinCommitTS: %v", minCommitTS)
-	t.Logf("✅ Expected min(commitTS1, commitTS2): %v", expectedMinTS)
+	t.Logf("GetMinCommitTS: %v", minCommitTS)
+	t.Logf("Expected min(commitTS1, commitTS2): %v", expectedMinTS)
 }

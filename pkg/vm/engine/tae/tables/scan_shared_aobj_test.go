@@ -76,11 +76,11 @@ func TestScanSharedAobj_SingleCommitted(t *testing.T) {
 
 	err = txn1.Commit(context.Background())
 	require.NoError(t, err)
-	
+
 	// Manually apply commit for AppendNode since it's not registered in txn.txnEntries
 	err = node1.ApplyCommit(txn1.GetID())
 	require.NoError(t, err)
-	
+
 	commitTS := txn1.GetCommitTS()
 
 	// Wait for commit to complete and time to advance
