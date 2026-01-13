@@ -21,6 +21,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 )
@@ -78,6 +79,16 @@ func (app *sharedAppender) Append(node txnif.AppendableNode) error {
 		return nil
 	}
 
+	// Create temporary PhyAddr vector (like current implementation)
+	schema := app.table.GetLastestSchema(app.isTombstone)
+	phyAddrIdx := schema.PhyAddrKey.Idx
+	phyAddrVec := app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
+	defer func() {
+		// Replace the PhyAddr column at the end
+		data.Vecs[phyAddrIdx].Close()
+		data.Vecs[phyAddrIdx] = phyAddrVec
+	}()
+
 	remaining := totalRows
 	srcOffset := uint32(0)
 
@@ -93,7 +104,7 @@ func (app *sharedAppender) Append(node txnif.AppendableNode) error {
 			return err
 		}
 
-		if err := app.generatePhyAddr(node, objEntry, srcOffset, allocated, startRow); err != nil {
+		if err := app.generatePhyAddr(phyAddrVec, objEntry, allocated, startRow); err != nil {
 			return err
 		}
 
@@ -163,21 +174,19 @@ func (app *sharedAppender) createAppendNode(aobj *aobject, startRow, count uint3
 }
 
 func (app *sharedAppender) generatePhyAddr(
-	node txnif.AppendableNode,
+	phyAddrVec containers.Vector,
 	objEntry *catalog.ObjectEntry,
-	srcOffset, count, destOffset uint32,
+	count, destOffset uint32,
 ) error {
 	if app.isTombstone {
 		return nil
 	}
 
-	schema := app.table.GetLastestSchema(app.isTombstone)
-	phyAddrIdx := schema.PhyAddrKey.Idx
-
 	blkID := objectio.NewBlockidWithObjectID(objEntry.ID(), 0)
 	col := app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
 	defer col.Close()
 
+	// Construct rowids to temporary col
 	if err := objectio.ConstructRowidColumnTo(
 		col.GetDownstreamVector(),
 		&blkID,
@@ -188,19 +197,8 @@ func (app *sharedAppender) generatePhyAddr(
 		return err
 	}
 
-	data := node.GetData()
-	if data == nil {
-		return moerr.NewInternalErrorNoCtx("node data is nil")
-	}
-
-	// Update PhyAddr column in-place instead of extending
-	phyAddrVec := data.Vecs[phyAddrIdx]
-	for i := uint32(0); i < count; i++ {
-		rowid := col.Get(int(i))
-		phyAddrVec.Update(int(srcOffset+i), rowid, false)
-	}
-
-	return nil
+	// Extend to phyAddrVec (accumulate all rowids)
+	return phyAddrVec.ExtendVec(col.GetDownstreamVector())
 }
 
 func (app *sharedAppender) writeData(
