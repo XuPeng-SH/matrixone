@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -60,11 +59,6 @@ type TableEntry struct {
 
 	dataObjects      *ObjectList
 	tombstoneObjects *ObjectList
-
-	// Shared in-memory aobj management
-	currentDataAobj      *inMemoryAobj
-	currentTombstoneAobj *inMemoryAobj
-	aobjMu               sync.RWMutex
 }
 
 func genTblFullName(tenantID uint32, name string) string {
