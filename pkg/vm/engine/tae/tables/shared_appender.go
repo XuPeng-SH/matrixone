@@ -21,6 +21,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 )
 
@@ -32,6 +33,7 @@ type SharedAppender interface {
 type sharedAppender struct {
 	table       *catalog.TableEntry
 	txn         txnif.AsyncTxn
+	rt          *dbutils.Runtime
 	isTombstone bool
 
 	currentEntry *catalog.ObjectEntry
@@ -44,11 +46,13 @@ type sharedAppender struct {
 func NewSharedAppender(
 	table *catalog.TableEntry,
 	txn txnif.AsyncTxn,
+	rt *dbutils.Runtime,
 	isTombstone bool,
 ) SharedAppender {
 	return &sharedAppender{
 		table:       table,
 		txn:         txn,
+		rt:          rt,
 		isTombstone: isTombstone,
 		refedAobjs:  make([]*aobject, 0),
 	}
@@ -118,7 +122,7 @@ func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) 
 	app.table.AddEntryLocked(objEntry)
 	app.table.Unlock()
 
-	aobj := newAObject(objEntry, nil, app.isTombstone)
+	aobj := newAObject(objEntry, app.rt, app.isTombstone)
 	aobj.Ref()
 	app.refedAobjs = append(app.refedAobjs, aobj)
 
@@ -161,8 +165,7 @@ func (app *sharedAppender) generatePhyAddr(
 	phyAddrIdx := schema.PhyAddrKey.Idx
 
 	blkID := objectio.NewBlockidWithObjectID(objEntry.ID(), 0)
-	rt := app.currentAobj.GetRuntime()
-	col := rt.VectorPool.Small.GetVector(&objectio.RowidType)
+	col := app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
 	defer col.Close()
 
 	if err := objectio.ConstructRowidColumnTo(
@@ -180,7 +183,14 @@ func (app *sharedAppender) generatePhyAddr(
 		return moerr.NewInternalErrorNoCtx("node data is nil")
 	}
 
-	return data.Vecs[phyAddrIdx].ExtendVec(col.GetDownstreamVector())
+	// Update PhyAddr column in-place instead of extending
+	phyAddrVec := data.Vecs[phyAddrIdx]
+	for i := uint32(0); i < count; i++ {
+		rowid := col.Get(int(i))
+		phyAddrVec.Update(int(srcOffset+i), rowid, false)
+	}
+
+	return nil
 }
 
 func (app *sharedAppender) writeData(
@@ -193,7 +203,7 @@ func (app *sharedAppender) writeData(
 		return moerr.NewInternalErrorNoCtx("node data is nil")
 	}
 
-	bat := data.Window(int(srcOffset), int(srcOffset+count))
+	bat := data.Window(int(srcOffset), int(count))
 	defer bat.Close()
 
 	aobj.Lock()
