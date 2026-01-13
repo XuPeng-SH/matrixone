@@ -27,12 +27,26 @@ import (
 )
 
 type SharedAppender interface {
+	// Simple one-step interface for users
 	Append(node txnif.AppendableNode) error
+
+	// Two-phase interface for tableSpace integration
+	PrepareAppend(node txnif.AppendableNode) error
+	ApplyAppend() error
+
 	Close()
 
 	// Test interfaces
 	GetCurrentAobj() *aobject
 	GetRefedAobjs() []*aobject
+}
+
+type appendContext struct {
+	objEntry *catalog.ObjectEntry
+	aobj     *aobject
+	srcStart uint32
+	srcCount uint32
+	destRow  uint32
 }
 
 type sharedAppender struct {
@@ -46,6 +60,10 @@ type sharedAppender struct {
 	nextRow      uint32
 	maxRows      uint32
 	refedAobjs   []*aobject
+
+	// For two-phase commit
+	preparedNode     txnif.AppendableNode
+	preparedContexts []*appendContext
 }
 
 func NewSharedAppender(
@@ -55,20 +73,29 @@ func NewSharedAppender(
 	isTombstone bool,
 ) SharedAppender {
 	return &sharedAppender{
-		table:       table,
-		txn:         txn,
-		rt:          rt,
-		isTombstone: isTombstone,
-		refedAobjs:  make([]*aobject, 0),
+		table:            table,
+		txn:              txn,
+		rt:               rt,
+		isTombstone:      isTombstone,
+		refedAobjs:       make([]*aobject, 0),
+		preparedContexts: make([]*appendContext, 0),
 	}
 }
 
+// Append is the simple one-step interface that combines PrepareAppend and ApplyAppend
 func (app *sharedAppender) Append(node txnif.AppendableNode) error {
+	if err := app.PrepareAppend(node); err != nil {
+		return err
+	}
+	return app.ApplyAppend()
+}
+
+// PrepareAppend allocates space, creates AppendNodes, and generates RowIDs
+func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) error {
 	if node == nil {
 		return nil
 	}
 
-	// Check data early to avoid panic in Rows()
 	data := node.GetData()
 	if data == nil {
 		return moerr.NewInternalErrorNoCtx("node data is nil")
@@ -79,15 +106,24 @@ func (app *sharedAppender) Append(node txnif.AppendableNode) error {
 		return nil
 	}
 
-	// Create temporary PhyAddr vector (like current implementation)
+	// Save node for ApplyAppend
+	app.preparedNode = node
+	app.preparedContexts = make([]*appendContext, 0)
+
+	// Generate RowIDs and create AppendNodes
 	schema := app.table.GetLastestSchema(app.isTombstone)
-	phyAddrIdx := schema.PhyAddrKey.Idx
-	phyAddrVec := app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
-	defer func() {
-		// Replace the PhyAddr column at the end
-		data.Vecs[phyAddrIdx].Close()
-		data.Vecs[phyAddrIdx] = phyAddrVec
-	}()
+
+	// Handle PhyAddr column (only for data table, not tombstone)
+	var phyAddrVec containers.Vector
+	var phyAddrIdx int
+	if !app.isTombstone {
+		phyAddrIdx = schema.PhyAddrKey.Idx
+		phyAddrVec = app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
+		defer func() {
+			data.Vecs[phyAddrIdx].Close()
+			data.Vecs[phyAddrIdx] = phyAddrVec
+		}()
+	}
 
 	remaining := totalRows
 	srcOffset := uint32(0)
@@ -100,18 +136,26 @@ func (app *sharedAppender) Append(node txnif.AppendableNode) error {
 
 		startRow, allocated := app.allocateRows(remaining)
 
+		// Create AppendNode in MVCC
 		if err := app.createAppendNode(aobj, startRow, allocated); err != nil {
 			return err
 		}
 
+		// Generate RowIDs
 		if err := app.generatePhyAddr(phyAddrVec, objEntry, allocated, startRow); err != nil {
 			return err
 		}
 
-		if err := app.writeData(node, aobj, srcOffset, allocated); err != nil {
-			return err
-		}
+		// Save context for ApplyAppend
+		app.preparedContexts = append(app.preparedContexts, &appendContext{
+			objEntry: objEntry,
+			aobj:     aobj,
+			srcStart: srcOffset,
+			srcCount: allocated,
+			destRow:  startRow,
+		})
 
+		// Notify node about the mapping
 		node.AddApplyInfo(srcOffset, allocated, startRow, allocated, objEntry.AsCommonID())
 
 		srcOffset += allocated
@@ -121,11 +165,57 @@ func (app *sharedAppender) Append(node txnif.AppendableNode) error {
 	return nil
 }
 
+// ApplyAppend writes the actual data to aobjects
+func (app *sharedAppender) ApplyAppend() error {
+	if app.preparedNode == nil {
+		return nil
+	}
+
+	data := app.preparedNode.GetData()
+	if data == nil {
+		return moerr.NewInternalErrorNoCtx("prepared node data is nil")
+	}
+
+	// Write data for each context
+	for _, ctx := range app.preparedContexts {
+		if err := app.writeDataToAobj(data, ctx); err != nil {
+			return err
+		}
+	}
+
+	// Clear prepared state
+	app.preparedNode = nil
+	app.preparedContexts = nil
+
+	return nil
+}
+
+func (app *sharedAppender) writeDataToAobj(data *containers.Batch, ctx *appendContext) error {
+	bat := data.Window(int(ctx.srcStart), int(ctx.srcCount))
+	defer bat.Close()
+
+	ctx.aobj.Lock()
+	defer ctx.aobj.Unlock()
+
+	n := ctx.aobj.PinNode()
+	defer n.Unref()
+
+	if !n.IsPersisted() {
+		mnode := n.MustMNode()
+		_, err := mnode.ApplyAppendLocked(bat)
+		return err
+	}
+
+	return moerr.NewInternalErrorNoCtx("cannot append to persisted node")
+}
+
 func (app *sharedAppender) Close() {
 	for _, aobj := range app.refedAobjs {
 		aobj.Unref()
 	}
 	app.refedAobjs = nil
+	app.preparedNode = nil
+	app.preparedContexts = nil
 }
 
 func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) {
@@ -138,11 +228,13 @@ func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) 
 	app.table.Lock()
 	app.table.AddEntryLocked(objEntry)
 	app.table.Unlock()
-	
-	// Initialize ObjectData using DataFactory
+
+	// Initialize ObjectData using DataFactory (if available)
 	dataFactory := app.table.GetDB().GetCatalog().DataFactory
-	objEntry.InitData(dataFactory)
-	
+	if dataFactory != nil {
+		objEntry.InitData(dataFactory)
+	}
+
 	aobj := objEntry.GetObjectData().(*aobject)
 	aobj.Ref()
 	app.refedAobjs = append(app.refedAobjs, aobj)
@@ -199,34 +291,6 @@ func (app *sharedAppender) generatePhyAddr(
 
 	// Extend to phyAddrVec (accumulate all rowids)
 	return phyAddrVec.ExtendVec(col.GetDownstreamVector())
-}
-
-func (app *sharedAppender) writeData(
-	node txnif.AppendableNode,
-	aobj *aobject,
-	srcOffset, count uint32,
-) error {
-	data := node.GetData()
-	if data == nil {
-		return moerr.NewInternalErrorNoCtx("node data is nil")
-	}
-
-	bat := data.Window(int(srcOffset), int(count))
-	defer bat.Close()
-
-	aobj.Lock()
-	defer aobj.Unlock()
-
-	n := aobj.PinNode()
-	defer n.Unref()
-
-	if !n.IsPersisted() {
-		mnode := n.MustMNode()
-		_, err := mnode.ApplyAppendLocked(bat)
-		return err
-	}
-
-	return moerr.NewInternalErrorNoCtx("cannot append to persisted node")
 }
 
 func (app *sharedAppender) GetCurrentAobj() *aobject {

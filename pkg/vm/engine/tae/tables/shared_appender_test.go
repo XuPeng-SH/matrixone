@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/data"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
@@ -76,7 +77,12 @@ func createMockNode(schema *catalog.Schema, rows int) *mockAppendableNode {
 func setupTest(t *testing.T) (*catalog.Catalog, *catalog.TableEntry, txnif.AsyncTxn, *txnbase.TxnManager, *dbutils.Runtime) {
 	schema := catalog.MockSchema(2, 0)
 	schema.Extra.BlockMaxRows = 8192
-	c := catalog.MockCatalog(nil)
+
+	rt := dbutils.NewRuntime()
+
+	// Create mock DataFactory
+	dataFactory := &mockDataFactory{rt: rt}
+	c := catalog.MockCatalog(dataFactory)
 
 	db, err := c.CreateDBEntry("db", "", "", nil)
 	require.NoError(t, err)
@@ -90,9 +96,24 @@ func setupTest(t *testing.T) (*catalog.Catalog, *catalog.TableEntry, txnif.Async
 	txn, err := txnMgr.StartTxn(nil)
 	require.NoError(t, err)
 
-	rt := dbutils.NewRuntime()
-
 	return c, table, txn, txnMgr, rt
+}
+
+// mockDataFactory implements catalog.DataFactory for testing
+type mockDataFactory struct {
+	rt *dbutils.Runtime
+}
+
+func (f *mockDataFactory) MakeTableFactory() catalog.TableDataFactory {
+	return func(meta *catalog.TableEntry) data.Table {
+		return nil // System tables not needed in these tests
+	}
+}
+
+func (f *mockDataFactory) MakeObjectFactory() catalog.ObjectDataFactory {
+	return func(meta *catalog.ObjectEntry) data.Object {
+		return newAObject(meta, f.rt, meta.IsTombstone)
+	}
 }
 
 // Test 1: Single aobj, single append (100 rows)
@@ -305,7 +326,10 @@ func TestSharedAppender_Concurrent(t *testing.T) {
 
 	schema := catalog.MockSchema(2, 0)
 	schema.Extra.BlockMaxRows = 8192
-	c := catalog.MockCatalog(nil)
+
+	rt := dbutils.NewRuntime()
+	dataFactory := &mockDataFactory{rt: rt}
+	c := catalog.MockCatalog(dataFactory)
 	defer c.Close()
 
 	db, err := c.CreateDBEntry("db", "", "", nil)
@@ -317,8 +341,6 @@ func TestSharedAppender_Concurrent(t *testing.T) {
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
-
-	rt := dbutils.NewRuntime()
 
 	// 10 concurrent txns, each appends 100 rows
 	concurrency := 10
@@ -466,7 +488,10 @@ func TestSharedAppender_ConcurrentAobjSwitch(t *testing.T) {
 
 	schema := catalog.MockSchema(2, 0)
 	schema.Extra.BlockMaxRows = 8192
-	c := catalog.MockCatalog(nil)
+
+	rt := dbutils.NewRuntime()
+	dataFactory := &mockDataFactory{rt: rt}
+	c := catalog.MockCatalog(dataFactory)
 	defer c.Close()
 
 	db, err := c.CreateDBEntry("db", "", "", nil)
@@ -478,8 +503,6 @@ func TestSharedAppender_ConcurrentAobjSwitch(t *testing.T) {
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
-
-	rt := dbutils.NewRuntime()
 
 	// 5 concurrent txns, each appends 2000 rows
 	concurrency := 5
@@ -798,7 +821,10 @@ func TestSharedAppender_DifferentTxns(t *testing.T) {
 
 	schema := catalog.MockSchema(2, 0)
 	schema.Extra.BlockMaxRows = 8192
-	c := catalog.MockCatalog(nil)
+
+	rt := dbutils.NewRuntime()
+	dataFactory := &mockDataFactory{rt: rt}
+	c := catalog.MockCatalog(dataFactory)
 	defer c.Close()
 
 	db, err := c.CreateDBEntry("db", "", "", nil)
@@ -810,8 +836,6 @@ func TestSharedAppender_DifferentTxns(t *testing.T) {
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
-
-	rt := dbutils.NewRuntime()
 
 	// Txn1 appends 100 rows
 	txn1, err := txnMgr.StartTxn(nil)

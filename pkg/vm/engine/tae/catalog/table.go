@@ -897,7 +897,6 @@ func MockTableEntryWithDB(dbEntry *DBEntry, tblId uint64) *TableEntry {
 	return entry
 }
 
-
 // GetOrCreateInMemoryAobj returns the current shared in-memory aobj for appending.
 // If the current aobj is full or frozen, it creates a new one.
 func (entry *TableEntry) GetOrCreateInMemoryAobj(isTombstone bool, dataFactory DataFactory) *ObjectEntry {
