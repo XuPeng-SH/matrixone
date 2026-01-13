@@ -58,7 +58,7 @@ func (n *anode) Rows() uint32 {
 func (n *anode) GetAppends() []*appendInfo {
 	return n.appends
 }
-func (n *anode) AddApplyInfo(srcOff, srcLen, destOff, destLen uint32, dest *common.ID) *appendInfo {
+func (n *anode) AddApplyInfo(srcOff, srcLen, destOff, destLen uint32, dest *common.ID) {
 	seq := len(n.appends)
 	info := &appendInfo{
 		dest:    *dest,
@@ -69,7 +69,10 @@ func (n *anode) AddApplyInfo(srcOff, srcLen, destOff, destLen uint32, dest *comm
 		seq:     uint32(seq),
 	}
 	n.appends = append(n.appends, info)
-	return info
+}
+
+func (n *anode) GetData() *containers.Batch {
+	return n.data
 }
 
 func (n *anode) IsPersisted() bool {

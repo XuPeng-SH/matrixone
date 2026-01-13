@@ -133,17 +133,17 @@ func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) 
 		return app.currentEntry, app.currentAobj, nil
 	}
 
-	objEntry := catalog.NewInMemoryObject(
-		app.table,
-		types.BuildTS(time.Now().UnixNano(), 0),
-		app.isTombstone,
-	)
-
+	// Create ObjectEntry and initialize it
+	objEntry := catalog.NewInMemoryObject(app.table, types.BuildTS(time.Now().UnixNano(), 0), app.isTombstone)
 	app.table.Lock()
 	app.table.AddEntryLocked(objEntry)
 	app.table.Unlock()
-
-	aobj := newAObject(objEntry, app.rt, app.isTombstone)
+	
+	// Initialize ObjectData using DataFactory
+	dataFactory := app.table.GetDB().GetCatalog().DataFactory
+	objEntry.InitData(dataFactory)
+	
+	aobj := objEntry.GetObjectData().(*aobject)
 	aobj.Ref()
 	app.refedAobjs = append(app.refedAobjs, aobj)
 

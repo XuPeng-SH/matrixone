@@ -59,6 +59,10 @@ type TableEntry struct {
 
 	dataObjects      *ObjectList
 	tombstoneObjects *ObjectList
+
+	// Shared in-memory aobj management
+	currentDataAobj      atomic.Pointer[ObjectEntry]
+	currentTombstoneAobj atomic.Pointer[ObjectEntry]
 }
 
 func genTblFullName(tenantID uint32, name string) string {
@@ -891,4 +895,77 @@ func MockTableEntryWithDB(dbEntry *DBEntry, tblId uint64) *TableEntry {
 	entry.ID = tblId
 	entry.db = dbEntry
 	return entry
+}
+
+
+// GetOrCreateInMemoryAobj returns the current shared in-memory aobj for appending.
+// If the current aobj is full or frozen, it creates a new one.
+func (entry *TableEntry) GetOrCreateInMemoryAobj(isTombstone bool, dataFactory DataFactory) *ObjectEntry {
+	// Fast path: try to get current aobj
+	var current *ObjectEntry
+	if isTombstone {
+		current = entry.currentTombstoneAobj.Load()
+	} else {
+		current = entry.currentDataAobj.Load()
+	}
+
+	// Check if current aobj is usable
+	if current != nil {
+		objData := current.GetObjectData()
+		if objData != nil && objData.IsAppendable() {
+			return current
+		}
+	}
+
+	// Slow path: create new aobj
+	entry.Lock()
+	defer entry.Unlock()
+
+	// Double check after acquiring lock
+	if isTombstone {
+		current = entry.currentTombstoneAobj.Load()
+	} else {
+		current = entry.currentDataAobj.Load()
+	}
+
+	if current != nil {
+		objData := current.GetObjectData()
+		if objData != nil && objData.IsAppendable() {
+			return current
+		}
+	}
+
+	// Create new in-memory ObjectEntry
+	newObj := NewInMemoryObject(entry, types.BuildTS(time.Now().UnixNano(), 0), isTombstone)
+	entry.AddEntryLocked(newObj)
+
+	// Initialize aobject
+	newObj.InitData(dataFactory)
+
+	// Update current pointer
+	if isTombstone {
+		entry.currentTombstoneAobj.Store(newObj)
+	} else {
+		entry.currentDataAobj.Store(newObj)
+	}
+
+	return newObj
+}
+
+// FreezeCurrentInMemoryAobj freezes the current in-memory aobj to prevent further appends.
+// This is called when forcing a flush or checkpoint.
+func (entry *TableEntry) FreezeCurrentInMemoryAobj(isTombstone bool) {
+	var current *ObjectEntry
+	if isTombstone {
+		current = entry.currentTombstoneAobj.Swap(nil)
+	} else {
+		current = entry.currentDataAobj.Swap(nil)
+	}
+
+	if current != nil {
+		objData := current.GetObjectData()
+		if objData != nil {
+			objData.FreezeAppend()
+		}
+	}
 }
