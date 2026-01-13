@@ -67,6 +67,12 @@ func (app *sharedAppender) Append(node txnif.AppendableNode) error {
 		return nil
 	}
 
+	// Check data early to avoid panic in Rows()
+	data := node.GetData()
+	if data == nil {
+		return moerr.NewInternalErrorNoCtx("node data is nil")
+	}
+
 	totalRows := node.Rows()
 	if totalRows == 0 {
 		return nil
