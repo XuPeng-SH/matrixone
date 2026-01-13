@@ -417,3 +417,145 @@ func TestSharedAppender_LargeBatch(t *testing.T) {
 	assert.NotEqual(t, node.appends[0].dest, node.appends[1].dest)
 	assert.NotEqual(t, node.appends[1].dest, node.appends[2].dest)
 }
+
+// Test 10: Aobj with insufficient remaining space
+func TestSharedAppender_InsufficientSpace(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+	defer appender.Close()
+
+	schema := table.GetLastestSchema(false)
+
+	// Fill to 8190 rows
+	node1 := createMockNode(schema, 8190)
+	defer node1.data.Close()
+	err := appender.Append(node1)
+	require.NoError(t, err)
+
+	// Append 100 more rows (only 2 rows fit in current aobj)
+	node2 := createMockNode(schema, 100)
+	defer node2.data.Close()
+	err = appender.Append(node2)
+	require.NoError(t, err)
+
+	// Verify node2: split into 2 parts
+	assert.Equal(t, 2, len(node2.appends))
+	// First part: [8190, 8192) = 2 rows
+	assert.Equal(t, uint32(0), node2.appends[0].srcOff)
+	assert.Equal(t, uint32(2), node2.appends[0].srcLen)
+	assert.Equal(t, uint32(8190), node2.appends[0].destOff)
+	assert.Equal(t, uint32(2), node2.appends[0].destLen)
+	// Second part: [0, 98) = 98 rows in new aobj
+	assert.Equal(t, uint32(2), node2.appends[1].srcOff)
+	assert.Equal(t, uint32(98), node2.appends[1].srcLen)
+	assert.Equal(t, uint32(0), node2.appends[1].destOff)
+	assert.Equal(t, uint32(98), node2.appends[1].destLen)
+
+	// Verify: different ObjectEntry
+	assert.NotEqual(t, node2.appends[0].dest, node2.appends[1].dest)
+}
+
+// Test 11: Concurrent appends triggering aobj switch
+func TestSharedAppender_ConcurrentAobjSwitch(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	schema := catalog.MockSchema(2, 0)
+	schema.Extra.BlockMaxRows = 8192
+	c := catalog.MockCatalog(nil)
+	defer c.Close()
+
+	db, err := c.CreateDBEntry("db", "", "", nil)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, nil, nil)
+	require.NoError(t, err)
+
+	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
+	txnMgr.Start(context.Background())
+	defer txnMgr.Stop()
+
+	rt := dbutils.NewRuntime()
+
+	// 5 concurrent txns, each appends 2000 rows
+	concurrency := 5
+	rowsPerTxn := 2000
+
+	var wg sync.WaitGroup
+	nodes := make([]*mockAppendableNode, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			txn, err := txnMgr.StartTxn(nil)
+			require.NoError(t, err)
+
+			appender := NewSharedAppender(table, txn, rt, false)
+			defer appender.Close()
+
+			node := createMockNode(schema, rowsPerTxn)
+			nodes[idx] = node
+
+			err = appender.Append(node)
+			require.NoError(t, err)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify: total 10000 rows, should span 2 aobjs
+	totalRows := 0
+	objIDs := make(map[string]bool)
+	for i := 0; i < concurrency; i++ {
+		for _, info := range nodes[i].appends {
+			totalRows += int(info.destLen)
+			objIDs[info.dest.String()] = true
+		}
+		nodes[i].data.Close()
+	}
+
+	assert.Equal(t, 10000, totalRows)
+	assert.GreaterOrEqual(t, len(objIDs), 2, "should span at least 2 aobjs")
+}
+
+// Test 12: Data and tombstone independent allocation
+func TestSharedAppender_DataAndTombstone(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	schema := table.GetLastestSchema(false)
+
+	// Append data
+	dataAppender := NewSharedAppender(table, txn, rt, false)
+	defer dataAppender.Close()
+
+	dataNode := createMockNode(schema, 100)
+	defer dataNode.data.Close()
+	err := dataAppender.Append(dataNode)
+	require.NoError(t, err)
+
+	// Append tombstone
+	tombstoneAppender := NewSharedAppender(table, txn, rt, true)
+	defer tombstoneAppender.Close()
+
+	tombstoneNode := createMockNode(table.GetLastestSchema(true), 50)
+	defer tombstoneNode.data.Close()
+	err = tombstoneAppender.Append(tombstoneNode)
+	require.NoError(t, err)
+
+	// Verify: data and tombstone have different ObjectEntry
+	assert.NotEqual(t, dataNode.appends[0].dest, tombstoneNode.appends[0].dest)
+
+	// Verify: both allocated correctly
+	assert.Equal(t, uint32(100), dataNode.appends[0].destLen)
+	assert.Equal(t, uint32(50), tombstoneNode.appends[0].destLen)
+}
