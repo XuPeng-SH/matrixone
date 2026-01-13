@@ -348,6 +348,34 @@ func (n *AppendMVCCHandle) GetAppendListener() func(txnif.AppendNode) error {
 	return n.appendListener
 }
 
+// GetMinCommitTSLocked returns the minimum commit timestamp of all committed append nodes.
+// It must be called with RLock held.
+//
+// TODO(future): When supporting aborted rows, this logic needs to be updated to:
+// 1. Skip AppendNodes that are aborted
+// 2. Or handle partial abort within an AppendNode (if row-level abort is supported)
+//
+// TODO(optimization): If commit TS zonemap is added to AppendMVCCHandle in the future,
+// we can directly return the min value from the zonemap instead of iterating all nodes.
+func (n *AppendMVCCHandle) GetMinCommitTSLocked() types.TS {
+	minTS := types.MaxTs()
+	if n.appends == nil {
+		return minTS
+	}
+	
+	n.appends.ForEach(func(an *AppendNode) bool {
+		if an.IsCommitted() {
+			commitTS := an.GetEnd()
+			if commitTS.LT(&minTS) {
+				minTS = commitTS
+			}
+		}
+		return true
+	}, false)
+	
+	return minTS
+}
+
 // AllAppendsCommittedBefore returns true if all appendnode is committed before ts.
 func (n *AppendMVCCHandle) AllAppendsCommittedBeforeLocked(ts types.TS) bool {
 	// get the latest appendnode

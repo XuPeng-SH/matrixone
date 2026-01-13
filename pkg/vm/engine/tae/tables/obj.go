@@ -64,6 +64,11 @@ func (obj *object) PrepareCompactInfo() (result bool, reason string) {
 
 func (obj *object) FreezeAppend() {}
 
+func (obj *object) GetMinCommitTS() types.TS {
+	// Non-appendable object 返回 CreatedAt
+	return obj.meta.Load().GetCreatedAt()
+}
+
 func (obj *object) Pin() *common.PinnedItem[*object] {
 	obj.Ref()
 	return &common.PinnedItem[*object]{

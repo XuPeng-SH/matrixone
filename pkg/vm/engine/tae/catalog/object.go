@@ -532,9 +532,27 @@ func (entry *ObjectEntry) IsSharedAobj() bool {
 }
 
 func (entry *ObjectEntry) GetMinCommitTS() types.TS {
-	// TODO: 需要访问 aobject 的 appendMVCC 来获取最小 CommitTS
-	// 当前先返回 CreatedAt 作为占位
-	return entry.CreatedAt
+	// For non-shared aobj (transaction-private aobj), return CreatedAt directly.
+	// This maintains backward compatibility with existing behavior.
+	if !entry.IsSharedAobj() {
+		return entry.CreatedAt
+	}
+	
+	// For shared aobj, get the minimum commit timestamp from all AppendNodes.
+	// This is used during flush to set the correct CreatedAt for the persisted object,
+	// ensuring early break optimization works correctly.
+	objData := entry.GetObjectData()
+	if objData == nil {
+		return entry.CreatedAt
+	}
+	
+	minTS := objData.GetMinCommitTS()
+	maxTS := types.MaxTs()
+	// If no committed AppendNode exists (returns MaxTs), fallback to CreatedAt
+	if minTS.IsEmpty() || minTS.EQ(&maxTS) {
+		return entry.CreatedAt
+	}
+	return minTS
 }
 
 func (entry *ObjectEntry) UpdateObjectInfo(txn txnif.TxnReader, stats *objectio.ObjectStats) (isNewNode bool, err error) {

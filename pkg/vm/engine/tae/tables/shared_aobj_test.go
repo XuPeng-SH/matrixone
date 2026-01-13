@@ -119,20 +119,21 @@ func TestSharedAobj_GetMinCommitTS(t *testing.T) {
 	require.NoError(t, err)
 	commitTS2 := node2.GetEnd()
 
-	// 验证 GetMinCommitTS()
-	minCommitTS := sharedAobj.GetMinCommitTS()
+	// 验证 GetMinCommitTS() - 直接从 aobject 调用
+	minCommitTS := aobj.GetMinCommitTS()
 
-	// TODO: 当前返回 CreatedAt，应该返回 min(commitTS1, commitTS2)
-	// 当前测试验证返回值不为空
-	assert.False(t, minCommitTS.IsEmpty(), "GetMinCommitTS should return non-empty timestamp")
-
-	// 记录期望值用于后续实现
+	// 计算期望值
 	expectedMinTS := commitTS1
 	if commitTS2.LT(&commitTS1) {
 		expectedMinTS = commitTS2
 	}
 
-	t.Logf("Current GetMinCommitTS: %v", minCommitTS)
-	t.Logf("Expected min(commitTS1, commitTS2): %v", expectedMinTS)
-	t.Logf("TODO: Implement GetMinCommitTS to return min(AppendNode.CommitTS)")
+	// 验证返回值正确
+	assert.False(t, minCommitTS.IsEmpty(), "GetMinCommitTS should return non-empty timestamp")
+	assert.True(t, minCommitTS.EQ(&expectedMinTS), 
+		"GetMinCommitTS should return min(commitTS1, commitTS2), got %v, expected %v", 
+		minCommitTS, expectedMinTS)
+
+	t.Logf("✅ GetMinCommitTS: %v", minCommitTS)
+	t.Logf("✅ Expected min(commitTS1, commitTS2): %v", expectedMinTS)
 }

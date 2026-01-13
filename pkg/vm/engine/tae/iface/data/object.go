@@ -103,6 +103,7 @@ type Object interface {
 	Init() error
 	GetFs() fileservice.FileService
 	FreezeAppend()
+	GetMinCommitTS() types.TS
 
 	Contains(
 		ctx context.Context,
