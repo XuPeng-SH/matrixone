@@ -362,7 +362,7 @@ func (n *AppendMVCCHandle) GetMinCommitTSLocked() types.TS {
 	if n.appends == nil {
 		return minTS
 	}
-	
+
 	n.appends.ForEach(func(an *AppendNode) bool {
 		if an.IsCommitted() {
 			commitTS := an.GetEnd()
@@ -372,7 +372,7 @@ func (n *AppendMVCCHandle) GetMinCommitTSLocked() types.TS {
 		}
 		return true
 	}, false)
-	
+
 	return minTS
 }
 

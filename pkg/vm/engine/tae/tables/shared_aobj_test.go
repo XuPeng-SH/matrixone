@@ -130,8 +130,8 @@ func TestSharedAobj_GetMinCommitTS(t *testing.T) {
 
 	// 验证返回值正确
 	assert.False(t, minCommitTS.IsEmpty(), "GetMinCommitTS should return non-empty timestamp")
-	assert.True(t, minCommitTS.EQ(&expectedMinTS), 
-		"GetMinCommitTS should return min(commitTS1, commitTS2), got %v, expected %v", 
+	assert.True(t, minCommitTS.EQ(&expectedMinTS),
+		"GetMinCommitTS should return min(commitTS1, commitTS2), got %v, expected %v",
 		minCommitTS, expectedMinTS)
 
 	t.Logf("✅ GetMinCommitTS: %v", minCommitTS)

@@ -76,11 +76,11 @@ func (obj *aobject) IsAppendFrozen() bool {
 func (obj *aobject) GetMinCommitTS() types.TS {
 	obj.RLock()
 	defer obj.RUnlock()
-	
+
 	if obj.appendMVCC == nil {
 		return types.MaxTs()
 	}
-	
+
 	// Delegate to AppendMVCCHandle which iterates all committed AppendNodes.
 	// See AppendMVCCHandle.GetMinCommitTSLocked() for future optimization notes.
 	return obj.appendMVCC.GetMinCommitTSLocked()

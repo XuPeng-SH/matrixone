@@ -537,7 +537,7 @@ func (entry *ObjectEntry) GetMinCommitTS() types.TS {
 	if !entry.IsSharedAobj() {
 		return entry.CreatedAt
 	}
-	
+
 	// For shared aobj, get the minimum commit timestamp from all AppendNodes.
 	// This is used during flush to set the correct CreatedAt for the persisted object,
 	// ensuring early break optimization works correctly.
@@ -545,7 +545,7 @@ func (entry *ObjectEntry) GetMinCommitTS() types.TS {
 	if objData == nil {
 		return entry.CreatedAt
 	}
-	
+
 	minTS := objData.GetMinCommitTS()
 	maxTS := types.MaxTs()
 	// If no committed AppendNode exists (returns MaxTs), fallback to CreatedAt
