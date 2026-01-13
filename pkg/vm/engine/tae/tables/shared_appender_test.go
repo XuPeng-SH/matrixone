@@ -559,3 +559,331 @@ func TestSharedAppender_DataAndTombstone(t *testing.T) {
 	assert.Equal(t, uint32(100), dataNode.appends[0].destLen)
 	assert.Equal(t, uint32(50), tombstoneNode.appends[0].destLen)
 }
+
+// Test 13: RefCount management
+func TestSharedAppender_RefCount(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+
+	schema := table.GetLastestSchema(false)
+
+	// Append 100 rows
+	node := createMockNode(schema, 100)
+	defer node.data.Close()
+	err := appender.Append(node)
+	require.NoError(t, err)
+
+	// Verify: aobj is refed
+	aobj := appender.GetCurrentAobj()
+	require.NotNil(t, aobj)
+	refCount := aobj.RefCount()
+	assert.Greater(t, refCount, int64(0), "aobj should be refed")
+
+	// Close appender
+	appender.Close()
+
+	// Verify: aobj is unrefed
+	refCount = aobj.RefCount()
+	assert.Equal(t, int64(0), refCount, "aobj should be unrefed after Close")
+}
+
+// Test 14: RefCount across multiple aobjs
+func TestSharedAppender_RefCountMultipleAobjs(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+
+	schema := table.GetLastestSchema(false)
+
+	// Append 10000 rows (spans 2 aobjs)
+	node := createMockNode(schema, 10000)
+	defer node.data.Close()
+	err := appender.Append(node)
+	require.NoError(t, err)
+
+	// Verify: 2 aobjs are refed
+	refedAobjs := appender.GetRefedAobjs()
+	assert.Equal(t, 2, len(refedAobjs))
+	for i, aobj := range refedAobjs {
+		refCount := aobj.RefCount()
+		assert.Greater(t, refCount, int64(0), "aobj %d should be refed", i)
+	}
+
+	// Close appender
+	appender.Close()
+
+	// Verify: all aobjs are unrefed
+	for i, aobj := range refedAobjs {
+		refCount := aobj.RefCount()
+		assert.Equal(t, int64(0), refCount, "aobj %d should be unrefed after Close", i)
+	}
+}
+
+// Test 15: Append when aobj is frozen
+func TestSharedAppender_FrozenAobj(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+	defer appender.Close()
+
+	schema := table.GetLastestSchema(false)
+
+	// First append
+	node1 := createMockNode(schema, 100)
+	defer node1.data.Close()
+	err := appender.Append(node1)
+	require.NoError(t, err)
+
+	firstAobj := appender.GetCurrentAobj()
+	firstObjID := firstAobj.meta.Load().ID()
+
+	// Manually freeze the aobj
+	firstAobj.FreezeAppend()
+
+	// Second append should create new aobj
+	node2 := createMockNode(schema, 100)
+	defer node2.data.Close()
+	err = appender.Append(node2)
+	require.NoError(t, err)
+
+	secondAobj := appender.GetCurrentAobj()
+	secondObjID := secondAobj.meta.Load().ID()
+
+	// Verify: different aobj
+	assert.NotEqual(t, firstObjID, secondObjID)
+
+	// Verify: second append starts from row 0
+	assert.Equal(t, uint32(0), node2.appends[0].destOff)
+}
+
+// Test 16: PhyAddr generation for single aobj
+func TestSharedAppender_PhyAddrSingleAobj(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+	defer appender.Close()
+
+	schema := table.GetLastestSchema(false)
+
+	node := createMockNode(schema, 100)
+	defer node.data.Close()
+	err := appender.Append(node)
+	require.NoError(t, err)
+
+	// Verify: PhyAddr column is updated
+	phyAddrIdx := schema.PhyAddrKey.Idx
+	phyAddrVec := node.data.Vecs[phyAddrIdx]
+
+	// Check first and last rowid
+	firstRowid := phyAddrVec.Get(0).(types.Rowid)
+	lastRowid := phyAddrVec.Get(99).(types.Rowid)
+
+	// Extract block ID and object ID from rowid
+	firstBlkID, _ := firstRowid.Decode()
+	lastBlkID, _ := lastRowid.Decode()
+
+	firstObjID := firstBlkID.Object()
+	lastObjID := lastBlkID.Object()
+
+	// Verify: same object ID
+	assert.Equal(t, firstObjID, lastObjID)
+
+	// Verify: matches the aobj's object ID
+	aobjID := appender.GetCurrentAobj().meta.Load().ID()
+	assert.Equal(t, aobjID, firstObjID)
+}
+
+// Test 17: PhyAddr generation across multiple aobjs
+func TestSharedAppender_PhyAddrMultipleAobjs(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+	defer appender.Close()
+
+	schema := table.GetLastestSchema(false)
+
+	// Append 10000 rows (spans 2 aobjs)
+	node := createMockNode(schema, 10000)
+	defer node.data.Close()
+	err := appender.Append(node)
+	require.NoError(t, err)
+
+	phyAddrIdx := schema.PhyAddrKey.Idx
+	phyAddrVec := node.data.Vecs[phyAddrIdx]
+
+	// Check rowid at boundary (row 8191 and 8192)
+	rowid8191 := phyAddrVec.Get(8191).(types.Rowid)
+	rowid8192 := phyAddrVec.Get(8192).(types.Rowid)
+
+	blkID8191, _ := rowid8191.Decode()
+	blkID8192, _ := rowid8192.Decode()
+
+	objID8191 := blkID8191.Object()
+	objID8192 := blkID8192.Object()
+
+	// Verify: different object IDs
+	assert.NotEqual(t, objID8191, objID8192, "rows across aobj boundary should have different object IDs")
+
+	// Verify: matches the refed aobjs
+	refedAobjs := appender.GetRefedAobjs()
+	assert.Equal(t, 2, len(refedAobjs))
+
+	firstAobjID := refedAobjs[0].meta.Load().ID()
+	secondAobjID := refedAobjs[1].meta.Load().ID()
+
+	assert.Equal(t, firstAobjID, objID8191)
+	assert.Equal(t, secondAobjID, objID8192)
+}
+
+// Test 18: AppendNode creation and reuse (same txn, same aobj)
+func TestSharedAppender_AppendNodeReuse(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+	defer appender.Close()
+
+	schema := table.GetLastestSchema(false)
+
+	// First append: 100 rows
+	node1 := createMockNode(schema, 100)
+	defer node1.data.Close()
+	err := appender.Append(node1)
+	require.NoError(t, err)
+
+	aobj1 := appender.GetCurrentAobj()
+
+	// Second append: 200 rows (same aobj, same txn)
+	node2 := createMockNode(schema, 200)
+	defer node2.data.Close()
+	err = appender.Append(node2)
+	require.NoError(t, err)
+
+	aobj2 := appender.GetCurrentAobj()
+
+	// Verify: same aobj
+	assert.Equal(t, aobj1, aobj2)
+
+	// Verify: both appends to same object
+	assert.Equal(t, node1.appends[0].dest, node2.appends[0].dest)
+}
+
+// Test 19: Different txns create different AppendNodes
+func TestSharedAppender_DifferentTxns(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	schema := catalog.MockSchema(2, 0)
+	schema.Extra.BlockMaxRows = 8192
+	c := catalog.MockCatalog(nil)
+	defer c.Close()
+
+	db, err := c.CreateDBEntry("db", "", "", nil)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, nil, nil)
+	require.NoError(t, err)
+
+	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
+	txnMgr.Start(context.Background())
+	defer txnMgr.Stop()
+
+	rt := dbutils.NewRuntime()
+
+	// Txn1 appends 100 rows
+	txn1, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	appender1 := NewSharedAppender(table, txn1, rt, false)
+	defer appender1.Close()
+
+	node1 := createMockNode(schema, 100)
+	defer node1.data.Close()
+	err = appender1.Append(node1)
+	require.NoError(t, err)
+
+	// Txn2 appends 100 rows
+	txn2, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	appender2 := NewSharedAppender(table, txn2, rt, false)
+	defer appender2.Close()
+
+	node2 := createMockNode(schema, 100)
+	defer node2.data.Close()
+	err = appender2.Append(node2)
+	require.NoError(t, err)
+
+	// Verify: both appends recorded
+	assert.Equal(t, 1, len(node1.appends))
+	assert.Equal(t, 1, len(node2.appends))
+
+	// Verify: different aobjs (different txns may use different aobjs)
+	aobj1 := appender1.GetCurrentAobj()
+	aobj2 := appender2.GetCurrentAobj()
+	assert.NotNil(t, aobj1)
+	assert.NotNil(t, aobj2)
+}
+
+// Test 20: Multiple Close calls should be safe
+func TestSharedAppender_MultipleClose(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+
+	// Multiple close calls should not panic
+	appender.Close()
+	appender.Close()
+	appender.Close()
+}
+
+// Test 21: Boundary - exactly maxRows
+func TestSharedAppender_ExactlyMaxRows(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, txn, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	appender := NewSharedAppender(table, txn, rt, false)
+	defer appender.Close()
+
+	schema := table.GetLastestSchema(false)
+
+	// Append exactly maxRows (8192)
+	node := createMockNode(schema, 8192)
+	defer node.data.Close()
+	err := appender.Append(node)
+	require.NoError(t, err)
+
+	// Verify: filled exactly one aobj
+	aobj := appender.GetCurrentAobj()
+	assert.NotNil(t, aobj)
+}

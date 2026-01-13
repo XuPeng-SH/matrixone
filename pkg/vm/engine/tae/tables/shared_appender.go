@@ -28,6 +28,10 @@ import (
 type SharedAppender interface {
 	Append(node txnif.AppendableNode) error
 	Close()
+
+	// Test interfaces
+	GetCurrentAobj() *aobject
+	GetRefedAobjs() []*aobject
 }
 
 type sharedAppender struct {
@@ -108,7 +112,7 @@ func (app *sharedAppender) Close() {
 }
 
 func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) {
-	if app.currentAobj != nil && app.nextRow < app.maxRows {
+	if app.currentAobj != nil && app.nextRow < app.maxRows && !app.currentAobj.IsAppendFrozen() {
 		return app.currentEntry, app.currentAobj, nil
 	}
 
@@ -219,4 +223,12 @@ func (app *sharedAppender) writeData(
 	}
 
 	return moerr.NewInternalErrorNoCtx("cannot append to persisted node")
+}
+
+func (app *sharedAppender) GetCurrentAobj() *aobject {
+	return app.currentAobj
+}
+
+func (app *sharedAppender) GetRefedAobjs() []*aobject {
+	return app.refedAobjs
 }
