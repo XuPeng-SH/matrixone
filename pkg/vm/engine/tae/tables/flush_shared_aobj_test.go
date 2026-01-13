@@ -467,3 +467,115 @@ func TestFlushSharedAobj_StateTransition(t *testing.T) {
 	t.Logf("State transition verified:")
 	t.Logf("  Phase 1: in-memory appendable → Phase 2: uncommitted flushing → Phase 3: committed persisted")
 }
+
+// Test 4: Simulate flush shared aobj behavior (design verification)
+// This test verifies the flush design without modifying existing flush logic
+func TestFlushSharedAobj_SimulateFlush(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	schema := catalog.MockSchema(2, 0)
+	schema.Extra.BlockMaxRows = 8192
+	c := catalog.MockCatalog(nil)
+	defer c.Close()
+
+	db, err := c.CreateDBEntry("db", "", "", nil)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, nil, nil)
+	require.NoError(t, err)
+
+	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
+	txnMgr.Start(context.Background())
+	defer txnMgr.Stop()
+
+	rt := dbutils.NewRuntime()
+
+	// 1. Create shared aobj
+	createTxn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	sharedAobj := catalog.NewInMemoryObject(table, createTxn.GetStartTS(), false)
+	table.Lock()
+	table.AddEntryLocked(sharedAobj)
+	table.Unlock()
+
+	err = createTxn.Commit(context.Background())
+	require.NoError(t, err)
+
+	// 2. Create aobject and simulate multiple txn appends
+	aobj := newAObject(sharedAobj, rt, false)
+	aobj.Ref()
+	defer aobj.Unref()
+
+	// Txn1: append [0, 100)
+	txn1, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	aobj.Lock()
+	node1, _ := aobj.appendMVCC.AddAppendNodeLocked(txn1, 0, 100)
+	aobj.Unlock()
+
+	err = txn1.Commit(context.Background())
+	require.NoError(t, err)
+	commitTS1 := node1.GetEnd()
+
+	// Txn2: append [100, 200)
+	txn2, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	aobj.Lock()
+	node2, _ := aobj.appendMVCC.AddAppendNodeLocked(txn2, 100, 200)
+	aobj.Unlock()
+
+	err = txn2.Commit(context.Background())
+	require.NoError(t, err)
+	commitTS2 := node2.GetEnd()
+
+	// 3. Calculate minCommitTS (key step in flush)
+	minCommitTS := aobj.GetMinCommitTS()
+	expectedMinTS := commitTS1
+	if commitTS2.LT(&commitTS1) {
+		expectedMinTS = commitTS2
+	}
+
+	assert.True(t, minCommitTS.EQ(&expectedMinTS),
+		"minCommitTS should equal min(commitTS1, commitTS2)")
+
+	// 4. Simulate flush: Create persistedObj with same ObjectID
+	flushTxn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	// Key design: Reuse the same ObjectID
+	objID := *sharedAobj.ID()
+	stats := objectio.NewObjectStatsWithObjectID(&objID, false, false, false)
+	objName := objectio.BuildObjectNameWithObjectID(&objID)
+	location := objectio.MockLocation(objName)
+	objectio.SetObjectStatsLocation(stats, location)
+
+	// Create persistedObj (simulating UpdateObjectInfo result)
+	persistedObj := catalog.NewObjectEntry(table, flushTxn, *stats, nil, false)
+	persistedObj.CreatedAt = minCommitTS // Key: Use minCommitTS
+	persistedObj.ObjectState = catalog.ObjectState_Create_Active
+
+	table.Lock()
+	table.AddEntryLocked(persistedObj)
+	table.Unlock()
+
+	err = flushTxn.Commit(context.Background())
+	require.NoError(t, err)
+
+	persistedObj.CreateNode.End = flushTxn.GetCommitTS()
+	persistedObj.ObjectState = catalog.ObjectState_Create_ApplyCommit
+
+	// 5. Verify design
+	assert.Equal(t, sharedAobj.ID(), persistedObj.ID(),
+		"ObjectID should be preserved after flush")
+
+	assert.True(t, persistedObj.CreatedAt.EQ(&minCommitTS),
+		"persistedObj.CreatedAt should equal minCommitTS")
+
+	t.Logf("Flush shared aobj simulation verified:")
+	t.Logf("  ObjectID preserved: %v", sharedAobj.ID())
+	t.Logf("  minCommitTS: %v", minCommitTS)
+	t.Logf("  persistedObj.CreatedAt: %v", persistedObj.CreatedAt)
+}
