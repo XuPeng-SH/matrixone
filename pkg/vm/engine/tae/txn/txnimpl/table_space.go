@@ -33,6 +33,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/data"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables"
 )
 
 type tableSpace struct {
@@ -55,6 +56,9 @@ type tableSpace struct {
 
 	// for tombstone table space
 	objs []*objectio.ObjectId
+
+	// SharedAppender for new append path
+	sharedAppender tables.SharedAppender
 }
 
 func newTableSpace(table *txnTable, isTombstone bool) *tableSpace {
@@ -107,26 +111,15 @@ func (tbl *txnTable) NeedRollback() bool {
 // ApplyAppend applies all the anodes into appendable blocks
 // and un-reference the appendable blocks which had been referenced when PrepareApply.
 func (space *tableSpace) ApplyAppend() (err error) {
-	var destOff int
 	defer func() {
-		// Close All unclosed Appends:un-reference the appendable block.
-		space.CloseAppends()
-	}()
-	for _, ctx := range space.appends {
-		bat, _ := ctx.node.Window(ctx.start, ctx.start+ctx.count)
-		defer bat.Close()
-		if destOff, err = ctx.driver.ApplyAppend(
-			bat,
-			space.table.store.txn); err != nil {
-			return
+		// Close SharedAppender
+		if space.sharedAppender != nil {
+			space.sharedAppender.Close()
+			space.sharedAppender = nil
 		}
-		id := ctx.driver.GetID()
-		ctx.node.AddApplyInfo(
-			ctx.start,
-			ctx.count,
-			uint32(destOff),
-			ctx.count, id)
-	}
+	}()
+
+	return space.sharedAppender.ApplyAppend()
 	if space.tableHandle != nil {
 		space.table.entry.GetTableData().ApplyHandle(space.tableHandle, space.isTombstone)
 	}
@@ -303,7 +296,29 @@ func (space *tableSpace) prepareApplyObjectStats(stats objectio.ObjectStats) (er
 }
 
 func (space *tableSpace) prepareApplyNode(node *anode) (err error) {
-	return space.prepareApplyANode(node, 0)
+	// 1. Create SharedAppender
+	space.sharedAppender = tables.NewSharedAppender(
+		space.table.entry,
+		space.table.store.txn,
+		space.table.store.rt,
+		space.isTombstone,
+	)
+
+	// 2. PrepareAppend - get created AppendNodes
+	appendNodes, err := space.sharedAppender.PrepareAppend(node)
+	if err != nil {
+		return err
+	}
+
+	// 3. Register AppendNodes to txnEntries (critical for commit to work)
+	for _, appendNode := range appendNodes {
+		if err = space.table.store.IncreateWriteCnt("prepare apply anode"); err != nil {
+			return err
+		}
+		space.table.txnEntries.Append(appendNode)
+	}
+
+	return nil
 }
 
 // CloseAppends un-reference the appendable blocks

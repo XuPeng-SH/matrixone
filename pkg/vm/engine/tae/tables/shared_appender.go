@@ -151,7 +151,7 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 		if err != nil {
 			return nil, err
 		}
-		
+
 		// If created, add to the list for tableSpace to register
 		if created && appendNode != nil {
 			app.createdAppendNodes = append(app.createdAppendNodes, appendNode)
@@ -339,7 +339,7 @@ func (app *sharedAppender) registerObjectToTxn(objEntry *catalog.ObjectEntry) {
 		id.ObjectID(),
 		app.isTombstone,
 	)
-	
+
 	// Note: warChecker.Insert will be handled by tableSpace
 	// because warChecker is not accessible from SharedAppender
 }
