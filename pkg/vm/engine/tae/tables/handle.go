@@ -48,6 +48,16 @@ func (h *tableHandle) SetAppender(id *common.ID) (appender data.ObjectAppender) 
 	return h.appender
 }
 
+func (h *tableHandle) SetObject(obj data.Object) {
+	if h.object != nil {
+		h.object.Unref()
+	}
+	h.object = obj.(*aobject)
+	if h.object != nil {
+		h.object.Ref()
+	}
+}
+
 func (h *tableHandle) ThrowAppenderAndErr() (appender data.ObjectAppender, err error) {
 	err = data.ErrAppendableObjectNotFound
 	h.object = nil

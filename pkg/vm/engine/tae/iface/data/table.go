@@ -26,6 +26,8 @@ var (
 type TableHandle interface {
 	GetAppender() (ObjectAppender, error)
 	SetAppender(*common.ID) ObjectAppender
+	// SetObject sets the handle's object without creating an appender
+	SetObject(Object)
 }
 
 type Table interface {

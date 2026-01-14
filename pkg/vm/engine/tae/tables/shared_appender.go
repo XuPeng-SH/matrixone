@@ -37,8 +37,10 @@ type SharedAppender interface {
 	// Append: 简化接口，用于测试（内部调用 PrepareAppend + ApplyAppend）
 	Append(node txnif.AppendableNode) error
 
-	// Test interfaces
+	// GetCurrentAobj: 返回当前使用的 aobj（用于设置 tableHandle）
 	GetCurrentAobj() *aobject
+
+	// Test interfaces
 	GetRefedAobjs() []*aobject
 }
 
@@ -145,6 +147,11 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 		}
 
 		startRow, allocated := app.allocateRows(remaining)
+		if allocated == 0 {
+			// Current aobj is full, reset nextRow to trigger new aobj creation
+			app.nextRow = app.maxRows
+			continue
+		}
 
 		// Create AppendNode in MVCC
 		appendNode, created, err := app.createAppendNode(aobj, startRow, allocated)
@@ -254,13 +261,16 @@ func (app *sharedAppender) Close() {
 	app.preparedContexts = nil
 }
 
+func (app *sharedAppender) GetCurrentAobj() *aobject {
+	return app.currentAobj
+}
+
 func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) {
 	if app.currentAobj != nil && app.nextRow < app.maxRows && !app.currentAobj.IsAppendFrozen() {
 		return app.currentEntry, app.currentAobj, nil
 	}
 
 	// Create ObjectEntry with txn's StartTS
-	// The ObjectEntry itself is visible once created, but data visibility is controlled by AppendNodes
 	objEntry := catalog.NewInMemoryObject(app.table, app.txn.GetStartTS(), app.isTombstone)
 	app.table.Lock()
 	app.table.AddEntryLocked(objEntry)
@@ -286,6 +296,10 @@ func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) 
 
 func (app *sharedAppender) allocateRows(count uint32) (startRow, allocated uint32) {
 	available := app.maxRows - app.nextRow
+	if available == 0 {
+		// Current aobj is full, need to switch
+		return 0, 0
+	}
 	allocated = count
 	if allocated > available {
 		allocated = available
@@ -296,8 +310,15 @@ func (app *sharedAppender) allocateRows(count uint32) (startRow, allocated uint3
 }
 
 func (app *sharedAppender) createAppendNode(aobj *aobject, startRow, count uint32) (txnif.TxnEntry, bool, error) {
-	aobj.Lock()
-	defer aobj.Unlock()
+	// Use freezelock (same as original code)
+	aobj.freezelock.Lock()
+	defer aobj.freezelock.Unlock()
+
+	// Check if frozen
+	if aobj.frozen.Load() {
+		return nil, false, moerr.NewInternalErrorNoCtx("aobject is frozen")
+	}
+
 	node, created := aobj.appendMVCC.AddAppendNodeLocked(app.txn, startRow, startRow+count)
 	return node, created, nil
 }
@@ -342,10 +363,6 @@ func (app *sharedAppender) registerObjectToTxn(objEntry *catalog.ObjectEntry) {
 
 	// Note: warChecker.Insert will be handled by tableSpace
 	// because warChecker is not accessible from SharedAppender
-}
-
-func (app *sharedAppender) GetCurrentAobj() *aobject {
-	return app.currentAobj
 }
 
 func (app *sharedAppender) GetRefedAobjs() []*aobject {

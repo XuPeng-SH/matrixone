@@ -112,6 +112,8 @@ func (tbl *txnTable) NeedRollback() bool {
 // and un-reference the appendable blocks which had been referenced when PrepareApply.
 func (space *tableSpace) ApplyAppend() (err error) {
 	defer func() {
+		// Close All unclosed Appends:un-reference the appendable block.
+		space.CloseAppends()
 		// Close SharedAppender
 		if space.sharedAppender != nil {
 			space.sharedAppender.Close()
@@ -119,7 +121,36 @@ func (space *tableSpace) ApplyAppend() (err error) {
 		}
 	}()
 
-	return space.sharedAppender.ApplyAppend()
+	// Use SharedAppender if available
+	if space.sharedAppender != nil {
+		err = space.sharedAppender.ApplyAppend()
+		if err != nil {
+			return err
+		}
+		// Apply table handle after SharedAppender
+		if space.tableHandle != nil {
+			space.table.entry.GetTableData().ApplyHandle(space.tableHandle, space.isTombstone)
+		}
+		return nil
+	}
+
+	// Fallback to old path (for non-anode appends like stats)
+	var destOff int
+	for _, ctx := range space.appends {
+		bat, _ := ctx.node.Window(ctx.start, ctx.start+ctx.count)
+		defer bat.Close()
+		if destOff, err = ctx.driver.ApplyAppend(
+			bat,
+			space.table.store.txn); err != nil {
+			return
+		}
+		id := ctx.driver.GetID()
+		ctx.node.AddApplyInfo(
+			ctx.start,
+			ctx.count,
+			uint32(destOff),
+			ctx.count, id)
+	}
 	if space.tableHandle != nil {
 		space.table.entry.GetTableData().ApplyHandle(space.tableHandle, space.isTombstone)
 	}
@@ -296,6 +327,9 @@ func (space *tableSpace) prepareApplyObjectStats(stats objectio.ObjectStats) (er
 }
 
 func (space *tableSpace) prepareApplyNode(node *anode) (err error) {
+	// Compact node first (same as original code)
+	node.Compact()
+
 	// 1. Create SharedAppender
 	space.sharedAppender = tables.NewSharedAppender(
 		space.table.entry,
@@ -316,6 +350,19 @@ func (space *tableSpace) prepareApplyNode(node *anode) (err error) {
 			return err
 		}
 		space.table.txnEntries.Append(appendNode)
+	}
+
+	// 4. Get table handle and set its object to the created aobj
+	tableData := space.table.entry.GetTableData()
+	if space.tableHandle == nil {
+		space.tableHandle = tableData.GetHandle(space.isTombstone)
+	}
+
+	// Set handle's object to the current aobj (from SharedAppender)
+	// Use SetObject instead of SetAppender to avoid creating unnecessary appender
+	currentAobj := space.sharedAppender.GetCurrentAobj()
+	if currentAobj != nil {
+		space.tableHandle.SetObject(currentAobj)
 	}
 
 	return nil
