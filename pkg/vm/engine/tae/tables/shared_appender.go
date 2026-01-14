@@ -15,10 +15,7 @@
 package tables
 
 import (
-	"time"
-
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
-	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
@@ -27,14 +24,18 @@ import (
 )
 
 type SharedAppender interface {
-	// Simple one-step interface for users
-	Append(node txnif.AppendableNode) error
+	// PrepareAppend: 分配空间、创建 AppendNode、生成 RowID
+	// 返回创建的 AppendNode 列表（供 tableSpace 注册到 txnEntries）
+	PrepareAppend(node txnif.AppendableNode) ([]txnif.TxnEntry, error)
 
-	// Two-phase interface for tableSpace integration
-	PrepareAppend(node txnif.AppendableNode) error
+	// ApplyAppend: 写入数据
 	ApplyAppend() error
 
+	// Close: 释放资源
 	Close()
+
+	// Append: 简化接口，用于测试（内部调用 PrepareAppend + ApplyAppend）
+	Append(node txnif.AppendableNode) error
 
 	// Test interfaces
 	GetCurrentAobj() *aobject
@@ -61,6 +62,9 @@ type sharedAppender struct {
 	maxRows      uint32
 	refedAobjs   []*aobject
 
+	// 记录创建的 AppendNode（用于返回给 tableSpace）
+	createdAppendNodes []txnif.TxnEntry
+
 	// For two-phase commit
 	preparedNode     txnif.AppendableNode
 	preparedContexts []*appendContext
@@ -82,32 +86,36 @@ func NewSharedAppender(
 	}
 }
 
-// Append is the simple one-step interface that combines PrepareAppend and ApplyAppend
+// Append is a simple one-step interface for testing (not used in production)
+// In production, use PrepareAppend + ApplyAppend separately
 func (app *sharedAppender) Append(node txnif.AppendableNode) error {
-	if err := app.PrepareAppend(node); err != nil {
+	_, err := app.PrepareAppend(node)
+	if err != nil {
 		return err
 	}
 	return app.ApplyAppend()
 }
 
 // PrepareAppend allocates space, creates AppendNodes, and generates RowIDs
-func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) error {
+// Returns the list of created AppendNodes for tableSpace to register to txnEntries
+func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.TxnEntry, error) {
 	if node == nil {
-		return nil
+		return nil, nil
 	}
 
 	data := node.GetData()
 	if data == nil {
-		return moerr.NewInternalErrorNoCtx("node data is nil")
+		return nil, moerr.NewInternalErrorNoCtx("node data is nil")
 	}
 
 	totalRows := node.Rows()
 	if totalRows == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Save node for ApplyAppend
 	app.preparedNode = node
+	app.createdAppendNodes = make([]txnif.TxnEntry, 0)
 	app.preparedContexts = make([]*appendContext, 0)
 
 	// Generate RowIDs and create AppendNodes
@@ -131,19 +139,25 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) error {
 	for remaining > 0 {
 		objEntry, aobj, err := app.ensureAobj()
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		startRow, allocated := app.allocateRows(remaining)
 
 		// Create AppendNode in MVCC
-		if err := app.createAppendNode(aobj, startRow, allocated); err != nil {
-			return err
+		appendNode, created, err := app.createAppendNode(aobj, startRow, allocated)
+		if err != nil {
+			return nil, err
+		}
+		
+		// If created, add to the list for tableSpace to register
+		if created && appendNode != nil {
+			app.createdAppendNodes = append(app.createdAppendNodes, appendNode)
 		}
 
 		// Generate RowIDs
 		if err := app.generatePhyAddr(phyAddrVec, objEntry, allocated, startRow); err != nil {
-			return err
+			return nil, err
 		}
 
 		// Save context for ApplyAppend
@@ -155,6 +169,9 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) error {
 			destRow:  startRow,
 		})
 
+		// Register object to txn (warChecker, GetMemo)
+		app.registerObjectToTxn(objEntry)
+
 		// Notify node about the mapping
 		node.AddApplyInfo(srcOffset, allocated, startRow, allocated, objEntry.AsCommonID())
 
@@ -162,7 +179,7 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) error {
 		remaining -= allocated
 	}
 
-	return nil
+	return app.createdAppendNodes, nil
 }
 
 // ApplyAppend writes the actual data to aobjects
@@ -223,8 +240,9 @@ func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) 
 		return app.currentEntry, app.currentAobj, nil
 	}
 
-	// Create ObjectEntry and initialize it
-	objEntry := catalog.NewInMemoryObject(app.table, types.BuildTS(time.Now().UnixNano(), 0), app.isTombstone)
+	// Create ObjectEntry with txn's StartTS
+	// The ObjectEntry itself is visible once created, but data visibility is controlled by AppendNodes
+	objEntry := catalog.NewInMemoryObject(app.table, app.txn.GetStartTS(), app.isTombstone)
 	app.table.Lock()
 	app.table.AddEntryLocked(objEntry)
 	app.table.Unlock()
@@ -258,11 +276,11 @@ func (app *sharedAppender) allocateRows(count uint32) (startRow, allocated uint3
 	return
 }
 
-func (app *sharedAppender) createAppendNode(aobj *aobject, startRow, count uint32) error {
+func (app *sharedAppender) createAppendNode(aobj *aobject, startRow, count uint32) (txnif.TxnEntry, bool, error) {
 	aobj.Lock()
 	defer aobj.Unlock()
-	_, _ = aobj.appendMVCC.AddAppendNodeLocked(app.txn, startRow, startRow+count)
-	return nil
+	node, created := aobj.appendMVCC.AddAppendNodeLocked(app.txn, startRow, startRow+count)
+	return node, created, nil
 }
 
 func (app *sharedAppender) generatePhyAddr(
@@ -291,6 +309,20 @@ func (app *sharedAppender) generatePhyAddr(
 
 	// Extend to phyAddrVec (accumulate all rowids)
 	return phyAddrVec.ExtendVec(col.GetDownstreamVector())
+}
+
+func (app *sharedAppender) registerObjectToTxn(objEntry *catalog.ObjectEntry) {
+	// Register to GetMemo
+	id := objEntry.AsCommonID()
+	app.txn.GetMemo().AddObject(
+		app.table.GetDB().ID,
+		id.TableID,
+		id.ObjectID(),
+		app.isTombstone,
+	)
+	
+	// Note: warChecker.Insert will be handled by tableSpace
+	// because warChecker is not accessible from SharedAppender
 }
 
 func (app *sharedAppender) GetCurrentAobj() *aobject {

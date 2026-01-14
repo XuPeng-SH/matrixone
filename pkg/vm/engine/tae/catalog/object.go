@@ -398,7 +398,7 @@ func NewStandaloneObject(table *TableEntry, ts types.TS, isTombstone bool) *Obje
 	e := &ObjectEntry{
 		table: table,
 		ObjectNode: ObjectNode{
-			IsLocal:     true,
+			IsLocal:     false, // SharedAppender objects are persisted, not workspace
 			IsTombstone: isTombstone,
 		},
 		EntryMVCCNode: EntryMVCCNode{
@@ -425,7 +425,7 @@ func NewInMemoryObject(table *TableEntry, ts types.TS, isTombstone bool) *Object
 	e := &ObjectEntry{
 		table: table,
 		ObjectNode: ObjectNode{
-			IsLocal:     true,
+			IsLocal:     false, // SharedAppender objects use ObjectData.Scan
 			IsTombstone: isTombstone,
 		},
 		EntryMVCCNode: EntryMVCCNode{

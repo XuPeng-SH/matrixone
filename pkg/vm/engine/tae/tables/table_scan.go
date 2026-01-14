@@ -48,13 +48,17 @@ func HybridScanByBlock(
 	if *bat != nil {
 		deleteStartOffset = (*bat).Length()
 	}
+	logutil.Infof("HybridScanByBlock: calling GetObjectData().Scan for object %s, offset=%d", blkID.Object().String(), offset)
 	err = dataObject.GetObjectData().Scan(ctx, bat, txn, readSchema, offset, colIdxs, mp)
 	if err != nil {
+		logutil.Infof("HybridScanByBlock: Scan returned error: %v", err)
 		return err
 	}
 	if *bat == nil {
+		logutil.Infof("HybridScanByBlock: Scan returned nil batch")
 		return nil
 	}
+	logutil.Infof("HybridScanByBlock: Scan returned batch with %d rows", (*bat).Length())
 	it := tableEntry.MakeTombstoneVisibleObjectIt(txn)
 	defer it.Release()
 	for it.Next() {
