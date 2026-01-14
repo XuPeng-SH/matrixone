@@ -1344,3 +1344,223 @@ func TestSharedAppender_MakeObjectIt_Visibility(t *testing.T) {
 	}
 	require.True(t, found, "Txn2 should see object1")
 }
+
+
+// TestSharedAppender_CreateTS verifies that in-memory ObjectEntry uses correct CreateTS
+func TestSharedAppender_CreateTS(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, _, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	txn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	// Record txn's StartTS and table's CreateTS
+	txnStartTS := txn.GetStartTS()
+	tableCreateTS := table.GetCreatedAtLocked()
+	t.Logf("Txn StartTS: %s", txnStartTS.ToString())
+	t.Logf("Table CreateTS: %s", tableCreateTS.ToString())
+
+	// Create SharedAppender and append data MULTIPLE TIMES in same txn
+	appender := NewSharedAppender(table, txn, rt, false)
+	defer appender.Close()
+
+	schema := table.GetLastestSchema(false)
+	
+	// Track created objects
+	var createdObjs []*catalog.ObjectEntry
+	
+	// Append 10 times to create multiple objects (like TestForceCheckpoint)
+	for i := 0; i < 10; i++ {
+		node := createMockNode(schema, 5)
+		_, err := appender.PrepareAppend(node)
+		require.NoError(t, err)
+		err = appender.ApplyAppend()
+		require.NoError(t, err)
+		
+		// Track the object
+		if appender.GetCurrentAobj() != nil {
+			obj := appender.GetCurrentAobj().meta.Load()
+			if obj != nil {
+				createdObjs = append(createdObjs, obj)
+			}
+		}
+		node.data.Close()
+	}
+
+	require.NoError(t, txn.Commit(context.Background()))
+
+	t.Logf("Total objects created: %d", len(createdObjs))
+	
+	// Verify ALL objects have the SAME CreateTS
+	for i, objEntry := range createdObjs {
+		actualTS := objEntry.CreatedAt
+		t.Logf("Object[%d] %s CreateTS: %s", i, objEntry.ID().ShortStringEx(), actualTS.ToString())
+		
+		// All objects created in same txn should have CreateTS = txn.StartTS
+		require.Equal(t, txnStartTS, actualTS,
+			"Object[%d] CreateTS should equal txn.StartTS", i)
+	}
+}
+
+// TestSharedAppender_FlushBehavior verifies catalog state before flush
+func TestSharedAppender_FlushBehavior(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, _, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	schema := table.GetLastestSchema(false)
+
+	// Create multiple txns appending to shared aobj
+	var inMemoryObjIDs []*types.Objectid
+	for i := 0; i < 5; i++ {
+		txn, err := txnMgr.StartTxn(nil)
+		require.NoError(t, err)
+
+		appender := NewSharedAppender(table, txn, rt, false)
+		node := createMockNode(schema, 5)
+
+		nodes, err := appender.PrepareAppend(node)
+		require.NoError(t, err)
+		require.Len(t, nodes, 1)
+
+		// Record in-memory object ID
+		objID := appender.GetCurrentAobj().meta.Load().ID()
+		if i == 0 || !objID.EQ(inMemoryObjIDs[len(inMemoryObjIDs)-1]) {
+			inMemoryObjIDs = append(inMemoryObjIDs, objID)
+		}
+
+		err = appender.ApplyAppend()
+		require.NoError(t, err)
+		appender.Close()
+		node.data.Close()
+
+		require.NoError(t, txn.Commit(context.Background()))
+	}
+
+	t.Logf("Created %d in-memory objects", len(inMemoryObjIDs))
+
+	// Verify: before flush, in-memory objects exist and are not deleted
+	readTxn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	for _, objID := range inMemoryObjIDs {
+		obj, err := table.GetObjectByID(objID, false)
+		require.NoError(t, err)
+		require.True(t, obj.IsAppendable(), "Should be in-memory")
+		require.False(t, obj.HasDropCommitted(), "Should not be deleted before flush")
+		t.Logf("Before flush: object %s CreateTS=%s", objID.ShortStringEx(), obj.CreatedAt.ToString())
+	}
+
+	require.NoError(t, readTxn.Commit(context.Background()))
+
+	// Note: Full flush testing requires FlushTableTail which is complex
+	// This test verifies the pre-flush state is correct
+	// The actual flush behavior is tested in integration tests
+}
+
+
+
+
+// TestSharedAppender_MVCCVersionChain verifies MVCC version chain after SoftDelete
+func TestSharedAppender_MVCCVersionChain(t *testing.T) {
+	defer testutils.AfterTest(t)()
+
+	c, table, _, txnMgr, rt := setupTest(t)
+	defer c.Close()
+	defer txnMgr.Stop()
+
+	schema := table.GetLastestSchema(false)
+
+	// Create in-memory object with SharedAppender
+	txn1, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	appender := NewSharedAppender(table, txn1, rt, false)
+	node := createMockNode(schema, 5)
+
+	nodes, err := appender.PrepareAppend(node)
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+
+	objID := appender.GetCurrentAobj().meta.Load().ID()
+	t.Logf("Created in-memory object: %s", objID.ShortStringEx())
+
+	err = appender.ApplyAppend()
+	require.NoError(t, err)
+	appender.Close()
+	node.data.Close()
+
+	require.NoError(t, txn1.Commit(context.Background()))
+
+	// Verify: before SoftDelete, only C entry exists
+	obj, err := table.GetObjectByID(objID, false)
+	require.NoError(t, err)
+	require.True(t, obj.IsAppendable(), "Should be in-memory")
+	require.False(t, obj.HasDropCommitted(), "Should not be deleted before SoftDelete")
+	require.Nil(t, obj.GetNextVersion(), "Should not have next version before SoftDelete")
+
+	t.Logf("Before SoftDelete: object %s, CreateTS=%s, DeleteTS=%s",
+		objID.ShortStringEx(), obj.CreatedAt.ToString(), obj.DeletedAt.ToString())
+
+	// Simulate flush: call DropObjectEntry directly
+	txn2, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	deletedEntry, err := table.DropObjectEntry(objID, txn2, false)
+	require.NoError(t, err)
+	require.NotNil(t, deletedEntry, "Should create D entry")
+
+	t.Logf("Created D entry: object %s, DeleteTS=%s (uncommitted)",
+		deletedEntry.ID().ShortStringEx(), deletedEntry.DeletedAt.ToString())
+
+	require.NoError(t, txn2.Commit(context.Background()))
+
+	// Verify: after SoftDelete and commit, MVCC version chain exists in catalog
+	// Iterate through all entries to find both C and D entries
+	var entries []*catalog.ObjectEntry
+	it := table.MakeDataObjectIt()
+	defer it.Release()
+
+	for ok := it.First(); ok; ok = it.Next() {
+		entry := it.Item()
+		if entry.ID().EQ(objID) {
+			entries = append(entries, entry)
+			t.Logf("Found entry: object %s, CreateTS=%s, DeleteTS=%s, HasDropCommitted=%v, IsAppendable=%v",
+				entry.ID().ShortStringEx(), entry.CreatedAt.ToString(), entry.DeletedAt.ToString(),
+				entry.HasDropCommitted(), entry.IsAppendable())
+		}
+	}
+
+	// Should have 2 entries (C and D)
+	require.Len(t, entries, 2, "Should have 2 entries (C and D) in catalog after SoftDelete")
+
+	// Identify C and D entries by DeleteTS
+	var cEntry, dEntry *catalog.ObjectEntry
+	for _, entry := range entries {
+		if entry.DeletedAt.IsEmpty() {
+			cEntry = entry
+		} else {
+			dEntry = entry
+		}
+	}
+
+	require.NotNil(t, cEntry, "C entry (DeleteTS=0) should exist")
+	require.NotNil(t, dEntry, "D entry (DeleteTS!=0) should exist")
+
+	// Verify they are for the same object
+	require.Equal(t, objID, cEntry.ID(), "C entry should have correct object ID")
+	require.Equal(t, objID, dEntry.ID(), "D entry should have correct object ID")
+
+	// Verify states
+	require.True(t, cEntry.DeletedAt.IsEmpty(), "C entry should have DeleteTS=0")
+	require.False(t, dEntry.DeletedAt.IsEmpty(), "D entry should have DeleteTS!=0")
+
+	t.Log("MVCC version chain verified successfully")
+	t.Log("Both C entry (DeleteTS=0) and D entry (DeleteTS!=0) exist in catalog with same ObjectID")
+	t.Log("This demonstrates that 'duplicate ObjectEntry' in TestForceCheckpoint is correct MVCC behavior")
+}
