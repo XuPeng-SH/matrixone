@@ -382,19 +382,19 @@ func (it *VisibleCommittedObjectIt) Next() bool {
 			if !entry.HasDCounterpart() { // pick only serving committed C entries
 				it.curr = entry
 				return true
-			}
-			// ignore being dropped C entries
-		} else if entry.IsVisible(it.txn) {
-			if entry.IsDEntry() { // exclude D entries
-				continue
-			}
-			if !entry.HasDCounterpart() || !entry.GetNextVersion().IsVisible(it.txn) {
-				// 1. serving committed C entries or creating C entry created by this txn
-				// 2. C entried being dropped by other invisible txn
-				it.curr = entry
-				return true
-			}
 		}
+		// ignore being dropped C entries
+	} else if entry.IsVisible(it.txn) {
+		if entry.IsDEntry() { // exclude D entries
+			continue
+		}
+		if !entry.HasDCounterpart() || !entry.GetNextVersion().IsVisible(it.txn) {
+			// 1. serving committed C entries or creating C entry created by this txn
+			// 2. C entried being dropped by other invisible txn
+			it.curr = entry
+			return true
+		}
+	}
 	}
 }
 

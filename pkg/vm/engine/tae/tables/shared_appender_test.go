@@ -1344,3 +1344,4 @@ func TestSharedAppender_MakeObjectIt_Visibility(t *testing.T) {
 	}
 	require.True(t, found, "Txn2 should see object1")
 }
+

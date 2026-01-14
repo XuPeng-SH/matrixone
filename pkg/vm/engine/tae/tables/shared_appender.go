@@ -64,6 +64,8 @@ type sharedAppender struct {
 
 	// 记录创建的 AppendNode（用于返回给 tableSpace）
 	createdAppendNodes []txnif.TxnEntry
+	// 记录创建的 ObjectEntry（用于返回给 tableSpace 注册到 txnEntries）
+	createdObjectEntries []*catalog.ObjectEntry
 
 	// For two-phase commit
 	preparedNode     txnif.AppendableNode
@@ -219,8 +221,25 @@ func (app *sharedAppender) writeDataToAobj(data *containers.Batch, ctx *appendCo
 
 	if !n.IsPersisted() {
 		mnode := n.MustMNode()
-		_, err := mnode.ApplyAppendLocked(bat)
-		return err
+		from, err := mnode.ApplyAppendLocked(bat)
+		if err != nil {
+			return err
+		}
+
+		// Update PK index (critical fix: was missing in original implementation)
+		schema := mnode.writeSchema
+		for _, colDef := range schema.ColDefs {
+			if colDef.IsPhyAddr() {
+				continue
+			}
+			if colDef.IsRealPrimary() && !schema.IsSecondaryIndexTable() {
+				if err = mnode.pkIndex.BatchUpsert(
+					bat.Vecs[colDef.Idx].GetDownstreamVector(), from); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
 
 	return moerr.NewInternalErrorNoCtx("cannot append to persisted node")
