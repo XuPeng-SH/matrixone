@@ -125,17 +125,17 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 	// Generate RowIDs and create AppendNodes
 	schema := app.table.GetLastestSchema(app.isTombstone)
 
-	// Handle PhyAddr column (only for data table, not tombstone)
+	// Handle PhyAddr column - unified for both data and tombstone
 	var phyAddrVec containers.Vector
 	var phyAddrIdx int
-	if !app.isTombstone {
-		phyAddrIdx = schema.PhyAddrKey.Idx
-		phyAddrVec = app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
-		defer func() {
-			data.Vecs[phyAddrIdx].Close()
-			data.Vecs[phyAddrIdx] = phyAddrVec
-		}()
-	}
+	phyAddrIdx = schema.PhyAddrKey.Idx
+
+	// Create new vector for PhyAddr
+	phyAddrVec = app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
+	defer func() {
+		data.Vecs[phyAddrIdx].Close()
+		data.Vecs[phyAddrIdx] = phyAddrVec
+	}()
 
 	remaining := totalRows
 	srcOffset := uint32(0)
@@ -328,10 +328,7 @@ func (app *sharedAppender) generatePhyAddr(
 	objEntry *catalog.ObjectEntry,
 	count, destOffset uint32,
 ) error {
-	if app.isTombstone {
-		return nil
-	}
-
+	// Generate rowid for both data and tombstone
 	blkID := objectio.NewBlockidWithObjectID(objEntry.ID(), 0)
 	col := app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
 	defer col.Close()
