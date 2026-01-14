@@ -21,10 +21,8 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
-	"go.uber.org/zap"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -112,13 +110,13 @@ func (tbl *txnTable) NeedRollback() bool {
 // and un-reference the appendable blocks which had been referenced when PrepareApply.
 func (space *tableSpace) ApplyAppend() (err error) {
 	defer func() {
-		// Close All unclosed Appends:un-reference the appendable block.
-		space.CloseAppends()
-		// Close SharedAppender
+		// Close SharedAppender first (releases all aobj refs)
 		if space.sharedAppender != nil {
 			space.sharedAppender.Close()
 			space.sharedAppender = nil
 		}
+		// Close All unclosed Appends:un-reference the appendable block.
+		space.CloseAppends()
 	}()
 
 	// Use SharedAppender if available
@@ -214,7 +212,6 @@ func (space *tableSpace) prepareApplyANode(node *anode, startOffset uint32) erro
 			appender.UnlockFreeze()
 			// Unref the appender, otherwise it can't be PrepareCompact(ed) successfully
 			appender.Close()
-			logutil.Info("LockFreeze", zap.String("appender", appender.PPString()))
 			continue
 		}
 
@@ -330,21 +327,28 @@ func (space *tableSpace) prepareApplyNode(node *anode) (err error) {
 	// Compact node first (same as original code)
 	node.Compact()
 
-	// 1. Create SharedAppender
-	space.sharedAppender = tables.NewSharedAppender(
-		space.table.entry,
-		space.table.store.txn,
-		space.table.store.rt,
-		space.isTombstone,
-	)
+	// SharedAppender lifecycle:
+	// 1. Created once per tableSpace (reused across multiple prepareApplyNode calls)
+	// 2. PrepareAppend called multiple times (accumulates preparedContexts)
+	// 3. ApplyAppend called once in space.ApplyAppend() (processes all contexts)
+	// 4. Close called in space.ApplyAppend() defer (releases all aobj refs)
+	if space.sharedAppender == nil {
+		space.sharedAppender = tables.NewSharedAppender(
+			space.table.entry,
+			space.table.store.txn,
+			space.table.store.rt,
+			space.isTombstone,
+		)
+	}
 
-	// 2. PrepareAppend - get created AppendNodes
+	// PrepareAppend: allocate space, create AppendNodes, generate RowIDs
+	// Note: Does NOT write data yet (data is written in ApplyAppend)
 	appendNodes, err := space.sharedAppender.PrepareAppend(node)
 	if err != nil {
 		return err
 	}
 
-	// 3. Register AppendNodes to txnEntries (critical for commit to work)
+	// Register AppendNodes to txnEntries (required for commit)
 	for _, appendNode := range appendNodes {
 		if err = space.table.store.IncreateWriteCnt("prepare apply anode"); err != nil {
 			return err
@@ -352,24 +356,12 @@ func (space *tableSpace) prepareApplyNode(node *anode) (err error) {
 		space.table.txnEntries.Append(appendNode)
 	}
 
-	// 4. Get table handle and set its object to the created aobj
-	tableData := space.table.entry.GetTableData()
-	if space.tableHandle == nil {
-		space.tableHandle = tableData.GetHandle(space.isTombstone)
-	}
-
-	// Set handle's object to the current aobj (from SharedAppender)
-	// Use SetObject instead of SetAppender to avoid creating unnecessary appender
-	currentAobj := space.sharedAppender.GetCurrentAobj()
-	if currentAobj != nil {
-		space.tableHandle.SetObject(currentAobj)
-	}
-
 	return nil
 }
 
 // CloseAppends un-reference the appendable blocks
 func (space *tableSpace) CloseAppends() {
+	// Note: SharedAppender is closed in ApplyAppend defer, not here
 	for _, ctx := range space.appends {
 		if ctx.driver != nil {
 			ctx.driver.Close()
