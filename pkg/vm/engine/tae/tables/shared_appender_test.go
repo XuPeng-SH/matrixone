@@ -1345,7 +1345,6 @@ func TestSharedAppender_MakeObjectIt_Visibility(t *testing.T) {
 	require.True(t, found, "Txn2 should see object1")
 }
 
-
 // TestSharedAppender_CreateTS verifies that in-memory ObjectEntry uses correct CreateTS
 func TestSharedAppender_CreateTS(t *testing.T) {
 	defer testutils.AfterTest(t)()
@@ -1368,10 +1367,10 @@ func TestSharedAppender_CreateTS(t *testing.T) {
 	defer appender.Close()
 
 	schema := table.GetLastestSchema(false)
-	
+
 	// Track created objects
 	var createdObjs []*catalog.ObjectEntry
-	
+
 	// Append 10 times to create multiple objects (like TestForceCheckpoint)
 	for i := 0; i < 10; i++ {
 		node := createMockNode(schema, 5)
@@ -1379,7 +1378,7 @@ func TestSharedAppender_CreateTS(t *testing.T) {
 		require.NoError(t, err)
 		err = appender.ApplyAppend()
 		require.NoError(t, err)
-		
+
 		// Track the object
 		if appender.GetCurrentAobj() != nil {
 			obj := appender.GetCurrentAobj().meta.Load()
@@ -1393,12 +1392,12 @@ func TestSharedAppender_CreateTS(t *testing.T) {
 	require.NoError(t, txn.Commit(context.Background()))
 
 	t.Logf("Total objects created: %d", len(createdObjs))
-	
+
 	// Verify ALL objects have the SAME CreateTS
 	for i, objEntry := range createdObjs {
 		actualTS := objEntry.CreatedAt
 		t.Logf("Object[%d] %s CreateTS: %s", i, objEntry.ID().ShortStringEx(), actualTS.ToString())
-		
+
 		// All objects created in same txn should have CreateTS = txn.StartTS
 		require.Equal(t, txnStartTS, actualTS,
 			"Object[%d] CreateTS should equal txn.StartTS", i)
@@ -1462,9 +1461,6 @@ func TestSharedAppender_FlushBehavior(t *testing.T) {
 	// This test verifies the pre-flush state is correct
 	// The actual flush behavior is tested in integration tests
 }
-
-
-
 
 // TestSharedAppender_MVCCVersionChain verifies MVCC version chain after SoftDelete
 func TestSharedAppender_MVCCVersionChain(t *testing.T) {
