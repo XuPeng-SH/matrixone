@@ -33,20 +33,20 @@ func init() {
 }
 
 type SharedAppender interface {
-	// PrepareAppend: 分配空间、创建 AppendNode、生成 RowID
-	// 返回创建的 AppendNode 列表（供 tableSpace 注册到 txnEntries）
+	// PrepareAppend allocates space, creates AppendNodes, and generates RowIDs.
+	// Returns the list of created AppendNodes for tableSpace to register to txnEntries.
 	PrepareAppend(node txnif.AppendableNode) ([]txnif.TxnEntry, error)
 
-	// ApplyAppend: 写入数据
+	// ApplyAppend writes data.
 	ApplyAppend() error
 
-	// Close: 释放资源
+	// Close releases resources.
 	Close()
 
-	// Append: 简化接口，用于测试（内部调用 PrepareAppend + ApplyAppend）
+	// Append is a simplified interface for testing (internally calls PrepareAppend + ApplyAppend).
 	Append(node txnif.AppendableNode) error
 
-	// GetCurrentAobj: 返回当前使用的 aobj（用于设置 tableHandle）
+	// GetCurrentAobj returns the currently used aobj (for setting tableHandle).
 	GetCurrentAobj() *aobject
 
 	// Test interfaces
