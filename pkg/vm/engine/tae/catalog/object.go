@@ -425,7 +425,7 @@ func NewInMemoryObject(table *TableEntry, ts types.TS, isTombstone bool) *Object
 	e := &ObjectEntry{
 		table: table,
 		ObjectNode: ObjectNode{
-			IsLocal:     false, // SharedAppender objects are globally visible
+			IsLocal:     false, // TxnAppender objects are globally visible
 			IsTombstone: isTombstone,
 		},
 		EntryMVCCNode: EntryMVCCNode{
@@ -447,7 +447,7 @@ func NewInMemoryObjectWithID(table *TableEntry, ts types.TS, isTombstone bool, o
 	e := &ObjectEntry{
 		table: table,
 		ObjectNode: ObjectNode{
-			IsLocal:     false, // SharedAppender objects are globally visible
+			IsLocal:     false, // TxnAppender objects are globally visible
 			IsTombstone: isTombstone,
 		},
 		EntryMVCCNode: EntryMVCCNode{

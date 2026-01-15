@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	apipb "github.com/matrixorigin/matrixone/pkg/pb/api"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/data"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
@@ -38,6 +40,28 @@ import (
 )
 
 type TableDataFactory = func(meta *TableEntry) data.Table
+
+// Forward declaration for AppenderFactory (defined in tables package)
+type TxnAppender interface {
+	PrepareAppend(node txnif.AppendableNode) ([]txnif.TxnEntry, error)
+	ApplyAppend() error
+	Close()
+}
+
+// AppenderFactory creates per-txn TxnAppender instances
+type AppenderFactory interface {
+	GetTxnAppender(txn txnif.AsyncTxn) TxnAppender
+}
+
+// Constructor function type for creating table-level singleton
+type NewAppenderFactorySingleton func(table *TableEntry, rt *dbutils.Runtime, isTombstone bool) AppenderFactory
+
+var newAppenderFactoryFunc NewAppenderFactorySingleton
+
+// SetAppenderFactory sets the factory function (called from tables package)
+func SetAppenderFactory(f NewAppenderFactorySingleton) {
+	newAppenderFactoryFunc = f
+}
 
 func tableVisibilityFn[T *TableEntry](n *common.GenericDLNode[*TableEntry], txn txnif.TxnReader) (visible, dropped bool, name string) {
 	table := n.GetPayload()
@@ -63,6 +87,12 @@ type TableEntry struct {
 	// Shared in-memory aobj management
 	currentDataAobj      atomic.Pointer[ObjectEntry]
 	currentTombstoneAobj atomic.Pointer[ObjectEntry]
+
+	// Shared appenders (table-level singleton)
+	dataAppenderOnce      sync.Once
+	dataAppender          AppenderFactory
+	tombstoneAppenderOnce sync.Once
+	tombstoneAppender     AppenderFactory
 }
 
 func genTblFullName(tenantID uint32, name string) string {
@@ -625,6 +655,24 @@ func (entry *TableEntry) TryFindLastAppendableObject(isTombstone bool) (obj *Obj
 		}
 	}
 	return obj
+}
+
+// GetTxnAppender creates a per-txn appender from table-level singleton
+func (entry *TableEntry) GetTxnAppender(txn txnif.AsyncTxn, rt *dbutils.Runtime, isTombstone bool) TxnAppender {
+	var factory AppenderFactory
+	if isTombstone {
+		entry.tombstoneAppenderOnce.Do(func() {
+			entry.tombstoneAppender = newAppenderFactoryFunc(entry, rt, true)
+		})
+		factory = entry.tombstoneAppender
+	} else {
+		entry.dataAppenderOnce.Do(func() {
+			entry.dataAppender = newAppenderFactoryFunc(entry, rt, false)
+		})
+		factory = entry.dataAppender
+	}
+	
+	return factory.GetTxnAppender(txn)
 }
 
 func (entry *TableEntry) AsCommonID() *common.ID {

@@ -38,15 +38,18 @@ func TestScanSharedAobj_SingleCommitted(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, err := c.CreateDBEntry("db", "", "", nil)
-	require.NoError(t, err)
-
-	table, err := db.CreateTableEntry(schema, nil, nil)
-	require.NoError(t, err)
-
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
+
+	txn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	db, err := c.CreateDBEntry("db", "", "", txn)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, txn, nil)
+	require.NoError(t, err)
 
 	rt := dbutils.NewRuntime()
 
@@ -117,15 +120,18 @@ func TestScanSharedAobj_SingleActive(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, err := c.CreateDBEntry("db", "", "", nil)
-	require.NoError(t, err)
-
-	table, err := db.CreateTableEntry(schema, nil, nil)
-	require.NoError(t, err)
-
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
+
+	txn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	db, err := c.CreateDBEntry("db", "", "", txn)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, txn, nil)
+	require.NoError(t, err)
 
 	rt := dbutils.NewRuntime()
 
@@ -193,15 +199,18 @@ func TestScanSharedAobj_ReadOwnWrites(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, err := c.CreateDBEntry("db", "", "", nil)
-	require.NoError(t, err)
-
-	table, err := db.CreateTableEntry(schema, nil, nil)
-	require.NoError(t, err)
-
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
+
+	txn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	db, err := c.CreateDBEntry("db", "", "", txn)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, txn, nil)
+	require.NoError(t, err)
 
 	rt := dbutils.NewRuntime()
 
@@ -253,15 +262,18 @@ func TestScanSharedAobj_MultipleAppendNodes(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, err := c.CreateDBEntry("db", "", "", nil)
-	require.NoError(t, err)
-
-	table, err := db.CreateTableEntry(schema, nil, nil)
-	require.NoError(t, err)
-
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
+
+	txn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	db, err := c.CreateDBEntry("db", "", "", txn)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, txn, nil)
+	require.NoError(t, err)
 
 	rt := dbutils.NewRuntime()
 
@@ -360,15 +372,18 @@ func TestScanSharedAobj_Rollback(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, err := c.CreateDBEntry("db", "", "", nil)
-	require.NoError(t, err)
-
-	table, err := db.CreateTableEntry(schema, nil, nil)
-	require.NoError(t, err)
-
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
+
+	txn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	db, err := c.CreateDBEntry("db", "", "", txn)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, txn, nil)
+	require.NoError(t, err)
 
 	rt := dbutils.NewRuntime()
 
@@ -465,15 +480,21 @@ func TestScanSharedAobj_MultipleRollback(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, err := c.CreateDBEntry("db", "", "", nil)
-	require.NoError(t, err)
-
-	table, err := db.CreateTableEntry(schema, nil, nil)
-	require.NoError(t, err)
-
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
+
+	setupTxn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	db, err := c.CreateDBEntry("db", "", "", setupTxn)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, setupTxn, nil)
+	require.NoError(t, err)
+
+	err = setupTxn.Commit(context.Background())
+	require.NoError(t, err)
 
 	rt := dbutils.NewRuntime()
 

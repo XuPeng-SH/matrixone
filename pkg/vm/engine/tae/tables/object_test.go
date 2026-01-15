@@ -15,6 +15,7 @@
 package tables
 
 import (
+	"context"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -25,6 +26,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index/indexwrapper"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/updates"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -35,11 +37,17 @@ func TestGetActiveRow(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, _ := c.CreateDBEntry("db", "", "", nil)
-	table, _ := db.CreateTableEntry(schema, nil, nil)
+	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
+	txnMgr.Start(context.Background())
+	defer txnMgr.Stop()
+
+	txn, _ := txnMgr.StartTxn(nil)
+
+	db, _ := c.CreateDBEntry("db", "", "", txn)
+	table, _ := db.CreateTableEntry(schema, txn, nil)
 	noid := objectio.NewObjectid()
 	stats := objectio.NewObjectStatsWithObjectID(&noid, true, false, false)
-	obj, _ := table.CreateObject(nil, &objectio.CreateObjOpt{Stats: stats}, nil)
+	obj, _ := table.CreateObject(txn, &objectio.CreateObjOpt{Stats: stats}, nil)
 	mvcc := updates.NewAppendMVCCHandle(obj)
 	// blk := &dataBlock{
 	// 	mvcc: mvcc,

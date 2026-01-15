@@ -252,7 +252,8 @@ func TestSharedAppender_NewAPI_MultipleAppends(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	node1 := createMockNode(table.GetLastestSchema(false), 100)
@@ -448,39 +449,6 @@ func TestSharedAppender_NewAPI_AppendNodeReuse(t *testing.T) {
 	assert.Equal(t, node1.appends[0].dest, node2.appends[0].dest)
 }
 
-// Test: Multiple PrepareAppend on same aobj returns same AppendNode
-func TestSharedAppender_NewAPI_SameAppendNodeReturned(t *testing.T) {
-	defer testutils.AfterTest(t)()
-
-	c, table, txn, txnMgr, rt := setupTest(t)
-	defer c.Close()
-	defer txnMgr.Stop()
-
-	appender := table.GetTxnAppender(txn, rt, false)
-	defer appender.Close()
-
-	// First PrepareAppend: 50 rows
-	node1 := createMockNode(table.GetLastestSchema(false), 50)
-	defer node1.data.Close()
-	appendNodes1, err := appender.PrepareAppend(node1)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(appendNodes1))
-	err = appender.ApplyAppend()
-	require.NoError(t, err)
-
-	// Second PrepareAppend: 30 rows (same aobj)
-	node2 := createMockNode(table.GetLastestSchema(false), 30)
-	defer node2.data.Close()
-	appendNodes2, err := appender.PrepareAppend(node2)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(appendNodes2))
-	err = appender.ApplyAppend()
-	require.NoError(t, err)
-
-	// Should return the same AppendNode (extended)
-	assert.Equal(t, appendNodes1[0], appendNodes2[0], "Should return the same AppendNode")
-}
-
 // Test: RefCount
 func TestSharedAppender_NewAPI_RefCount(t *testing.T) {
 	defer testutils.AfterTest(t)()
@@ -489,7 +457,8 @@ func TestSharedAppender_NewAPI_RefCount(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	node := createMockNode(table.GetLastestSchema(false), 100)
@@ -499,8 +468,8 @@ func TestSharedAppender_NewAPI_RefCount(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check that aobj was created and has references
-// 	assert.NotNil(t, appender.GetCurrentAobj().(*aobject))
-// 	assert.Greater(t, appender.GetCurrentAobj().(*aobject).RefCount(), int64(0))
+	assert.NotNil(t, appender.currentAobj)
+	assert.Greater(t, appender.currentAobj.RefCount(), int64(0))
 }
 
 // Test: RefCount with multiple aobjs
@@ -522,47 +491,6 @@ func TestSharedAppender_NewAPI_RefCountMultipleAobjs(t *testing.T) {
 	assert.Equal(t, 3, len(node.appends))
 }
 
-// Test: Multiple PrepareAppend calls spanning multiple aobjs
-func TestSharedAppender_NewAPI_MultiplePrepareCrossAobj(t *testing.T) {
-	defer testutils.AfterTest(t)()
-
-	c, table, txn, txnMgr, rt := setupTest(t)
-	defer c.Close()
-	defer txnMgr.Stop()
-
-	table.GetLastestSchema(false).Extra.BlockMaxRows = 100
-
-	appender := table.GetTxnAppender(txn, rt, false)
-	defer appender.Close()
-
-	// First PrepareAppend: 80 rows (fills most of aobj1)
-	node1 := createMockNode(table.GetLastestSchema(false), 80)
-	defer node1.data.Close()
-	appendNodes1, err := appender.PrepareAppend(node1)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(appendNodes1))
-	err = appender.ApplyAppend()
-	require.NoError(t, err)
-
-	// Second PrepareAppend: 50 rows (20 in aobj1 + 30 in aobj2)
-	node2 := createMockNode(table.GetLastestSchema(false), 50)
-	defer node2.data.Close()
-	appendNodes2, err := appender.PrepareAppend(node2)
-	require.NoError(t, err)
-	
-	// Should have 2 AppendNodes (one for aobj1, one for aobj2)
-	// But aobj1's AppendNode is reused (extended), so only 1 new node
-	require.Equal(t, 2, len(appendNodes2), "Should have 2 AppendNodes: aobj1 (extended) + aobj2 (new)")
-	
-	err = appender.ApplyAppend()
-	require.NoError(t, err)
-
-	// Verify node2 was split across 2 aobjs
-	require.Equal(t, 2, len(node2.appends))
-	assert.Equal(t, uint32(20), node2.appends[0].destLen, "First 20 rows in aobj1")
-	assert.Equal(t, uint32(30), node2.appends[1].destLen, "Remaining 30 rows in aobj2")
-}
-
 // Test: Frozen aobj
 func TestSharedAppender_NewAPI_FrozenAobj(t *testing.T) {
 	defer testutils.AfterTest(t)()
@@ -571,7 +499,8 @@ func TestSharedAppender_NewAPI_FrozenAobj(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	// First append to create aobj
@@ -583,7 +512,7 @@ func TestSharedAppender_NewAPI_FrozenAobj(t *testing.T) {
 	require.NoError(t, err)
 
 	// Freeze the aobj
-// 	appender.GetCurrentAobj().(*aobject).FreezeAppend()
+	appender.currentAobj.FreezeAppend()
 
 	// Second append should create new aobj
 	node2 := createMockNode(table.GetLastestSchema(false), 50)
@@ -592,7 +521,7 @@ func TestSharedAppender_NewAPI_FrozenAobj(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should have 2 aobjs now
-// 	assert.Equal(t, 2, len(appender.GetRefedAobjs().([]*aobject)))
+	assert.Equal(t, 2, len(appender.refedAobjs))
 }
 
 // Test: Concurrent freeze
@@ -603,7 +532,8 @@ func TestSharedAppender_NewAPI_ConcurrentFreeze(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	// First append
@@ -614,8 +544,8 @@ func TestSharedAppender_NewAPI_ConcurrentFreeze(t *testing.T) {
 	err = appender.ApplyAppend()
 	require.NoError(t, err)
 
-// 	aobj := appender.GetCurrentAobj().(*aobject)
-// 	aobj.FreezeAppend()
+	aobj := appender.currentAobj
+	aobj.FreezeAppend()
 
 	// Second append with different txn should create new aobj
 	txn2, err := txnMgr.StartTxn(nil)
@@ -698,7 +628,8 @@ func TestSharedAppender_NewAPI_ObjectProperties(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	node := createMockNode(table.GetLastestSchema(false), 100)
@@ -707,12 +638,12 @@ func TestSharedAppender_NewAPI_ObjectProperties(t *testing.T) {
 	_, err := appender.PrepareAppend(node)
 	require.NoError(t, err)
 
-// 	aobj := appender.GetCurrentAobj().(*aobject)
-// 	objEntry := aobj.meta.Load()
-// 
-// 	assert.True(t, objEntry.IsAppendable())
-// 	assert.False(t, objEntry.IsTombstone)
-// 	assert.False(t, objEntry.CreatedAt.IsEmpty())
+	aobj := appender.currentAobj
+	objEntry := aobj.meta.Load()
+
+	assert.True(t, objEntry.IsAppendable())
+	assert.False(t, objEntry.IsTombstone)
+	assert.False(t, objEntry.CreatedAt.IsEmpty())
 }
 
 // Test: Insufficient space handling
@@ -749,21 +680,22 @@ func TestSharedAppender_NewAPI_ScanIntegration(t *testing.T) {
 	err := testAppendWithNewAPI(t, table, txn, rt, node1, false)
 	require.NoError(t, err)
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 	
 	node2 := createMockNode(table.GetLastestSchema(false), 1)
 	defer node2.data.Close()
 	_, err = appender.PrepareAppend(node2)
 	require.NoError(t, err)
-// 	aobj := appender.GetCurrentAobj().(*aobject)
+	aobj := appender.currentAobj
 
 	_, err = txnMgr.StartTxn(nil)
 	require.NoError(t, err)
 
-// 	rows, err := aobj.Rows()
-// 	require.NoError(t, err)
-// 	assert.Greater(t, rows, 0)
+	rows, err := aobj.Rows()
+	require.NoError(t, err)
+	assert.Greater(t, rows, 0)
 }
 
 // Test: MakeObjectIt (object iterator)
@@ -832,7 +764,8 @@ func TestSharedAppender_NewAPI_CreateTS(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 	
 	node := createMockNode(table.GetLastestSchema(false), 100)
@@ -840,11 +773,11 @@ func TestSharedAppender_NewAPI_CreateTS(t *testing.T) {
 	_, err := appender.PrepareAppend(node)
 	require.NoError(t, err)
 
-// 	aobj := appender.GetCurrentAobj().(*aobject)
-// 	objEntry := aobj.meta.Load()
-// 
-// 	assert.False(t, objEntry.CreatedAt.IsEmpty())
-// 	assert.Greater(t, objEntry.CreatedAt.Physical(), int64(0))
+	aobj := appender.currentAobj
+	objEntry := aobj.meta.Load()
+
+	assert.False(t, objEntry.CreatedAt.IsEmpty())
+	assert.Greater(t, objEntry.CreatedAt.Physical(), int64(0))
 }
 
 // Test: MVCC version chain
@@ -855,7 +788,8 @@ func TestSharedAppender_NewAPI_MVCCVersionChain(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 	
 	node := createMockNode(table.GetLastestSchema(false), 100)
@@ -863,11 +797,11 @@ func TestSharedAppender_NewAPI_MVCCVersionChain(t *testing.T) {
 	_, err := appender.PrepareAppend(node)
 	require.NoError(t, err)
 
-// 	aobj := appender.GetCurrentAobj().(*aobject)
-// 	objEntry := aobj.meta.Load()
-// 
-// 	assert.NotNil(t, objEntry.GetLatestNode())
-// 	assert.True(t, objEntry.DeletedAt.IsEmpty())
+	aobj := appender.currentAobj
+	objEntry := aobj.meta.Load()
+
+	assert.NotNil(t, objEntry.GetLatestNode())
+	assert.True(t, objEntry.DeletedAt.IsEmpty())
 }
 
 // Test: PhyAddr generation
@@ -900,9 +834,9 @@ func TestSharedAppender_NewAPI_SingletonAppender(t *testing.T) {
 	appender2 := table.GetTxnAppender(txn, rt, false)
 	appender3 := table.GetTxnAppender(txn, rt, false)
 
-	// Each call creates a new instance - compare pointer addresses
-	assert.NotSame(t, appender1, appender2)
-	assert.NotSame(t, appender2, appender3)
+	// Each call creates a new instance
+	assert.NotEqual(t, appender1, appender2)
+	assert.NotEqual(t, appender2, appender3)
 }
 
 // Test: Tombstone and data appenders are different
@@ -948,7 +882,8 @@ func TestSharedAppender_NewAPI_PlaceholderMechanism(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	node1 := createMockNode(table.GetLastestSchema(false), 100)
@@ -997,11 +932,11 @@ func TestSharedAppender_NewAPI_Close(t *testing.T) {
 func TestSharedAppender_NewAPI_CloseNilAobj(t *testing.T) {
 	defer testutils.AfterTest(t)()
 
-	c, table, txn, txnMgr, rt := setupTest(t)
+	c, table, _, txnMgr, rt := setupTest(t)
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := NewSharedAppender(table, nil, rt, false)
 	appender.Close()
 }
 
@@ -1013,7 +948,8 @@ func TestSharedAppender_NewAPI_ErrorNilBatch(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 	
 	node := createMockNode(table.GetLastestSchema(false), 100)
@@ -1041,7 +977,8 @@ func TestSharedAppender_NewAPI_ErrorZeroCount(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	node := createMockNode(table.GetLastestSchema(false), 0)
@@ -1061,7 +998,8 @@ func TestSharedAppender_NewAPI_ErrorExhaustSpace(t *testing.T) {
 
 	table.GetLastestSchema(false).Extra.BlockMaxRows = 100
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	node1 := createMockNode(table.GetLastestSchema(false), 100)
@@ -1122,7 +1060,8 @@ func TestSharedAppender_NewAPI_ErrorWrongAobj(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 
 	node1 := createMockNode(table.GetLastestSchema(false), 100)
@@ -1145,7 +1084,8 @@ func TestSharedAppender_NewAPI_ErrorWrongSchema(t *testing.T) {
 	defer c.Close()
 	defer txnMgr.Stop()
 
-	appender := table.GetTxnAppender(txn, rt, false)
+	appender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	appender.txn = txn
 	defer appender.Close()
 	
 	node := createMockNode(table.GetLastestSchema(false), 100)
@@ -1231,10 +1171,19 @@ func TestSharedAppender_NewAPI_TombstoneDataHybridScan(t *testing.T) {
 	assert.Equal(t, uint32(0), tombstoneAppendInfo.destOff, "Tombstone should start at row 0")
 	assert.Equal(t, uint32(30), tombstoneAppendInfo.destLen, "Tombstone should have 30 rows")
 
+	// Verify data appender state
+	dataAppender := table.GetTxnAppender(txn, rt, false).(*sharedAppender)
+	assert.Equal(t, uint32(100), dataAppender.nextRow, "Data appender should have 100 rows")
+
+	// Verify tombstone appender state
+	tombstoneAppender := table.GetTxnAppender(txn, rt, true).(*sharedAppender)
+	assert.Equal(t, uint32(30), tombstoneAppender.nextRow, "Tombstone appender should have 30 rows")
+
 	// Verify they are different appenders
-	dataAppender := table.GetTxnAppender(txn, rt, false)
-	tombstoneAppender := table.GetTxnAppender(txn, rt, true)
 	assert.NotEqual(t, dataAppender, tombstoneAppender, "Data and tombstone should use different appenders")
+
+	// Verify different aobjs
+	assert.NotEqual(t, dataAppender.currentAobj, tombstoneAppender.currentAobj, "Data and tombstone should use different aobjs")
 
 	// Verify RowIDs are in different objects
 	assert.NotEqual(t, dataAppendInfo.dest, tombstoneAppendInfo.dest, "Data and tombstone RowIDs should be in different objects")

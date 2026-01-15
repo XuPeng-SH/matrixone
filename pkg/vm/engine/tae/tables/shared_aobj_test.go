@@ -35,15 +35,18 @@ func TestSharedAobj_Identification(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, err := c.CreateDBEntry("db", "", "", nil)
-	require.NoError(t, err)
-
-	table, err := db.CreateTableEntry(schema, nil, nil)
-	require.NoError(t, err)
-
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
+
+	txn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	db, err := c.CreateDBEntry("db", "", "", txn)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, txn, nil)
+	require.NoError(t, err)
 
 	createTxn, err := txnMgr.StartTxn(nil)
 	require.NoError(t, err)
@@ -67,15 +70,18 @@ func TestSharedAobj_GetMinCommitTS(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, err := c.CreateDBEntry("db", "", "", nil)
-	require.NoError(t, err)
-
-	table, err := db.CreateTableEntry(schema, nil, nil)
-	require.NoError(t, err)
-
 	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
 	txnMgr.Start(context.Background())
 	defer txnMgr.Stop()
+
+	txn, err := txnMgr.StartTxn(nil)
+	require.NoError(t, err)
+
+	db, err := c.CreateDBEntry("db", "", "", txn)
+	require.NoError(t, err)
+
+	table, err := db.CreateTableEntry(schema, txn, nil)
+	require.NoError(t, err)
 
 	rt := dbutils.NewRuntime()
 

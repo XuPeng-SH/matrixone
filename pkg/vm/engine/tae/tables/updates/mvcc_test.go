@@ -24,6 +24,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/testutils"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/txn/txnbase"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -33,11 +34,19 @@ func TestMutationControllerAppend(t *testing.T) {
 	schema := catalog.MockSchema(1, 0)
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
-	db, _ := c.CreateDBEntry("db", "", "", nil)
-	table, _ := db.CreateTableEntry(schema, nil, nil)
+
+	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
+	txnMgr.Start(context.Background())
+	defer txnMgr.Stop()
+
+	setupTxn, _ := txnMgr.StartTxn(nil)
+	db, _ := c.CreateDBEntry("db", "", "", setupTxn)
+	table, _ := db.CreateTableEntry(schema, setupTxn, nil)
 	noid := objectio.NewObjectid()
 	stats := objectio.NewObjectStatsWithObjectID(&noid, true, false, false)
-	obj, _ := table.CreateObject(nil, &objectio.CreateObjOpt{Stats: stats}, nil)
+	obj, _ := table.CreateObject(setupTxn, &objectio.CreateObjOpt{Stats: stats}, nil)
+	_ = setupTxn.Commit(context.Background())
+
 	mc := NewAppendMVCCHandle(obj)
 
 	nodeCnt := 10000
@@ -90,11 +99,18 @@ func TestGetVisibleRow(t *testing.T) {
 	schema := catalog.MockSchema(1, 0)
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
-	db, _ := c.CreateDBEntry("db", "", "", nil)
-	table, _ := db.CreateTableEntry(schema, nil, nil)
+
+	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
+	txnMgr.Start(context.Background())
+	defer txnMgr.Stop()
+
+	setupTxn, _ := txnMgr.StartTxn(nil)
+	db, _ := c.CreateDBEntry("db", "", "", setupTxn)
+	table, _ := db.CreateTableEntry(schema, setupTxn, nil)
 	noid := objectio.NewObjectid()
 	stats := objectio.NewObjectStatsWithObjectID(&noid, true, false, false)
-	obj, _ := table.CreateObject(nil, &objectio.CreateObjOpt{Stats: stats}, nil)
+	obj, _ := table.CreateObject(setupTxn, &objectio.CreateObjOpt{Stats: stats}, nil)
+	_ = setupTxn.Commit(context.Background())
 	n := NewAppendMVCCHandle(obj)
 	an1, _ := n.AddAppendNodeLocked(nil, 0, 1)
 	an1.Start = types.BuildTS(1, 0)

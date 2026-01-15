@@ -15,6 +15,8 @@
 package tables
 
 import (
+	"sync"
+	
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
@@ -22,6 +24,13 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 )
+
+func init() {
+	// Register factory function to create table-level singleton
+	catalog.SetAppenderFactory(func(table *catalog.TableEntry, rt *dbutils.Runtime, isTombstone bool) catalog.AppenderFactory {
+		return NewSharedAppender(table, rt, isTombstone)
+	})
+}
 
 type SharedAppender interface {
 	// PrepareAppend: 分配空间、创建 AppendNode、生成 RowID
@@ -52,57 +61,67 @@ type appendContext struct {
 	destRow  uint32
 }
 
+// sharedAppender is table-level singleton, only manages space allocation
 type sharedAppender struct {
 	table       *catalog.TableEntry
-	txn         txnif.AsyncTxn
 	rt          *dbutils.Runtime
 	isTombstone bool
+	mu          sync.Mutex
 
 	currentEntry *catalog.ObjectEntry
 	currentAobj  *aobject
 	nextRow      uint32
 	maxRows      uint32
-	refedAobjs   []*aobject
-
-	// 记录创建的 AppendNode（用于返回给 tableSpace）
-	createdAppendNodes []txnif.TxnEntry
-	// 记录创建的 ObjectEntry（用于返回给 tableSpace 注册到 txnEntries）
-	createdObjectEntries []*catalog.ObjectEntry
-
-	// For two-phase commit
-	preparedNode     txnif.AppendableNode
-	preparedContexts []*appendContext
 }
 
+// txnAppender is per-txn, holds per-txn state
+type txnAppender struct {
+	shared *sharedAppender
+	txn    txnif.AsyncTxn
+
+	refedAobjs           []*aobject
+	createdAppendNodes   []txnif.TxnEntry
+	createdObjectEntries []*catalog.ObjectEntry
+	preparedNode         txnif.AppendableNode
+	preparedContexts     []*appendContext
+}
+
+// NewSharedAppender creates table-level singleton
 func NewSharedAppender(
 	table *catalog.TableEntry,
-	txn txnif.AsyncTxn,
 	rt *dbutils.Runtime,
 	isTombstone bool,
-) SharedAppender {
+) *sharedAppender {
 	return &sharedAppender{
-		table:            table,
+		table:       table,
+		rt:          rt,
+		isTombstone: isTombstone,
+	}
+}
+
+// GetTxnAppender creates per-txn appender
+func (app *sharedAppender) GetTxnAppender(txn txnif.AsyncTxn) catalog.TxnAppender {
+	txnApp := &txnAppender{
+		shared:           app,
 		txn:              txn,
-		rt:               rt,
-		isTombstone:      isTombstone,
 		refedAobjs:       make([]*aobject, 0),
 		preparedContexts: make([]*appendContext, 0),
 	}
+	return txnApp
 }
 
-// Append is a simple one-step interface for testing (not used in production)
-// In production, use PrepareAppend + ApplyAppend separately
-func (app *sharedAppender) Append(node txnif.AppendableNode) error {
-	_, err := app.PrepareAppend(node)
+// Append is a simple one-step interface for testing
+func (txnApp *txnAppender) Append(node txnif.AppendableNode) error {
+	_, err := txnApp.PrepareAppend(node)
 	if err != nil {
 		return err
 	}
-	return app.ApplyAppend()
+	return txnApp.ApplyAppend()
 }
 
 // PrepareAppend allocates space, creates AppendNodes, and generates RowIDs
 // Returns the list of created AppendNodes for tableSpace to register to txnEntries
-func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.TxnEntry, error) {
+func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.TxnEntry, error) {
 	if node == nil {
 		return nil, nil
 	}
@@ -118,12 +137,12 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 	}
 
 	// Save node for ApplyAppend
-	app.preparedNode = node
-	app.createdAppendNodes = make([]txnif.TxnEntry, 0)
-	app.preparedContexts = make([]*appendContext, 0)
+	txnApp.preparedNode = node
+	txnApp.createdAppendNodes = make([]txnif.TxnEntry, 0)
+	txnApp.preparedContexts = make([]*appendContext, 0)
 
 	// Generate RowIDs and create AppendNodes
-	schema := app.table.GetLastestSchema(app.isTombstone)
+	schema := txnApp.shared.table.GetLastestSchema(txnApp.shared.isTombstone)
 
 	// Handle PhyAddr column - unified for both data and tombstone
 	var phyAddrVec containers.Vector
@@ -131,7 +150,7 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 	phyAddrIdx = schema.PhyAddrKey.Idx
 
 	// Create new vector for PhyAddr
-	phyAddrVec = app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
+	phyAddrVec = txnApp.shared.rt.VectorPool.Small.GetVector(&objectio.RowidType)
 	defer func() {
 		data.Vecs[phyAddrIdx].Close()
 		data.Vecs[phyAddrIdx] = phyAddrVec
@@ -141,36 +160,28 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 	srcOffset := uint32(0)
 
 	for remaining > 0 {
-		objEntry, aobj, err := app.ensureAobj()
+		objEntry, aobj, appendNode, startRow, allocated, err := txnApp.allocateSpace(remaining)
 		if err != nil {
 			return nil, err
 		}
 
-		startRow, allocated := app.allocateRows(remaining)
 		if allocated == 0 {
-			// Current aobj is full, reset nextRow to trigger new aobj creation
-			app.nextRow = app.maxRows
-			continue
+			// Should not happen
+			return nil, moerr.NewInternalErrorNoCtx("failed to allocate space")
 		}
 
-		// Create AppendNode in MVCC
-		appendNode, created, err := app.createAppendNode(aobj, startRow, allocated)
-		if err != nil {
-			return nil, err
-		}
-
-		// If created, add to the list for tableSpace to register
-		if created && appendNode != nil {
-			app.createdAppendNodes = append(app.createdAppendNodes, appendNode)
+		// Add AppendNode to the list
+		if appendNode != nil {
+			txnApp.createdAppendNodes = append(txnApp.createdAppendNodes, appendNode)
 		}
 
 		// Generate RowIDs
-		if err := app.generatePhyAddr(phyAddrVec, objEntry, allocated, startRow); err != nil {
+		if err := txnApp.generatePhyAddr(phyAddrVec, objEntry, allocated, startRow); err != nil {
 			return nil, err
 		}
 
 		// Save context for ApplyAppend
-		app.preparedContexts = append(app.preparedContexts, &appendContext{
+		txnApp.preparedContexts = append(txnApp.preparedContexts, &appendContext{
 			objEntry: objEntry,
 			aobj:     aobj,
 			srcStart: srcOffset,
@@ -179,7 +190,7 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 		})
 
 		// Register object to txn (warChecker, GetMemo)
-		app.registerObjectToTxn(objEntry)
+		txnApp.registerObjectToTxn(objEntry)
 
 		// Notify node about the mapping
 		node.AddApplyInfo(srcOffset, allocated, startRow, allocated, objEntry.AsCommonID())
@@ -188,35 +199,35 @@ func (app *sharedAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 		remaining -= allocated
 	}
 
-	return app.createdAppendNodes, nil
+	return txnApp.createdAppendNodes, nil
 }
 
 // ApplyAppend writes the actual data to aobjects
-func (app *sharedAppender) ApplyAppend() error {
-	if app.preparedNode == nil {
+func (txnApp *txnAppender) ApplyAppend() error {
+	if txnApp.preparedNode == nil {
 		return nil
 	}
 
-	data := app.preparedNode.GetData()
+	data := txnApp.preparedNode.GetData()
 	if data == nil {
 		return moerr.NewInternalErrorNoCtx("prepared node data is nil")
 	}
 
 	// Write data for each context
-	for _, ctx := range app.preparedContexts {
-		if err := app.writeDataToAobj(data, ctx); err != nil {
+	for _, ctx := range txnApp.preparedContexts {
+		if err := txnApp.writeDataToAobj(data, ctx); err != nil {
 			return err
 		}
 	}
 
 	// Clear prepared state
-	app.preparedNode = nil
-	app.preparedContexts = nil
+	txnApp.preparedNode = nil
+	txnApp.preparedContexts = nil
 
 	return nil
 }
 
-func (app *sharedAppender) writeDataToAobj(data *containers.Batch, ctx *appendContext) error {
+func (txnApp *txnAppender) writeDataToAobj(data *containers.Batch, ctx *appendContext) error {
 	bat := data.Window(int(ctx.srcStart), int(ctx.srcCount))
 	defer bat.Close()
 
@@ -252,85 +263,101 @@ func (app *sharedAppender) writeDataToAobj(data *containers.Batch, ctx *appendCo
 	return moerr.NewInternalErrorNoCtx("cannot append to persisted node")
 }
 
-func (app *sharedAppender) Close() {
-	for _, aobj := range app.refedAobjs {
+func (txnApp *txnAppender) Close() {
+	for _, aobj := range txnApp.refedAobjs {
 		aobj.Unref()
 	}
-	app.refedAobjs = nil
-	app.preparedNode = nil
-	app.preparedContexts = nil
+	txnApp.refedAobjs = nil
+	txnApp.preparedNode = nil
+	txnApp.preparedContexts = nil
 }
 
-func (app *sharedAppender) GetCurrentAobj() *aobject {
-	return app.currentAobj
+func (txnApp *txnAppender) GetCurrentAobj() *aobject {
+	return txnApp.shared.currentAobj
 }
 
-func (app *sharedAppender) ensureAobj() (*catalog.ObjectEntry, *aobject, error) {
-	if app.currentAobj != nil && app.nextRow < app.maxRows && !app.currentAobj.IsAppendFrozen() {
-		return app.currentEntry, app.currentAobj, nil
+// allocateSpace ensures aobj and allocates space (with locking)
+func (txnApp *txnAppender) allocateSpace(count uint32) (*catalog.ObjectEntry, *aobject, txnif.TxnEntry, uint32, uint32, error) {
+	shared := txnApp.shared
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+
+	// Try current aobj first
+	if shared.currentAobj != nil && shared.nextRow < shared.maxRows && !shared.currentAobj.IsAppendFrozen() {
+		available := shared.maxRows - shared.nextRow
+		if available > 0 {
+			allocated := count
+			if allocated > available {
+				allocated = available
+			}
+			startRow := shared.nextRow
+			shared.nextRow += allocated
+			
+			// Create AppendNode atomically with space allocation
+			appendNode, _ := shared.currentAobj.appendMVCC.AddAppendNodeLocked(
+				txnApp.txn, startRow, startRow+allocated)
+			
+			// Ref if not already in refedAobjs
+			found := false
+			for _, a := range txnApp.refedAobjs {
+				if a == shared.currentAobj {
+					found = true
+					break
+				}
+			}
+			if !found {
+				shared.currentAobj.Ref()
+				txnApp.refedAobjs = append(txnApp.refedAobjs, shared.currentAobj)
+			}
+			
+			return shared.currentEntry, shared.currentAobj, appendNode, startRow, allocated, nil
+		}
 	}
 
-	// Create ObjectEntry with txn's StartTS
-	objEntry := catalog.NewInMemoryObject(app.table, app.txn.GetStartTS(), app.isTombstone)
-	app.table.Lock()
-	app.table.AddEntryLocked(objEntry)
-	app.table.Unlock()
+	// Create new aobj
+	objEntry := catalog.NewInMemoryObject(shared.table, txnApp.txn.GetStartTS(), shared.isTombstone)
+	shared.table.Lock()
+	shared.table.AddEntryLocked(objEntry)
+	shared.table.Unlock()
 
-	// Initialize ObjectData using DataFactory (if available)
-	dataFactory := app.table.GetDB().GetCatalog().DataFactory
+	dataFactory := shared.table.GetDB().GetCatalog().DataFactory
 	if dataFactory != nil {
 		objEntry.InitData(dataFactory)
 	}
 
 	aobj := objEntry.GetObjectData().(*aobject)
 	aobj.Ref()
-	app.refedAobjs = append(app.refedAobjs, aobj)
+	txnApp.refedAobjs = append(txnApp.refedAobjs, aobj)
 
-	app.currentEntry = objEntry
-	app.currentAobj = aobj
-	app.nextRow = 0
-	app.maxRows = app.table.GetLastestSchema(app.isTombstone).Extra.BlockMaxRows
+	shared.currentEntry = objEntry
+	shared.currentAobj = aobj
+	shared.nextRow = 0
+	shared.maxRows = shared.table.GetLastestSchema(shared.isTombstone).Extra.BlockMaxRows
 
-	return objEntry, aobj, nil
+	// Allocate from new aobj
+	allocated := count
+	if allocated > shared.maxRows {
+		allocated = shared.maxRows
+	}
+	startRow := uint32(0)
+	shared.nextRow = allocated
+
+	// Create AppendNode for new aobj
+	appendNode, _ := aobj.appendMVCC.AddAppendNodeLocked(
+		txnApp.txn, startRow, startRow+allocated)
+
+	return objEntry, aobj, appendNode, startRow, allocated, nil
 }
 
-func (app *sharedAppender) allocateRows(count uint32) (startRow, allocated uint32) {
-	available := app.maxRows - app.nextRow
-	if available == 0 {
-		// Current aobj is full, need to switch
-		return 0, 0
-	}
-	allocated = count
-	if allocated > available {
-		allocated = available
-	}
-	startRow = app.nextRow
-	app.nextRow += allocated
-	return
-}
-
-func (app *sharedAppender) createAppendNode(aobj *aobject, startRow, count uint32) (txnif.TxnEntry, bool, error) {
-	// Use freezelock (same as original code)
-	aobj.freezelock.Lock()
-	defer aobj.freezelock.Unlock()
-
-	// Check if frozen
-	if aobj.frozen.Load() {
-		return nil, false, moerr.NewInternalErrorNoCtx("aobject is frozen")
-	}
-
-	node, created := aobj.appendMVCC.AddAppendNodeLocked(app.txn, startRow, startRow+count)
-	return node, created, nil
-}
-
-func (app *sharedAppender) generatePhyAddr(
+// allocateRows allocates space in aobj (must be called with shared.mu locked)
+func (txnApp *txnAppender) generatePhyAddr(
 	phyAddrVec containers.Vector,
 	objEntry *catalog.ObjectEntry,
 	count, destOffset uint32,
 ) error {
 	// Generate rowid for both data and tombstone
 	blkID := objectio.NewBlockidWithObjectID(objEntry.ID(), 0)
-	col := app.rt.VectorPool.Small.GetVector(&objectio.RowidType)
+	col := txnApp.shared.rt.VectorPool.Small.GetVector(&objectio.RowidType)
 	defer col.Close()
 
 	// Construct rowids to temporary col
@@ -348,20 +375,20 @@ func (app *sharedAppender) generatePhyAddr(
 	return phyAddrVec.ExtendVec(col.GetDownstreamVector())
 }
 
-func (app *sharedAppender) registerObjectToTxn(objEntry *catalog.ObjectEntry) {
+func (txnApp *txnAppender) registerObjectToTxn(objEntry *catalog.ObjectEntry) {
 	// Register to GetMemo
 	id := objEntry.AsCommonID()
-	app.txn.GetMemo().AddObject(
-		app.table.GetDB().ID,
+	txnApp.txn.GetMemo().AddObject(
+		txnApp.shared.table.GetDB().ID,
 		id.TableID,
 		id.ObjectID(),
-		app.isTombstone,
+		txnApp.shared.isTombstone,
 	)
 
 	// Note: warChecker.Insert will be handled by tableSpace
 	// because warChecker is not accessible from SharedAppender
 }
 
-func (app *sharedAppender) GetRefedAobjs() []*aobject {
-	return app.refedAobjs
+func (txnApp *txnAppender) GetRefedAobjs() []*aobject {
+	return txnApp.refedAobjs
 }

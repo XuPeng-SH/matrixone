@@ -20,7 +20,7 @@ import (
 )
 
 // AppendableNode represents a node that can be appended to shared in-memory objects
-// This interface abstracts anode from txnimpl package to allow SharedAppender in tables package
+// This interface abstracts anode from txnimpl package to allow TxnAppender in tables package
 type AppendableNode interface {
 	Rows() uint32
 	GetData() *containers.Batch

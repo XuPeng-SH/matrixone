@@ -34,11 +34,17 @@ func TestCompactBlockCmd(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, _ := c.CreateDBEntry("db", "", "", nil)
-	table, _ := db.CreateTableEntry(schema, nil, nil)
+	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
+	txnMgr.Start(context.Background())
+	defer txnMgr.Stop()
+
+	setupTxn, _ := txnMgr.StartTxn(nil)
+	db, _ := c.CreateDBEntry("db", "", "", setupTxn)
+	table, _ := db.CreateTableEntry(schema, setupTxn, nil)
 	noid := objectio.NewObjectid()
 	stats := objectio.NewObjectStatsWithObjectID(&noid, true, false, false)
-	obj, _ := table.CreateObject(nil, &objectio.CreateObjOpt{Stats: stats, IsTombstone: false}, nil)
+	obj, _ := table.CreateObject(setupTxn, &objectio.CreateObjOpt{Stats: stats, IsTombstone: false}, nil)
+	_ = setupTxn.Commit(context.Background())
 
 	controller := NewAppendMVCCHandle(obj)
 
@@ -101,11 +107,17 @@ func TestUpdateCmd_MarshalBinary_LargeBuffer(t *testing.T) {
 	c := catalog.MockCatalog(nil)
 	defer c.Close()
 
-	db, _ := c.CreateDBEntry("db", "", "", nil)
-	table, _ := db.CreateTableEntry(schema, nil, nil)
+	txnMgr := txnbase.NewTxnManager(catalog.MockTxnStoreFactory(c), catalog.MockTxnFactory(c), types.NewMockHLCClock(1))
+	txnMgr.Start(context.Background())
+	defer txnMgr.Stop()
+
+	setupTxn, _ := txnMgr.StartTxn(nil)
+	db, _ := c.CreateDBEntry("db", "", "", setupTxn)
+	table, _ := db.CreateTableEntry(schema, setupTxn, nil)
 	noid := objectio.NewObjectid()
 	stats := objectio.NewObjectStatsWithObjectID(&noid, true, false, false)
-	obj, _ := table.CreateObject(nil, &objectio.CreateObjOpt{Stats: stats, IsTombstone: false}, nil)
+	obj, _ := table.CreateObject(setupTxn, &objectio.CreateObjOpt{Stats: stats, IsTombstone: false}, nil)
+	_ = setupTxn.Commit(context.Background())
 
 	controller := NewAppendMVCCHandle(obj)
 	ts := types.NextGlobalTsForTest()
