@@ -24,7 +24,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 
-	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -176,103 +175,29 @@ func (space *tableSpace) PrepareApply() (err error) {
 
 func (space *tableSpace) prepareApplyANode(node *anode, startOffset uint32) error {
 	node.Compact()
-	tableData := space.table.entry.GetTableData()
-	if space.tableHandle == nil {
-		space.tableHandle = tableData.GetHandle(space.isTombstone)
-	}
-	appended := startOffset
-	var vec containers.Vector
-	if startOffset == 0 {
-		vec = space.table.store.rt.VectorPool.Small.GetVector(&objectio.RowidType)
-	} else {
-		vec = node.data.Vecs[space.table.GetLocalSchema(space.isTombstone).PhyAddrKey.Idx]
-	}
-	for appended < node.Rows() {
-		appender, err := space.tableHandle.GetAppender()
-		if moerr.IsMoErrCode(err, moerr.ErrAppendableObjectNotFound) {
-			objH, err2 := space.table.CreateObject(space.isTombstone)
-			if err2 != nil {
-				return err2
-			}
-			appender = space.tableHandle.SetAppender(objH.Fingerprint())
-			// logutil.Info("CreateObject", zap.String("objH", appender.GetID().ObjectString()), zap.String("txn", node.GetTxn().String()))
-			objH.Close()
-		}
-		if !appender.IsSameColumns(space.table.GetLocalSchema(space.isTombstone)) {
-			return moerr.NewInternalErrorNoCtx("schema changed, please rollback and retry")
-		}
 
-		// see more notes in flushtabletail.go
-		/// ----------- Choose a ablock ---------
-		appender.LockFreeze()
-		// no one can touch freeze for now, check it
-		if appender.CheckFreeze() {
-			// freezed, try to find another ablock
-			appender.UnlockFreeze()
-			// Unref the appender, otherwise it can't be PrepareCompact(ed) successfully
-			appender.Close()
-			continue
-		}
+	// Use TxnAppender for new path
+	if space.txnAppender == nil {
+		space.txnAppender = space.table.entry.GetTxnAppender(
+			space.table.store.txn,
+			space.table.store.rt,
+			space.isTombstone,
+		)
+	}
 
-		// hold freezelock to attach AppendNode
-		//PrepareAppend: It is very important that appending a AppendNode into
-		// block's MVCCHandle before applying data into block.
-		anode, created, toAppend, err := appender.PrepareAppend(
-			node.isMergeCompact,
-			node.Rows()-appended,
-			space.table.store.txn)
-		if err != nil {
-			appender.UnlockFreeze()
+	entries, err := space.txnAppender.PrepareAppend(node)
+	if err != nil {
+		return err
+	}
+
+	// Register txn entries
+	for _, entry := range entries {
+		if err = space.table.store.IncreateWriteCnt("prepare apply anode"); err != nil {
 			return err
 		}
-		appender.UnlockFreeze()
-		/// ------- Attach AppendNode Successfully -----
+		space.table.txnEntries.Append(entry)
+	}
 
-		objID := appender.GetMeta().(*catalog.ObjectEntry).ID()
-		col := space.table.store.rt.VectorPool.Small.GetVector(&objectio.RowidType)
-		defer col.Close()
-		blkID := objectio.NewBlockidWithObjectID(objID, 0)
-		if err = objectio.ConstructRowidColumnTo(
-			col.GetDownstreamVector(),
-			&blkID,
-			anode.GetMaxRow()-toAppend,
-			toAppend,
-			col.GetAllocator(),
-		); err != nil {
-			return err
-		}
-		if err = vec.ExtendVec(col.GetDownstreamVector()); err != nil {
-			return err
-		}
-		ctx := &appendCtx{
-			driver: appender,
-			node:   node,
-			anode:  anode,
-			start:  appended,
-			count:  toAppend,
-		}
-		if created {
-			if err = space.table.store.IncreateWriteCnt("prepare apply anode"); err != nil {
-				return err
-			}
-			space.table.txnEntries.Append(anode)
-		}
-		id := appender.GetID()
-		space.table.store.warChecker.Insert(appender.GetMeta().(*catalog.ObjectEntry))
-		space.table.store.txn.GetMemo().AddObject(space.table.entry.GetDB().ID,
-			id.TableID, id.ObjectID(), space.isTombstone)
-		space.appends = append(space.appends, ctx)
-		// logutil.Debugf("%s: toAppend %d, appended %d, blks=%d",
-		// 	id.String(), toAppend, appended, len(space.appends))
-		appended += toAppend
-		if appended == node.Rows() {
-			break
-		}
-	}
-	if startOffset == 0 {
-		node.data.Vecs[space.table.GetLocalSchema(space.isTombstone).PhyAddrKey.Idx].Close()
-		node.data.Vecs[space.table.GetLocalSchema(space.isTombstone).PhyAddrKey.Idx] = vec
-	}
 	return nil
 }
 

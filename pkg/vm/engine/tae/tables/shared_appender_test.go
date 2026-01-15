@@ -274,7 +274,7 @@ func TestSharedAppender_NewAPI_MultipleAppends(t *testing.T) {
 	assert.Equal(t, uint32(100), node2.appends[0].destOff)
 	assert.Equal(t, uint32(50), node2.appends[0].destLen)
 
-	// ✅ NEW: Verify actual data was written to aobj
+	// Verify actual data was written to aobj
 	sharedAppender, ok := appender.(SharedAppender)
 	require.True(t, ok, "appender should implement SharedAppender interface")
 
@@ -294,7 +294,7 @@ func TestSharedAppender_NewAPI_MultipleAppends(t *testing.T) {
 	expectedRows := 100 + 50 // node1 + node2
 	assert.Equal(t, expectedRows, actualRows, "aobj should contain data from both nodes")
 
-	t.Logf("✅ Multiple PrepareAppend: aobj has %d rows (expected %d)", actualRows, expectedRows)
+	t.Logf("Multiple PrepareAppend: aobj has %d rows (expected %d)", actualRows, expectedRows)
 }
 
 // Test: Large batch
