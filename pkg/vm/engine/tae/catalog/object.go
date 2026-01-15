@@ -440,6 +440,28 @@ func NewInMemoryObject(table *TableEntry, ts types.TS, isTombstone bool) *Object
 	return e
 }
 
+func NewInMemoryObjectWithID(table *TableEntry, ts types.TS, isTombstone bool, objectID *objectio.ObjectId) *ObjectEntry {
+	// Create ObjectStats without Location (keeps Empty for in-memory)
+	stats := objectio.NewObjectStatsWithObjectID(objectID, true, false, false)
+
+	e := &ObjectEntry{
+		table: table,
+		ObjectNode: ObjectNode{
+			IsLocal:     false, // SharedAppender objects are globally visible
+			IsTombstone: isTombstone,
+		},
+		EntryMVCCNode: EntryMVCCNode{
+			CreatedAt: ts,
+		},
+		CreateNode:  txnbase.NewTxnMVCCNodeWithTS(ts),
+		ObjectState: ObjectState_Create_ApplyCommit,
+		ObjectMVCCNode: ObjectMVCCNode{
+			ObjectStats: *stats,
+		},
+	}
+	return e
+}
+
 func (entry *ObjectEntry) GetLocation() objectio.Location {
 	location := entry.ObjectStats.ObjectLocation()
 	return location

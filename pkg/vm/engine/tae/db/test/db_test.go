@@ -4213,6 +4213,28 @@ func TestCollectInsert(t *testing.T) {
 	batches[schema.Version].Close()
 }
 
+func TestAppendnodeReplay(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	ctx := context.Background()
+
+	tae := testutil.NewTestEngine(ctx, ModuleName, t, nil)
+	defer tae.Close()
+
+	schema := catalog.MockSchemaAll(2, 1)
+	schema.Extra.BlockMaxRows = 1
+	schema.Extra.ObjectMaxBlocks = 1
+	tae.BindSchema(schema)
+
+	bat := catalog.MockBatch(schema, 1)
+	tae.CreateRelAndAppend(bat, true)
+
+	tae.Restart(ctx)
+
+	txn, rel := tae.GetRelation()
+	testutil.CheckAllColRowsByScan(t, rel, 1, true)
+	require.NoError(t, txn.Commit(context.Background()))
+}
+
 func TestAppendnode(t *testing.T) {
 	defer testutils.AfterTest(t)()
 	ctx := context.Background()

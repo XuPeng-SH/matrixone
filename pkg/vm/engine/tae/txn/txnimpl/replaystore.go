@@ -139,14 +139,14 @@ func (store *replayTxnStore) replayAppendData(cmd *AppendCmd, observer wal.Repla
 			}
 		}
 		blk, err := database.GetObjectEntryByID(id, cmd.IsTombstone)
-		if sarg != "" {
-			err = ErrDebugReplay
-		}
-		if err != nil {
+		if err != nil && !moerr.IsMoErrCode(err, moerr.OkExpectedEOB) {
+			// Only panic for non-EOB errors
 			logutil.Infof("cmd %v\ncatalog: %v", cmd.String(), store.catalog.SimplePPString(3))
-			if err != ErrDebugReplay {
-				panic(err)
-			}
+			panic(err)
+		}
+		if blk == nil {
+			// Object not found, skip
+			continue
 		}
 		if !blk.IsActive() {
 			continue
@@ -231,16 +231,12 @@ func (store *replayTxnStore) replayAppend(cmd *updates.UpdateCmd, observer wal.R
 		}
 	}
 	obj, err := database.GetObjectEntryByID(id, cmd.GetAppendNode().IsTombstone())
-	if sarg != "" {
-		err = ErrDebugReplay
-	}
-	if err != nil {
+	if err != nil && !moerr.IsMoErrCode(err, moerr.OkExpectedEOB) {
+		// Only panic for non-EOB errors
 		logutil.Infof("cmd %v\ncatalog: %v", cmd.String(), store.catalog.SimplePPString(3))
-		if err != ErrDebugReplay {
-			panic(err)
-		}
+		panic(err)
 	}
-	// If obj is nil, try to create shared aobj
+	// If obj is nil (not found), try to create shared aobj
 	if obj == nil {
 		// Get Table
 		table, err := database.GetTableEntryByID(id.TableID)
@@ -249,11 +245,12 @@ func (store *replayTxnStore) replayAppend(cmd *updates.UpdateCmd, observer wal.R
 			return
 		}
 
-		// Create shared aobj ObjectEntry
-		obj = catalog.NewInMemoryObject(
+		// Create shared aobj ObjectEntry with the original ObjectID
+		obj = catalog.NewInMemoryObjectWithID(
 			table,
 			appendNode.GetStart(),
 			cmd.GetAppendNode().IsTombstone(),
+			id.ObjectID(),
 		)
 
 		// Add to Table
@@ -271,7 +268,8 @@ func (store *replayTxnStore) replayAppend(cmd *updates.UpdateCmd, observer wal.R
 		return
 	}
 	if err = obj.GetObjectData().OnReplayAppend(appendNode); err != nil || sarg != "" {
-		logutil.Infof("cmd %v\ncatalog: %v", cmd.String(), store.catalog.SimplePPString(3))
+		logutil.Infof("OnReplayAppend failed: cmd %v\nerror: %v\ncatalog: %v",
+			cmd.String(), err, store.catalog.SimplePPString(3))
 		if sarg == "" {
 			panic(err)
 		}
