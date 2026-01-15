@@ -39,8 +39,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tasks"
 )
 
-var MinCommittedTS = types.BuildTS(1, 0)
-
 type TxnManagerOption func(*TxnManager)
 
 // WithTxnSkipFlag set the TxnSkipFlag
@@ -197,13 +195,8 @@ func NewTxnManager(
 }
 
 func (mgr *TxnManager) initMaxCommittedTS() {
-	mgr.MaxCommittedTS.Store(&MinCommittedTS)
-}
-
-func (mgr *TxnManager) TryUpdateMaxCommittedTS(ts types.TS) {
-	if ts.GT(&MinCommittedTS) {
-		mgr.MaxCommittedTS.CompareAndSwap(mgr.MaxCommittedTS.Load(), &ts)
-	}
+	now := mgr.Now()
+	mgr.MaxCommittedTS.Store(&now)
 }
 
 // Now gets a timestamp under the protect from a inner lock. The lock makes
