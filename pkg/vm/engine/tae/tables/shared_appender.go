@@ -82,8 +82,8 @@ type txnAppender struct {
 	refedAobjs           []*aobject
 	createdAppendNodes   []txnif.TxnEntry
 	createdObjectEntries []*catalog.ObjectEntry
-	preparedNode         txnif.AppendableNode
-	preparedContexts     []*appendContext
+	preparedNodes        []txnif.AppendableNode  // Changed: support multiple nodes
+	preparedContexts     [][]*appendContext      // Changed: contexts per node
 }
 
 // NewSharedAppender creates table-level singleton
@@ -105,7 +105,8 @@ func (app *sharedAppender) GetTxnAppender(txn txnif.AsyncTxn) catalog.TxnAppende
 		shared:           app,
 		txn:              txn,
 		refedAobjs:       make([]*aobject, 0),
-		preparedContexts: make([]*appendContext, 0),
+		preparedNodes:    make([]txnif.AppendableNode, 0),    // Changed
+		preparedContexts: make([][]*appendContext, 0),        // Changed
 	}
 	return txnApp
 }
@@ -136,10 +137,12 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 		return nil, nil
 	}
 
-	// Save node for ApplyAppend
-	txnApp.preparedNode = node
-	txnApp.createdAppendNodes = make([]txnif.TxnEntry, 0)
-	txnApp.preparedContexts = make([]*appendContext, 0)
+	// Accumulate node (support multiple PrepareAppend calls)
+	txnApp.preparedNodes = append(txnApp.preparedNodes, node)
+	
+	// Create contexts for this node
+	contexts := make([]*appendContext, 0)
+	createdAppendNodes := make([]txnif.TxnEntry, 0)
 
 	// Generate RowIDs and create AppendNodes
 	schema := txnApp.shared.table.GetLastestSchema(txnApp.shared.isTombstone)
@@ -172,7 +175,7 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 
 		// Add AppendNode to the list
 		if appendNode != nil {
-			txnApp.createdAppendNodes = append(txnApp.createdAppendNodes, appendNode)
+			createdAppendNodes = append(createdAppendNodes, appendNode)
 		}
 
 		// Generate RowIDs
@@ -181,7 +184,7 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 		}
 
 		// Save context for ApplyAppend
-		txnApp.preparedContexts = append(txnApp.preparedContexts, &appendContext{
+		contexts = append(contexts, &appendContext{
 			objEntry: objEntry,
 			aobj:     aobj,
 			srcStart: srcOffset,
@@ -199,29 +202,40 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 		remaining -= allocated
 	}
 
-	return txnApp.createdAppendNodes, nil
+	// Accumulate contexts for this node
+	txnApp.preparedContexts = append(txnApp.preparedContexts, contexts)
+	
+	// Accumulate created AppendNodes
+	txnApp.createdAppendNodes = append(txnApp.createdAppendNodes, createdAppendNodes...)
+
+	return createdAppendNodes, nil
 }
 
 // ApplyAppend writes the actual data to aobjects
 func (txnApp *txnAppender) ApplyAppend() error {
-	if txnApp.preparedNode == nil {
+	if len(txnApp.preparedNodes) == 0 {
 		return nil
 	}
 
-	data := txnApp.preparedNode.GetData()
-	if data == nil {
-		return moerr.NewInternalErrorNoCtx("prepared node data is nil")
-	}
+	// Iterate over all prepared nodes
+	for i, node := range txnApp.preparedNodes {
+		data := node.GetData()
+		if data == nil {
+			return moerr.NewInternalErrorNoCtx("prepared node data is nil")
+		}
 
-	// Write data for each context
-	for _, ctx := range txnApp.preparedContexts {
-		if err := txnApp.writeDataToAobj(data, ctx); err != nil {
-			return err
+		contexts := txnApp.preparedContexts[i]
+
+		// Write data for each context
+		for _, ctx := range contexts {
+			if err := txnApp.writeDataToAobj(data, ctx); err != nil {
+				return err
+			}
 		}
 	}
 
 	// Clear prepared state
-	txnApp.preparedNode = nil
+	txnApp.preparedNodes = nil
 	txnApp.preparedContexts = nil
 
 	return nil
@@ -268,7 +282,7 @@ func (txnApp *txnAppender) Close() {
 		aobj.Unref()
 	}
 	txnApp.refedAobjs = nil
-	txnApp.preparedNode = nil
+	txnApp.preparedNodes = nil
 	txnApp.preparedContexts = nil
 }
 
