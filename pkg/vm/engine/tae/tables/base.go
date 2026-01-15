@@ -81,7 +81,7 @@ func (obj *baseObject) UpdateMeta(meta any) {
 
 func (obj *baseObject) OnApplyAppend(n txnif.AppendNode) (err error) {
 	meta := obj.meta.Load()
-	
+
 	// Update CreateNode time range with AppendNode's commit time
 	// Note: This is safe because ApplyCommit holds appendMVCC.Lock(),
 	// ensuring all OnApplyAppend calls are serialized
@@ -89,7 +89,7 @@ func (obj *baseObject) OnApplyAppend(n txnif.AppendNode) (err error) {
 	if meta.CreateNode.End.IsEmpty() || commitTS.GT(&meta.CreateNode.End) {
 		meta.CreateNode.End = commitTS
 	}
-	
+
 	if n.IsTombstone() {
 		meta.GetTable().RemoveRows(
 			uint64(n.GetMaxRow() - n.GetStartRow()),
