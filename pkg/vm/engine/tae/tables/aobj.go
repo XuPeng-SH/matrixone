@@ -39,9 +39,8 @@ import (
 
 type aobject struct {
 	*baseObject
-	frozen      atomic.Bool
-	freezelock  sync.Mutex
-	placeholder atomic.Uint32 // Placeholder for concurrent row allocation
+	frozen     atomic.Bool
+	freezelock sync.Mutex
 }
 
 func newAObject(

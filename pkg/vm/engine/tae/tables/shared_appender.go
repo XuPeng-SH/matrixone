@@ -16,7 +16,7 @@ package tables
 
 import (
 	"sync"
-	
+
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/catalog"
@@ -79,11 +79,10 @@ type txnAppender struct {
 	shared *sharedAppender
 	txn    txnif.AsyncTxn
 
-	refedAobjs           []*aobject
-	createdAppendNodes   []txnif.TxnEntry
-	createdObjectEntries []*catalog.ObjectEntry
-	preparedNodes        []txnif.AppendableNode  // Changed: support multiple nodes
-	preparedContexts     [][]*appendContext      // Changed: contexts per node
+	refedAobjs         []*aobject
+	createdAppendNodes []txnif.TxnEntry
+	preparedNodes      []txnif.AppendableNode // Changed: support multiple nodes
+	preparedContexts   [][]*appendContext     // Changed: contexts per node
 }
 
 // NewSharedAppender creates table-level singleton
@@ -105,8 +104,8 @@ func (app *sharedAppender) GetTxnAppender(txn txnif.AsyncTxn) catalog.TxnAppende
 		shared:           app,
 		txn:              txn,
 		refedAobjs:       make([]*aobject, 0),
-		preparedNodes:    make([]txnif.AppendableNode, 0),    // Changed
-		preparedContexts: make([][]*appendContext, 0),        // Changed
+		preparedNodes:    make([]txnif.AppendableNode, 0), // Changed
+		preparedContexts: make([][]*appendContext, 0),     // Changed
 	}
 	return txnApp
 }
@@ -139,7 +138,7 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 
 	// Accumulate node (support multiple PrepareAppend calls)
 	txnApp.preparedNodes = append(txnApp.preparedNodes, node)
-	
+
 	// Create contexts for this node
 	contexts := make([]*appendContext, 0)
 	createdAppendNodes := make([]txnif.TxnEntry, 0)
@@ -149,8 +148,7 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 
 	// Handle PhyAddr column - unified for both data and tombstone
 	var phyAddrVec containers.Vector
-	var phyAddrIdx int
-	phyAddrIdx = schema.PhyAddrKey.Idx
+	phyAddrIdx := schema.PhyAddrKey.Idx
 
 	// Create new vector for PhyAddr
 	phyAddrVec = txnApp.shared.rt.VectorPool.Small.GetVector(&objectio.RowidType)
@@ -204,7 +202,7 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 
 	// Accumulate contexts for this node
 	txnApp.preparedContexts = append(txnApp.preparedContexts, contexts)
-	
+
 	// Accumulate created AppendNodes
 	txnApp.createdAppendNodes = append(txnApp.createdAppendNodes, createdAppendNodes...)
 
@@ -306,11 +304,11 @@ func (txnApp *txnAppender) allocateSpace(count uint32) (*catalog.ObjectEntry, *a
 			}
 			startRow := shared.nextRow
 			shared.nextRow += allocated
-			
+
 			// Create AppendNode atomically with space allocation
 			appendNode, _ := shared.currentAobj.appendMVCC.AddAppendNodeLocked(
 				txnApp.txn, startRow, startRow+allocated)
-			
+
 			// Ref if not already in refedAobjs
 			found := false
 			for _, a := range txnApp.refedAobjs {
@@ -323,7 +321,7 @@ func (txnApp *txnAppender) allocateSpace(count uint32) (*catalog.ObjectEntry, *a
 				shared.currentAobj.Ref()
 				txnApp.refedAobjs = append(txnApp.refedAobjs, shared.currentAobj)
 			}
-			
+
 			return shared.currentEntry, shared.currentAobj, appendNode, startRow, allocated, nil
 		}
 	}

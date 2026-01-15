@@ -671,7 +671,7 @@ func (entry *TableEntry) GetTxnAppender(txn txnif.AsyncTxn, rt *dbutils.Runtime,
 		})
 		factory = entry.dataAppender
 	}
-	
+
 	return factory.GetTxnAppender(txn)
 }
 

@@ -322,41 +322,6 @@ func (space *tableSpace) prepareApplyObjectStats(stats objectio.ObjectStats) (er
 	return
 }
 
-func (space *tableSpace) prepareApplyNode(node *anode) (err error) {
-	// Compact node first (same as original code)
-	node.Compact()
-
-	// TxnAppender lifecycle:
-	// 1. Created once per tableSpace (reused across multiple prepareApplyNode calls)
-	// 2. PrepareAppend called multiple times (accumulates preparedContexts)
-	// 3. ApplyAppend called once in space.ApplyAppend() (processes all contexts)
-	// 4. Close called in space.ApplyAppend() defer (releases all aobj refs)
-	if space.txnAppender == nil {
-		space.txnAppender = space.table.entry.GetTxnAppender(
-			space.table.store.txn,
-			space.table.store.rt,
-			space.isTombstone,
-		)
-	}
-
-	// PrepareAppend: allocate space, create AppendNodes, generate RowIDs
-	// Note: Does NOT write data yet (data is written in ApplyAppend)
-	appendNodes, err := space.txnAppender.PrepareAppend(node)
-	if err != nil {
-		return err
-	}
-
-	// Register AppendNodes to txnEntries (required for commit)
-	for _, appendNode := range appendNodes {
-		if err = space.table.store.IncreateWriteCnt("prepare apply anode"); err != nil {
-			return err
-		}
-		space.table.txnEntries.Append(appendNode)
-	}
-
-	return nil
-}
-
 // CloseAppends un-reference the appendable blocks
 func (space *tableSpace) CloseAppends() {
 	// Note: TxnAppender is closed in ApplyAppend defer, not here
