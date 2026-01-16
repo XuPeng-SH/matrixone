@@ -23,6 +23,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/db/dbutils"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/tables/updates"
 )
 
 func init() {
@@ -295,34 +296,65 @@ func (txnApp *txnAppender) allocateSpace(count uint32) (*catalog.ObjectEntry, *a
 	defer shared.mu.Unlock()
 
 	// Try current aobj first
-	if shared.currentAobj != nil && shared.nextRow < shared.maxRows && !shared.currentAobj.IsAppendFrozen() {
-		available := shared.maxRows - shared.nextRow
-		if available > 0 {
-			allocated := count
-			if allocated > available {
-				allocated = available
-			}
-			startRow := shared.nextRow
-			shared.nextRow += allocated
+	if shared.currentAobj != nil && shared.nextRow < shared.maxRows {
+		// Ref aobj first to prevent concurrent flush/compact
+		shared.currentAobj.Ref()
 
-			// Create AppendNode atomically with space allocation
-			appendNode, _ := shared.currentAobj.appendMVCC.AddAppendNodeLocked(
-				txnApp.txn, startRow, startRow+allocated)
+		// Check if frozen
+		if shared.currentAobj.IsAppendFrozen() {
+			shared.currentAobj.Unref()
+			shared.currentAobj = nil
+			shared.currentEntry = nil
+			// Fall through to create new aobj
+		} else {
+			// Pin node to prevent ReleaseAppends during our operation
+			node := shared.currentAobj.PinNode()
+			if node.IsPersisted() {
+				// Node already persisted, appends released
+				node.Unref()
+				shared.currentAobj.Unref()
+				shared.currentAobj = nil
+				shared.currentEntry = nil
+				// Fall through to create new aobj
+			} else {
+				available := shared.maxRows - shared.nextRow
+				if available > 0 {
+					allocated := count
+					if allocated > available {
+						allocated = available
+					}
+					startRow := shared.nextRow
+					shared.nextRow += allocated
 
-			// Ref if not already in refedAobjs
-			found := false
-			for _, a := range txnApp.refedAobjs {
-				if a == shared.currentAobj {
-					found = true
-					break
+					// Create AppendNode (safe: we hold node ref, appends won't be released)
+					appendNode, _ := shared.currentAobj.appendMVCC.AddAppendNodeLocked(
+						txnApp.txn, startRow, startRow+allocated)
+
+					// Release node ref (no longer needed after AddAppendNodeLocked)
+					node.Unref()
+
+					// Track aobj ref for this txn
+					found := false
+					for _, a := range txnApp.refedAobjs {
+						if a == shared.currentAobj {
+							found = true
+							break
+						}
+					}
+					if found {
+						// Already tracked, release the extra ref
+						shared.currentAobj.Unref()
+					} else {
+						// First time, keep the ref
+						txnApp.refedAobjs = append(txnApp.refedAobjs, shared.currentAobj)
+					}
+
+					return shared.currentEntry, shared.currentAobj, appendNode, startRow, allocated, nil
 				}
+				// No space, release refs
+				node.Unref()
+				shared.currentAobj.Unref()
 			}
-			if !found {
-				shared.currentAobj.Ref()
-				txnApp.refedAobjs = append(txnApp.refedAobjs, shared.currentAobj)
-			}
-
-			return shared.currentEntry, shared.currentAobj, appendNode, startRow, allocated, nil
 		}
 	}
 
@@ -333,11 +365,24 @@ func (txnApp *txnAppender) allocateSpace(count uint32) (*catalog.ObjectEntry, *a
 	shared.table.Unlock()
 
 	dataFactory := shared.table.GetDB().GetCatalog().DataFactory
-	if dataFactory != nil {
-		objEntry.InitData(dataFactory)
+	if dataFactory == nil {
+		return nil, nil, nil, 0, 0, moerr.NewInternalErrorNoCtx("DataFactory is nil")
 	}
+	objEntry.InitData(dataFactory)
 
 	aobj := objEntry.GetObjectData().(*aobject)
+
+	// Ensure appendMVCC is initialized
+	if aobj == nil {
+		return nil, nil, nil, 0, 0, moerr.NewInternalErrorNoCtx("GetObjectData returned nil")
+	}
+	if aobj.appendMVCC == nil {
+		// Manually initialize appendMVCC if DataFactory didn't do it
+		aobj.appendMVCC = updates.NewAppendMVCCHandle(objEntry)
+		aobj.appendMVCC.SetAppendListener(aobj.OnApplyAppend)
+		aobj.RWMutex = aobj.appendMVCC.RWMutex
+	}
+
 	aobj.Ref()
 	txnApp.refedAobjs = append(txnApp.refedAobjs, aobj)
 
