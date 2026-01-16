@@ -148,10 +148,8 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 	phyAddrIdx := node.GetPhyAddrIdx()
 
 	// Handle PhyAddr column - unified for both data and tombstone
-	var phyAddrVec containers.Vector
-
 	// Create new vector for PhyAddr
-	phyAddrVec = txnApp.shared.rt.VectorPool.Small.GetVector(&objectio.RowidType)
+	phyAddrVec := txnApp.shared.rt.VectorPool.Small.GetVector(&objectio.RowidType)
 	defer func() {
 		data.Vecs[phyAddrIdx].Close()
 		data.Vecs[phyAddrIdx] = phyAddrVec
@@ -359,15 +357,16 @@ func (txnApp *txnAppender) allocateSpace(count uint32) (*catalog.ObjectEntry, *a
 
 	// Create new aobj
 	objEntry := catalog.NewInMemoryObject(shared.table, txnApp.txn.GetStartTS(), shared.isTombstone)
-	shared.table.Lock()
-	shared.table.AddEntryLocked(objEntry)
-	shared.table.Unlock()
 
 	dataFactory := shared.table.GetDB().GetCatalog().DataFactory
 	if dataFactory == nil {
 		return nil, nil, nil, 0, 0, moerr.NewInternalErrorNoCtx("DataFactory is nil")
 	}
-	objEntry.InitData(dataFactory)
+	objEntry.InitData(dataFactory) // Initialize objData BEFORE adding to catalog
+
+	shared.table.Lock()
+	shared.table.AddEntryLocked(objEntry)
+	shared.table.Unlock()
 
 	aobj := objEntry.GetObjectData().(*aobject)
 

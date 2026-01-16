@@ -317,8 +317,50 @@ func (n *AppendMVCCHandle) PrepareCompact() bool {
 func (n *AppendMVCCHandle) GetLatestAppendPrepareTSLocked() types.TS {
 	return n.appends.GetUpdateNodeLocked().Prepare
 }
+
+// GetMaxCommitTS returns the maximum commit timestamp among all committed append nodes.
+// For shared aobj, this is used to determine if the object has data committed after a given timestamp.
+func (n *AppendMVCCHandle) GetMaxCommitTS() types.TS {
+	n.RLock()
+	defer n.RUnlock()
+	return n.getMaxCommitTSLocked()
+}
+
+func (n *AppendMVCCHandle) getMaxCommitTSLocked() types.TS {
+	if n.appends == nil || n.appends.IsEmpty() {
+		return types.TS{}
+	}
+	// The latest node has the maximum commit timestamp
+	node := n.appends.GetUpdateNodeLocked()
+	if node == nil {
+		return types.TS{}
+	}
+	if node.IsCommitted() {
+		return node.End
+	}
+	// Walk backwards to find the latest committed node
+	var maxTS types.TS
+	for i := len(n.appends.MVCC) - 1; i >= 0; i-- {
+		node := n.appends.MVCC[i]
+		if node.IsCommitted() && node.End.GT(&maxTS) {
+			maxTS = node.End
+		}
+	}
+	return maxTS
+}
+
 func (n *AppendMVCCHandle) GetMeta() *catalog.ObjectEntry {
 	return n.meta
+}
+
+// MVCC returns the underlying append nodes slice for testing
+func (n *AppendMVCCHandle) MVCC() []*AppendNode {
+	n.RLock()
+	defer n.RUnlock()
+	if n.appends == nil {
+		return nil
+	}
+	return n.appends.MVCC
 }
 
 // check if all appendnodes are committed.

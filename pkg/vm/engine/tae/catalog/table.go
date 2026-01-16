@@ -984,10 +984,11 @@ func (entry *TableEntry) GetOrCreateInMemoryAobj(isTombstone bool, dataFactory D
 
 	// Create new in-memory ObjectEntry
 	newObj := NewInMemoryObject(entry, types.BuildTS(time.Now().UnixNano(), 0), isTombstone)
-	entry.AddEntryLocked(newObj)
 
-	// Initialize aobject
+	// Initialize aobject BEFORE adding to catalog
 	newObj.InitData(dataFactory)
+
+	entry.AddEntryLocked(newObj)
 
 	// Update current pointer
 	if isTombstone {

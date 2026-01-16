@@ -239,11 +239,30 @@ func (tbl *baseTable) incrementalGetRowsByPK(ctx context.Context, pks containers
 		}
 
 		if obj.IsAppendable() {
-			if !obj.HasDropIntent() && obj.CreatedAt.LT(&from) {
-				earlybreak = true
+			// For appendable objects (especially shared aobj), we cannot use CreatedAt
+			// alone to determine early break, because data may be committed after CreatedAt.
+			// Use maxCommitTS from appendMVCC if available.
+			objData := obj.GetObjectData()
+			if objData != nil {
+				if aobj, ok := objData.(interface{ GetMaxCommitTS() types.TS }); ok {
+					maxCommitTS := aobj.GetMaxCommitTS()
+					// Only set earlybreak if all committed data is before 'from'
+					if !maxCommitTS.IsEmpty() && maxCommitTS.LT(&from) && !obj.HasDropIntent() {
+						earlybreak = true
+					}
+				} else {
+					// Fallback to CreatedAt if GetMaxCommitTS not available
+					if !obj.HasDropIntent() && obj.CreatedAt.LT(&from) {
+						earlybreak = true
+					}
+				}
 			}
-		} else if obj.CreatedAt.LT(&from) {
-			continue
+			// Note: we still check the current appendable object, just set earlybreak for next iteration
+		} else {
+			// For non-appendable objects, use CreatedAt
+			if obj.CreatedAt.LT(&from) {
+				continue
+			}
 		}
 
 		// only keep the category-a + category-c for candidates.
@@ -255,6 +274,9 @@ func (tbl *baseTable) incrementalGetRowsByPK(ctx context.Context, pks containers
 			continue
 		}
 		objData := obj.GetObjectData()
+		if objData == nil {
+			panic(moerr.NewInternalErrorf(ctx, "objData should not be nil: obj=%s", obj.ID().String()))
+		}
 		err = objData.GetDuplicatedRows(
 			ctx,
 			tbl.txnTable.store.txn,
