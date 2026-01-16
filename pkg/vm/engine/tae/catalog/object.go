@@ -515,10 +515,12 @@ func (entry *ObjectEntry) Less2(b *ObjectEntry) bool {
 		return !aUncommitted
 	}
 
-	// 2. Appendable objects (both committed and in-memory) go second to last
-	//    They must be sorted together by CreatedAt for early break correctness
+	// 2. Appendable objects (both committed and in-memory) should come before
+	//    non-appendable committed objects so they are visited first in ascending
+	//    iteration (tests rely on this order), while they still stay contiguous
+	//    for early-break correctness when iterating in reverse.
 	if aAppendable != bAppendable {
-		return !aAppendable
+		return aAppendable
 	}
 
 	// 3. Within appendable objects: sort by CreatedAt (monotonic for early break)

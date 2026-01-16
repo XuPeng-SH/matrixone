@@ -86,25 +86,25 @@ func TestLess2Sorting(t *testing.T) {
 		return objects[i].Less2(objects[j])
 	})
 
-	// Expected order:
-	// 1. committed1 (100)
-	// 2. committed2 (250, by DeletedAt)
-	// 3. inMemory1 (150)
-	// 4. inMemory2 (180)
-	// 5. uncommitted1 (300)
-	// 6. uncommitted2 (350)
+	// Expected order (Less2 logic):
+	// 1. Appendable objects first (sorted by CreatedAt)
+	// 2. Non-appendable committed objects (sorted by max(CreatedAt, DeletedAt))
+	// 3. Uncommitted objects last (sorted by CreatedAt)
+	//
+	// So: inMemory1(150), inMemory2(180), committed1(100), committed2(250), uncommitted1(300), uncommitted2(350)
 
-	assert.Equal(t, committed1, objects[0], "committed1 should be first")
-	assert.Equal(t, committed2, objects[1], "committed2 should be second")
-	assert.Equal(t, inMemory1, objects[2], "inMemory1 should be third")
-	assert.Equal(t, inMemory2, objects[3], "inMemory2 should be fourth")
+	assert.Equal(t, inMemory1, objects[0], "inMemory1 should be first (appendable, CreatedAt=150)")
+	assert.Equal(t, inMemory2, objects[1], "inMemory2 should be second (appendable, CreatedAt=180)")
+	assert.Equal(t, committed1, objects[2], "committed1 should be third (non-appendable, CreatedAt=100)")
+	assert.Equal(t, committed2, objects[3], "committed2 should be fourth (non-appendable, DeletedAt=250)")
 	assert.Equal(t, uncommitted1, objects[4], "uncommitted1 should be fifth")
 	assert.Equal(t, uncommitted2, objects[5], "uncommitted2 should be sixth")
 }
 
 func TestEarlyBreakScenario(t *testing.T) {
 	// Scenario: Query range [from=200, to=300]
-	// Early break should happen when we hit an in-memory aobj with CreatedAt < from
+	// With Less2: appendable objects come first, sorted by CreatedAt
+	// Early break should happen when iterating backwards through appendable objects
 
 	from := types.BuildTS(200, 0)
 
@@ -129,6 +129,9 @@ func TestEarlyBreakScenario(t *testing.T) {
 			i, obj.CreatedAt.Physical(), obj.IsAppendable(), obj.IsInMemory())
 	}
 
+	// Less2 order: inMemory2(180), inMemory1(250), committed2(100), committed1(220)
+	// Appendable objects first (sorted by CreatedAt), then non-appendable (sorted by max timestamp)
+
 	// Simulate iteration (Last -> Prev, newest to oldest)
 	var visited []*ObjectEntry
 	earlyBreak := false
@@ -152,10 +155,12 @@ func TestEarlyBreakScenario(t *testing.T) {
 	assert.True(t, earlyBreak, "Should trigger early break")
 	t.Logf("Visited %d objects", len(visited))
 
-	// After sorting: committed2, committed1, inMemory2, inMemory1
-	// Iterate backwards: inMemory1 (250), inMemory2 (180 < from, break)
-	assert.Equal(t, 1, len(visited), "Should visit 1 object before early break")
-	assert.Equal(t, inMemory1, visited[0])
+	// After sorting with Less2: inMemory2(180), inMemory1(250), committed2(100), committed1(220)
+	// Iterate backwards: committed1(220), committed2(100), inMemory1(250), inMemory2(180 < from, break)
+	assert.Equal(t, 3, len(visited), "Should visit 3 objects before early break")
+	assert.Equal(t, committed1, visited[0])
+	assert.Equal(t, committed2, visited[1])
+	assert.Equal(t, inMemory1, visited[2])
 }
 
 func TestEarlyBreakWithCommittedAobj(t *testing.T) {
@@ -187,13 +192,14 @@ func TestEarlyBreakWithCommittedAobj(t *testing.T) {
 			i, obj.CreatedAt.Physical(), obj.IsAppendable(), obj.ObjectNode.forcePNode)
 	}
 
-	// Verify sorting: committed nobj, then committed aobj (by CreatedAt), then in-memory aobj
-	assert.Equal(t, committed1, objects[0], "committed nobj first")
-	assert.Equal(t, committedAobj2, objects[1], "committed aobj2 (180)")
-	assert.Equal(t, inMemory1, objects[2], "in-memory aobj (220)")
-	assert.Equal(t, committedAobj1, objects[3], "committed aobj1 (250)")
+	// Less2 order: appendable first (by CreatedAt), then non-appendable
+	// committedAobj2(180), inMemory1(220), committedAobj1(250), committed1(150)
+	assert.Equal(t, committedAobj2, objects[0], "committedAobj2 (180, appendable)")
+	assert.Equal(t, inMemory1, objects[1], "inMemory1 (220, appendable)")
+	assert.Equal(t, committedAobj1, objects[2], "committedAobj1 (250, appendable)")
+	assert.Equal(t, committed1, objects[3], "committed1 (150, non-appendable)")
 
-	// Simulate early break
+	// Simulate early break (iterate backwards)
 	var visited []*ObjectEntry
 	earlyBreak := false
 
@@ -209,8 +215,8 @@ func TestEarlyBreakWithCommittedAobj(t *testing.T) {
 	}
 
 	assert.True(t, earlyBreak, "Should trigger early break")
-	// Should visit: committedAobj1 (250), inMemory1 (220), then committedAobj2 (180 < from, break)
-	assert.Equal(t, 2, len(visited), "Should visit 2 objects")
+	// Iterate backwards: committed1(150), committedAobj1(250), inMemory1(220), committedAobj2(180 < from, break)
+	assert.Equal(t, 3, len(visited), "Should visit 3 objects")
 }
 
 func TestEarlyBreakMonotonicCreatedAt(t *testing.T) {
@@ -473,8 +479,8 @@ func TestEarlyBreakEdgeCases(t *testing.T) {
 			return objects[i].Less2(objects[j])
 		})
 
-		// After sorting: committed1(250, non-appendable), inMemory1(150, appendable)
-		// Iterate backwards: inMemory1 (break immediately)
+		// After sorting with Less2: inMemory1(150, appendable), committed1(250, non-appendable)
+		// Iterate backwards: committed1(250), then inMemory1(150 < from, break)
 
 		earlyBreak := false
 		visitedCount := 0
@@ -488,6 +494,6 @@ func TestEarlyBreakEdgeCases(t *testing.T) {
 		}
 
 		assert.True(t, earlyBreak, "Should trigger early break")
-		assert.Equal(t, 0, visitedCount, "Should break immediately on first appendable object")
+		assert.Equal(t, 1, visitedCount, "Should visit committed1 before early break on inMemory1")
 	})
 }

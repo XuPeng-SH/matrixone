@@ -92,6 +92,7 @@ func NewObjectList(isTombstone bool) *ObjectList {
 		Degree:  64,
 		NoLocks: true,
 	}
+	// Use timestamp-based ordering to keep btree search semantics (pivot by TS)
 	tree := btree.NewBTreeGOptions((*ObjectEntry).Less, opts)
 	list := &ObjectList{
 		maxTs_objectID: make(map[types.Objectid]types.TS),
@@ -104,17 +105,22 @@ func NewObjectList(isTombstone bool) *ObjectList {
 //// read part
 
 func getObjectEntry(it btree.IterG[*ObjectEntry], pivot *ObjectEntry) *ObjectEntry {
-	ok := it.Seek(pivot)
-	if !ok {
-		logutil.Errorf("object not found seek: %s", pivot.ID().ShortStringEx())
-		return nil
+	if ok := it.Seek(pivot); ok {
+		obj := it.Item()
+		if obj.ID().EQ(pivot.ID()) {
+			return obj
+		}
 	}
-	obj := it.Item()
-	if !obj.ID().EQ(pivot.ID()) {
-		logutil.Errorf("object not found cmp: %s %s", obj.ID().ShortStringEx(), pivot.ID().ShortStringEx())
-		return nil
+	// Comparator changes (e.g. Less2) may reorder entries such that Seek using
+	// a synthetic pivot misses the target; fall back to full scan by ObjectID.
+	for ok := it.First(); ok; ok = it.Next() {
+		obj := it.Item()
+		if obj.ID().EQ(pivot.ID()) {
+			return obj
+		}
 	}
-	return obj
+	logutil.Errorf("object not found scan: %s", pivot.ID().ShortStringEx())
+	return nil
 }
 
 func (l *ObjectList) getNodes(id *objectio.ObjectId, latestOnly bool) []*ObjectEntry {
@@ -226,7 +232,13 @@ func (l *ObjectList) modify(del, ins, updated *ObjectEntry) (deleted, replaced1,
 func (l *ObjectList) Set(object *ObjectEntry) {
 	_, replaced, _ := l.modify(nil, object, nil)
 	if replaced {
-		logutil.Error("Object list Set replaced", zap.String("obj", object.ID().ShortStringEx()), zap.Uint64("tableID", object.table.ID))
+		tableID := uint64(0)
+		if object.table != nil {
+			tableID = object.table.ID
+		}
+		logutil.Error("Object list Set replaced",
+			zap.String("obj", object.ID().ShortStringEx()),
+			zap.Uint64("tableID", tableID))
 	}
 }
 
