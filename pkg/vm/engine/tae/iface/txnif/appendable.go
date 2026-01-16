@@ -24,6 +24,10 @@ import (
 type AppendableNode interface {
 	Rows() uint32
 	GetData() *containers.Batch
+	// IsSameColumns checks if node's writeSchema has same columns as the given schema
+	IsSameColumns(other interface{}) bool
+	// GetPhyAddrIdx returns the PhyAddr column index from writeSchema
+	GetPhyAddrIdx() int
 	// AddApplyInfo records append information for rollback and WAL
 	AddApplyInfo(srcOff, srcLen, destOff, destLen uint32, dest *common.ID)
 }

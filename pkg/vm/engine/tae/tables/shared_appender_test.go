@@ -34,8 +34,9 @@ import (
 
 // mockAppendableNode implements txnif.AppendableNode for testing
 type mockAppendableNode struct {
-	data    *containers.Batch
-	appends []mockAppendInfo
+	data        *containers.Batch
+	appends     []mockAppendInfo
+	writeSchema *catalog.Schema
 }
 
 type mockAppendInfo struct {
@@ -54,6 +55,18 @@ func (n *mockAppendableNode) GetData() *containers.Batch {
 	return n.data
 }
 
+func (n *mockAppendableNode) IsSameColumns(other interface{}) bool {
+	otherSchema, ok := other.(*catalog.Schema)
+	if !ok {
+		return false
+	}
+	return n.writeSchema.IsSameColumns(otherSchema)
+}
+
+func (n *mockAppendableNode) GetPhyAddrIdx() int {
+	return n.writeSchema.PhyAddrKey.Idx
+}
+
 func (n *mockAppendableNode) AddApplyInfo(srcOff, srcLen, destOff, destLen uint32, dest *common.ID) {
 	n.appends = append(n.appends, mockAppendInfo{
 		srcOff:  srcOff,
@@ -68,8 +81,9 @@ func createMockNode(schema *catalog.Schema, rows int) *mockAppendableNode {
 	// Use AllTypes and AllNames to include PhyAddr column
 	bat := containers.MockBatchWithAttrs(schema.AllTypes(), schema.AllNames(), rows, schema.GetPrimaryKey().Idx, nil)
 	return &mockAppendableNode{
-		data:    bat,
-		appends: make([]mockAppendInfo, 0),
+		data:        bat,
+		appends:     make([]mockAppendInfo, 0),
+		writeSchema: schema,
 	}
 }
 

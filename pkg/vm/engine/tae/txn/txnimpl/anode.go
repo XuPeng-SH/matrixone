@@ -34,6 +34,7 @@ type anode struct {
 	rows        uint32
 	appends     []*appendInfo
 	isTombstone bool
+	writeSchema *catalog.Schema // Schema at node creation time (like main branch)
 
 	isMergeCompact bool
 }
@@ -48,11 +49,29 @@ func NewANode(
 	impl.baseNode = newBaseNode(tbl, meta)
 	impl.appends = make([]*appendInfo, 0)
 	impl.isTombstone = isTombstone
+	// Save schema at creation time (like main branch's memoryNode)
+	impl.writeSchema = tbl.entry.GetLastestSchema(isTombstone)
 	return impl
 }
 
 func (n *anode) Rows() uint32 {
 	return n.rows
+}
+
+func (n *anode) GetWriteSchema() *catalog.Schema {
+	return n.writeSchema
+}
+
+func (n *anode) IsSameColumns(other interface{}) bool {
+	otherSchema, ok := other.(*catalog.Schema)
+	if !ok {
+		return false
+	}
+	return n.writeSchema.IsSameColumns(otherSchema)
+}
+
+func (n *anode) GetPhyAddrIdx() int {
+	return n.writeSchema.PhyAddrKey.Idx
 }
 
 func (n *anode) GetAppends() []*appendInfo {

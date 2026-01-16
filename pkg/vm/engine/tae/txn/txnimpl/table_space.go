@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
@@ -183,6 +184,13 @@ func (space *tableSpace) prepareApplyANode(node *anode, startOffset uint32) erro
 			space.table.store.rt,
 			space.isTombstone,
 		)
+	}
+
+	// Check if schema changed (like main branch)
+	// Compare node's writeSchema with table entry's latest schema
+	latestSchema := space.table.entry.GetLastestSchema(space.isTombstone)
+	if !node.IsSameColumns(latestSchema) {
+		return moerr.NewInternalErrorNoCtx("schema changed, please rollback and retry")
 	}
 
 	entries, err := space.txnAppender.PrepareAppend(node)

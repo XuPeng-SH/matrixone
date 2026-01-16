@@ -144,12 +144,11 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 	contexts := make([]*appendContext, 0)
 	createdAppendNodes := make([]txnif.TxnEntry, 0)
 
-	// Generate RowIDs and create AppendNodes
-	schema := txnApp.shared.table.GetLastestSchema(txnApp.shared.isTombstone)
+	// Use node's phyAddrIdx from writeSchema (at creation time)
+	phyAddrIdx := node.GetPhyAddrIdx()
 
 	// Handle PhyAddr column - unified for both data and tombstone
 	var phyAddrVec containers.Vector
-	phyAddrIdx := schema.PhyAddrKey.Idx
 
 	// Create new vector for PhyAddr
 	phyAddrVec = txnApp.shared.rt.VectorPool.Small.GetVector(&objectio.RowidType)
