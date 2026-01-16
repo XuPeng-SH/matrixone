@@ -2566,10 +2566,8 @@ func TestSnapshotIsolation2(t *testing.T) {
 
 	// Step 4
 	err = rel1.Append(context.Background(), bat)
-	assert.NoError(t, err)
-	err = txn1.Commit(context.Background())
-	t.Log(err)
 	assert.True(t, moerr.IsMoErrCode(err, moerr.ErrTxnWWConflict))
+	assert.NoError(t, txn1.Rollback(context.Background()))
 }
 
 // Same as TestMergeBlocks
