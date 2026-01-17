@@ -69,12 +69,14 @@ func WithConfigOptClientFactory(f LogServiceClientFactory) ConfigOption {
 func WithConfigOptClientConfig(sid string, clientCfg *logservice.ClientConfig) ConfigOption {
 	return func(cfg *Config) {
 		cfg.IsMockBackend = false
+		// Make a copy of the config to avoid issues with pointer lifetime
+		cfgCopy := *clientCfg
 		cfg.ClientFactory = func() (client logservice.Client, err error) {
 			ctx, cancel := context.WithTimeoutCause(
 				context.Background(), cfg.MaxTimeout, moerr.CauseNewLogServiceClient,
 			)
 			defer cancel()
-			if client, err = logservice.NewClient(ctx, sid, *clientCfg); err != nil {
+			if client, err = logservice.NewClient(ctx, sid, cfgCopy); err != nil {
 				err = moerr.AttachCause(ctx, err)
 			}
 			return
