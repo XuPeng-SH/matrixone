@@ -263,6 +263,12 @@ func (tbl *baseTable) incrementalGetRowsByPK(ctx context.Context, pks containers
 			if obj.CreatedAt.LT(&from) {
 				continue
 			}
+			// Skip non-appendable objects created after transaction started.
+			// These are typically flush-generated objects that shouldn't cause w-w conflicts
+			// for transactions that started before the flush committed.
+			if obj.CreatedAt.GT(&from) {
+				continue
+			}
 		}
 
 		// only keep the category-a + category-c for candidates.

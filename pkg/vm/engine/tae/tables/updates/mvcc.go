@@ -283,13 +283,12 @@ func (n *AppendMVCCHandle) OnReplayAppendNode(an *AppendNode) {
 }
 
 // AddAppendNodeLocked add a new appendnode to the list.
+// Caller must hold the lock (via obj.Lock() or obj.RWMutex.Lock()) before calling this function.
 func (n *AppendMVCCHandle) AddAppendNodeLocked(
 	txn txnif.AsyncTxn,
 	startRow uint32,
 	maxRow uint32,
 ) (an *AppendNode, created bool) {
-	n.Lock()
-	defer n.Unlock()
 	if n.appends.IsEmpty() || !n.appends.GetUpdateNodeLocked().IsSameTxn(txn) {
 		// if the appends is empty or the last appendnode is not of the same txn,
 		// create a new appendnode and append it to the list.

@@ -89,6 +89,9 @@ func (obj *aobject) GetMinCommitTS() types.TS {
 // GetMaxCommitTS returns the maximum commit timestamp among all committed append nodes.
 // Used by incremental dedup to determine if this object has data in the check range.
 func (obj *aobject) GetMaxCommitTS() types.TS {
+	if obj.appendMVCC == nil {
+		return types.TS{}
+	}
 	return obj.appendMVCC.GetMaxCommitTS()
 }
 
@@ -261,6 +264,9 @@ func (obj *aobject) GetMaxRowByTS(ts types.TS) (int32, error) {
 	if !node.IsPersisted() {
 		obj.RLock()
 		defer obj.RUnlock()
+		if obj.appendMVCC == nil {
+			return 0, nil
+		}
 		return int32(obj.appendMVCC.GetMaxRowByTSLocked(ts)), nil
 	} else {
 		vec, err := obj.LoadPersistedCommitTS(0)
@@ -291,6 +297,8 @@ func (obj *aobject) ApplyDebugBatch(bat *containers.Batch, txn txnif.AsyncTxn) (
 	prevTS := commitTSs[0]
 	anodeStart := 0
 	ans = make([]txnif.TxnEntry, 0)
+	obj.Lock()
+	defer obj.Unlock()
 	for i, ts := range commitTSs {
 		if !ts.EQ(&prevTS) {
 			an, create := obj.appendMVCC.AddAppendNodeLocked(txn, uint32(anodeStart), uint32(i))

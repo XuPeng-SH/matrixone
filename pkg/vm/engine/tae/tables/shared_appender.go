@@ -324,8 +324,10 @@ func (txnApp *txnAppender) allocateSpace(count uint32) (*catalog.ObjectEntry, *a
 					shared.nextRow += allocated
 
 					// Create AppendNode (safe: we hold node ref, appends won't be released)
+					shared.currentAobj.Lock()
 					appendNode, _ := shared.currentAobj.appendMVCC.AddAppendNodeLocked(
 						txnApp.txn, startRow, startRow+allocated)
+					shared.currentAobj.Unlock()
 
 					// Release node ref (no longer needed after AddAppendNodeLocked)
 					node.Unref()
@@ -398,8 +400,10 @@ func (txnApp *txnAppender) allocateSpace(count uint32) (*catalog.ObjectEntry, *a
 	shared.nextRow = allocated
 
 	// Create AppendNode for new aobj
+	aobj.Lock()
 	appendNode, _ := aobj.appendMVCC.AddAppendNodeLocked(
 		txnApp.txn, startRow, startRow+allocated)
+	aobj.Unlock()
 
 	return objEntry, aobj, appendNode, startRow, allocated, nil
 }

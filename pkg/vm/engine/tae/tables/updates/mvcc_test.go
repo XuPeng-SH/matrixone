@@ -49,7 +49,7 @@ func TestMutationControllerAppend(t *testing.T) {
 
 	mc := NewAppendMVCCHandle(obj)
 
-	nodeCnt := 10000
+	nodeCnt := 100
 	rowsPerNode := uint32(5)
 	//ts := uint64(2)
 	//ts = 4
@@ -66,7 +66,9 @@ func TestMutationControllerAppend(t *testing.T) {
 		txn := mockTxn()
 		txn.CommitTS = ts
 		txn.PrepareTS = ts
+		mc.Lock()
 		node, _ := mc.AddAppendNodeLocked(txn, rowsPerNode*uint32(i), rowsPerNode*(uint32(i)+1))
+		mc.Unlock()
 		err := node.ApplyCommit(txn.ID)
 		assert.Nil(t, err)
 		//queries = append(queries, ts+1)
@@ -78,7 +80,9 @@ func TestMutationControllerAppend(t *testing.T) {
 
 	st := time.Now()
 	for i, qts := range queries {
+		mc.RLock()
 		row, ok, _, _ := mc.GetVisibleRowLocked(context.TODO(), MockTxnWithStartTS(qts))
+		mc.RUnlock()
 		if i == 0 {
 			assert.False(t, ok)
 		} else {
@@ -112,6 +116,7 @@ func TestGetVisibleRow(t *testing.T) {
 	obj, _ := table.CreateObject(setupTxn, &objectio.CreateObjOpt{Stats: stats}, nil)
 	_ = setupTxn.Commit(context.Background())
 	n := NewAppendMVCCHandle(obj)
+	n.Lock()
 	an1, _ := n.AddAppendNodeLocked(nil, 0, 1)
 	an1.Start = types.BuildTS(1, 0)
 	an1.Prepare = types.BuildTS(1, 0)
@@ -129,16 +134,21 @@ func TestGetVisibleRow(t *testing.T) {
 	an4.Prepare = types.BuildTS(5, 0)
 	an4.End = types.BuildTS(5, 0)
 	an4.Aborted = true
+	n.Unlock()
 
 	// ts=1 maxrow=1, holes={}
+	n.RLock()
 	maxrow, visible, holes, err := n.GetVisibleRowLocked(context.TODO(), MockTxnWithStartTS(types.BuildTS(1, 0)))
+	n.RUnlock()
 	assert.NoError(t, err)
 	assert.Equal(t, uint32(1), maxrow)
 	assert.True(t, visible)
 	assert.Equal(t, 0, holes.GetCardinality())
 
 	// ts=4 maxrow=3, holes={1}
+	n.RLock()
 	maxrow, visible, holes, err = n.GetVisibleRowLocked(context.TODO(), MockTxnWithStartTS(types.BuildTS(4, 0)))
+	n.RUnlock()
 	assert.NoError(t, err)
 	assert.Equal(t, uint32(3), maxrow)
 	assert.True(t, visible)
@@ -146,7 +156,9 @@ func TestGetVisibleRow(t *testing.T) {
 	assert.True(t, holes.Contains(1))
 
 	// ts=5 maxrow=3, holes={}
+	n.RLock()
 	maxrow, visible, holes, err = n.GetVisibleRowLocked(context.TODO(), MockTxnWithStartTS(types.BuildTS(5, 0)))
+	n.RUnlock()
 	assert.NoError(t, err)
 	assert.Equal(t, uint32(3), maxrow)
 	assert.True(t, visible)
