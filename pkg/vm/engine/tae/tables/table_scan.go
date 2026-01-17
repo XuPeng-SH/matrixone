@@ -111,9 +111,28 @@ func TombstoneRangeScanByObject(
 				// committing create object is excluded here
 				continue
 			}
-			// first committed appendable object with CreatedAt < start, stop at next round
-			if tombstone.CreatedAt.LT(&start) {
-				earlybreak = true
+			// For appendable objects (especially shared aobj), we cannot use CreatedAt
+			// alone to determine early break, because data may be committed after CreatedAt.
+			// Use maxCommitTS from appendMVCC if available.
+			objData := tombstone.GetObjectData()
+			if objData != nil {
+				if aobj, ok := objData.(interface{ GetMaxCommitTS() types.TS }); ok {
+					maxCommitTS := aobj.GetMaxCommitTS()
+					// Only set earlybreak if all committed data is before 'start'
+					if !maxCommitTS.IsEmpty() && maxCommitTS.LT(&start) {
+						earlybreak = true
+					}
+				} else {
+					// Fallback to CreatedAt if GetMaxCommitTS not available
+					if tombstone.CreatedAt.LT(&start) {
+						earlybreak = true
+					}
+				}
+			} else {
+				// Fallback to CreatedAt if objData is nil
+				if tombstone.CreatedAt.LT(&start) {
+					earlybreak = true
+				}
 			}
 		} else {
 			if !tombstone.ObjectStats.GetCNCreated() {
