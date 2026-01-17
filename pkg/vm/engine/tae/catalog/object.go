@@ -205,6 +205,20 @@ func (entry *ObjectEntry) GetUpdateEntry(
 	dropped = entry.Clone()
 	node := dropped.GetLastMVCCNode()
 	objectio.SetObjectStats(&dropped.ObjectStats, stats)
+
+	// For in-memory aobj (appendable and no location), set CreatedAt to GetMinCommitTS()
+	// Check if entry is appendable and has no persisted location (in-memory)
+	if entry.IsAppendable() && entry.ObjectStats.ObjectLocation().IsEmpty() {
+		objData := entry.GetObjectData()
+		if objData != nil {
+			minCommitTS := objData.GetMinCommitTS()
+			maxTS := types.MaxTs()
+			if !minCommitTS.IsEmpty() && !minCommitTS.EQ(&maxTS) {
+				dropped.CreatedAt = minCommitTS
+			}
+		}
+	}
+
 	dropped.GetObjectData().UpdateMeta(dropped)
 	if dropped.IsDEntry() { // Only in UT it can not be a D Entry
 		updatedCEntry = entry.prevVersion.Clone()
