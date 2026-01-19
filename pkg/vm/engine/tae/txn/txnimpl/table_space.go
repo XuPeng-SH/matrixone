@@ -184,6 +184,11 @@ func (space *tableSpace) prepareApplyANode(node *anode, startOffset uint32) erro
 			space.table.store.rt,
 			space.isTombstone,
 		)
+		if space.table.store.warChecker != nil {
+			space.txnAppender.SetObjectCallback(func(obj *catalog.ObjectEntry) {
+				space.table.store.warChecker.Insert(obj)
+			})
+		}
 	}
 
 	// Check if schema changed (like main branch)

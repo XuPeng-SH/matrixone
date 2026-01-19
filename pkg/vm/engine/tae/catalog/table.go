@@ -41,11 +41,14 @@ import (
 
 type TableDataFactory = func(meta *TableEntry) data.Table
 
+type TxnObjectCallback func(*ObjectEntry)
+
 // Forward declaration for AppenderFactory (defined in tables package)
 type TxnAppender interface {
 	PrepareAppend(node txnif.AppendableNode) ([]txnif.TxnEntry, error)
 	ApplyAppend() error
 	Close()
+	SetObjectCallback(fn TxnObjectCallback)
 }
 
 // AppenderFactory creates per-txn TxnAppender instances

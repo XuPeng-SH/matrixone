@@ -82,8 +82,9 @@ type txnAppender struct {
 
 	refedAobjs         []*aobject
 	createdAppendNodes []txnif.TxnEntry
-	preparedNodes      []txnif.AppendableNode // Changed: support multiple nodes
-	preparedContexts   [][]*appendContext     // Changed: contexts per node
+	preparedNodes      []txnif.AppendableNode
+	preparedContexts   [][]*appendContext
+	objectCallback     catalog.TxnObjectCallback
 }
 
 // NewSharedAppender creates table-level singleton
@@ -105,8 +106,8 @@ func (app *sharedAppender) GetTxnAppender(txn txnif.AsyncTxn) catalog.TxnAppende
 		shared:           app,
 		txn:              txn,
 		refedAobjs:       make([]*aobject, 0),
-		preparedNodes:    make([]txnif.AppendableNode, 0), // Changed
-		preparedContexts: make([][]*appendContext, 0),     // Changed
+		preparedNodes:    make([]txnif.AppendableNode, 0),
+		preparedContexts: make([][]*appendContext, 0),
 	}
 	return txnApp
 }
@@ -190,6 +191,7 @@ func (txnApp *txnAppender) PrepareAppend(node txnif.AppendableNode) ([]txnif.Txn
 
 		// Register object to txn (warChecker, GetMemo)
 		txnApp.registerObjectToTxn(objEntry)
+		txnApp.onObjectAllocated(objEntry)
 
 		// Notify node about the mapping
 		node.AddApplyInfo(srcOffset, allocated, startRow, allocated, objEntry.AsCommonID())
@@ -280,10 +282,15 @@ func (txnApp *txnAppender) Close() {
 	txnApp.refedAobjs = nil
 	txnApp.preparedNodes = nil
 	txnApp.preparedContexts = nil
+	txnApp.objectCallback = nil
 }
 
 func (txnApp *txnAppender) GetCurrentAobj() *aobject {
 	return txnApp.shared.currentAobj
+}
+
+func (txnApp *txnAppender) SetObjectCallback(fn catalog.TxnObjectCallback) {
+	txnApp.objectCallback = fn
 }
 
 // allocateSpace ensures aobj and allocates space (with locking)
@@ -435,7 +442,6 @@ func (txnApp *txnAppender) generatePhyAddr(
 }
 
 func (txnApp *txnAppender) registerObjectToTxn(objEntry *catalog.ObjectEntry) {
-	// Register to GetMemo
 	id := objEntry.AsCommonID()
 	txnApp.txn.GetMemo().AddObject(
 		txnApp.shared.table.GetDB().ID,
@@ -443,9 +449,13 @@ func (txnApp *txnAppender) registerObjectToTxn(objEntry *catalog.ObjectEntry) {
 		id.ObjectID(),
 		txnApp.shared.isTombstone,
 	)
+}
 
-	// Note: warChecker.Insert will be handled by tableSpace
-	// because warChecker is not accessible from SharedAppender
+func (txnApp *txnAppender) onObjectAllocated(objEntry *catalog.ObjectEntry) {
+	if txnApp.objectCallback == nil || objEntry == nil {
+		return
+	}
+	txnApp.objectCallback(objEntry)
 }
 
 func (txnApp *txnAppender) GetRefedAobjs() []*aobject {
