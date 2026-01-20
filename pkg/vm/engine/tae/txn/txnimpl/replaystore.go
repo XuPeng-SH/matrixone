@@ -253,13 +253,13 @@ func (store *replayTxnStore) replayAppend(cmd *updates.UpdateCmd, observer wal.R
 			id.ObjectID(),
 		)
 
+		// Initialize aobject
+		obj.InitData(store.catalog.DataFactory)
+
 		// Add to Table
 		table.Lock()
 		table.AddEntryLocked(obj)
 		table.Unlock()
-
-		// Initialize aobject
-		obj.InitData(store.catalog.DataFactory)
 	}
 	if !obj.IsActive() {
 		return
