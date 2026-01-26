@@ -246,9 +246,17 @@ func (store *replayTxnStore) replayAppend(cmd *updates.UpdateCmd, observer wal.R
 		}
 
 		// Create shared aobj ObjectEntry with the original ObjectID
+		// Use Prepare TS instead of Start TS to ensure visibility
+		// The AppendNode's End will be set during ApplyCommit, but we need
+		// the object to be visible to read transactions with startTS >= Prepare
+		createTS := appendNode.GetPrepare()
+		if createTS.IsEmpty() {
+			// Fallback to Start if Prepare is empty
+			createTS = appendNode.GetStart()
+		}
 		obj = catalog.NewInMemoryObjectWithID(
 			table,
-			appendNode.GetStart(),
+			createTS,
 			cmd.GetAppendNode().IsTombstone(),
 			id.ObjectID(),
 		)

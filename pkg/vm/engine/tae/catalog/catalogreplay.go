@@ -618,6 +618,10 @@ func (catalog *Catalog) OnReplayObjectBatch_V2(
 			dropped.prevVersion = obj
 			obj.nextVersion = dropped
 			dropped.ObjectState = ObjectState_Delete_ApplyCommit
+			// Initialize objData for dropped if it's nil (Clone() copies objData, which may be nil)
+			if dropped.objData == nil {
+				dropped.objData = catalog.MakeObjectFactory()(dropped)
+			}
 			rel.AddEntryLocked(dropped)
 		}
 	} else {
@@ -632,6 +636,10 @@ func (catalog *Catalog) OnReplayObjectBatch_V2(
 			dropped.prevVersion = obj
 			obj.nextVersion = dropped
 			dropped.ObjectState = ObjectState_Delete_ApplyCommit
+			// Initialize objData for dropped if it's nil (Clone() copies objData, which may be nil)
+			if dropped.objData == nil {
+				dropped.objData = catalog.MakeObjectFactory()(dropped)
+			}
 			rel.AddEntryLocked(dropped)
 		}
 	}
@@ -760,6 +768,10 @@ func (catalog *Catalog) onReplayCheckpointObject(
 			End:     end,
 		}
 		deleteNode.ObjectState = ObjectState_Delete_ApplyCommit
+		// Initialize objData for deleteNode if it's nil (Clone() copies objData, which may be nil)
+		if deleteNode.objData == nil {
+			deleteNode.objData = catalog.MakeObjectFactory()(deleteNode)
+		}
 		rel.AddEntryLocked(deleteNode)
 	}
 	if !createTS.Equal(&end) && !deleteTS.Equal(&end) {
