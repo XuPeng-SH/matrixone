@@ -324,10 +324,12 @@ func (n *AppendMVCCHandle) GetLatestAppendPrepareTSLocked() types.TS {
 func (n *AppendMVCCHandle) GetMaxCommitTS() types.TS {
 	n.RLock()
 	defer n.RUnlock()
-	return n.getMaxCommitTSLocked()
+	return n.GetMaxCommitTSLocked()
 }
 
-func (n *AppendMVCCHandle) getMaxCommitTSLocked() types.TS {
+// GetMaxCommitTSLocked returns the maximum commit timestamp of all committed append nodes.
+// It must be called with RLock held.
+func (n *AppendMVCCHandle) GetMaxCommitTSLocked() types.TS {
 	if n.appends == nil || n.appends.IsEmpty() {
 		return types.TS{}
 	}

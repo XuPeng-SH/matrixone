@@ -89,10 +89,15 @@ func (obj *aobject) GetMinCommitTS() types.TS {
 // GetMaxCommitTS returns the maximum commit timestamp among all committed append nodes.
 // Used by incremental dedup to determine if this object has data in the check range.
 func (obj *aobject) GetMaxCommitTS() types.TS {
+	obj.RLock()
+	defer obj.RUnlock()
+
 	if obj.appendMVCC == nil {
 		return types.TS{}
 	}
-	return obj.appendMVCC.GetMaxCommitTS()
+
+	// Delegate to AppendMVCCHandle which iterates all committed AppendNodes.
+	return obj.appendMVCC.GetMaxCommitTSLocked()
 }
 
 func (obj *aobject) IsAppendable() bool {
