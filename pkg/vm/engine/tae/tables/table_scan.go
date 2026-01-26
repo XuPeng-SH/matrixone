@@ -116,17 +116,10 @@ func TombstoneRangeScanByObject(
 			// Use maxCommitTS from appendMVCC if available.
 			objData := tombstone.GetObjectData()
 			if objData != nil {
-				if aobj, ok := objData.(interface{ GetMaxCommitTS() types.TS }); ok {
-					maxCommitTS := aobj.GetMaxCommitTS()
-					// Only set earlybreak if all committed data is before 'start'
-					if !maxCommitTS.IsEmpty() && maxCommitTS.LT(&start) {
-						earlybreak = true
-					}
-				} else {
-					// Fallback to CreatedAt if GetMaxCommitTS not available
-					if tombstone.CreatedAt.LT(&start) {
-						earlybreak = true
-					}
+				maxCommitTS := objData.GetMaxCommitTS()
+				// Only set earlybreak if all committed data is before 'start'
+				if !maxCommitTS.IsEmpty() && maxCommitTS.LT(&start) {
+					earlybreak = true
 				}
 			} else {
 				// Fallback to CreatedAt if objData is nil

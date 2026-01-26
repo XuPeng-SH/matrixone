@@ -244,17 +244,10 @@ func (tbl *baseTable) incrementalGetRowsByPK(ctx context.Context, pks containers
 			// Use maxCommitTS from appendMVCC if available.
 			objData := obj.GetObjectData()
 			if objData != nil {
-				if aobj, ok := objData.(interface{ GetMaxCommitTS() types.TS }); ok {
-					maxCommitTS := aobj.GetMaxCommitTS()
-					// Only set earlybreak if all committed data is before 'from'
-					if !maxCommitTS.IsEmpty() && maxCommitTS.LT(&from) && !obj.HasDropIntent() {
-						earlybreak = true
-					}
-				} else {
-					// Fallback to CreatedAt if GetMaxCommitTS not available
-					if !obj.HasDropIntent() && obj.CreatedAt.LT(&from) {
-						earlybreak = true
-					}
+				maxCommitTS := objData.GetMaxCommitTS()
+				// Only set earlybreak if all committed data is before 'from'
+				if !maxCommitTS.IsEmpty() && maxCommitTS.LT(&from) && !obj.HasDropIntent() {
+					earlybreak = true
 				}
 			}
 			// Note: we still check the current appendable object, just set earlybreak for next iteration

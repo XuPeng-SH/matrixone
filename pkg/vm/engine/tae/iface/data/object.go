@@ -104,6 +104,7 @@ type Object interface {
 	GetFs() fileservice.FileService
 	FreezeAppend()
 	GetMinCommitTS() types.TS
+	GetMaxCommitTS() types.TS
 
 	Contains(
 		ctx context.Context,

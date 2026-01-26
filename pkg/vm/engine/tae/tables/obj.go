@@ -65,7 +65,13 @@ func (obj *object) PrepareCompactInfo() (result bool, reason string) {
 func (obj *object) FreezeAppend() {}
 
 func (obj *object) GetMinCommitTS() types.TS {
-	// Non-appendable object 返回 CreatedAt
+	// Non-appendable object returns CreatedAt
+	return obj.meta.Load().GetCreatedAt()
+}
+
+func (obj *object) GetMaxCommitTS() types.TS {
+	// Non-appendable object returns CreatedAt (same as GetMinCommitTS)
+	// For non-appendable objects, CreatedAt is both min and max
 	return obj.meta.Load().GetCreatedAt()
 }
 
