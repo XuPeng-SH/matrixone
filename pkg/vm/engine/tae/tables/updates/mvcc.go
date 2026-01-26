@@ -92,6 +92,10 @@ func (n *AppendMVCCHandle) GetAppendNodeByRowLocked(row uint32) (an *AppendNode)
 	return
 }
 
+// GetMaxRowByTSLocked returns the maximum row number for the given timestamp.
+// It assumes that append nodes are sorted by Prepare TS in ascending order (monotonically increasing).
+// This assumption is guaranteed by the insertion order: append nodes are inserted in the order
+// of their prepare operations, and the timestamp allocator ensures Prepare TS is monotonically increasing.
 func (n *AppendMVCCHandle) GetMaxRowByTSLocked(ts types.TS) uint32 {
 	_, node := n.appends.GetNodeToReadByPrepareTS(ts)
 	if node == nil {
@@ -100,13 +104,16 @@ func (n *AppendMVCCHandle) GetMaxRowByTSLocked(ts types.TS) uint32 {
 	return node.maxRow
 }
 
-// it collects all append nodes in the range [start, end]
+// CollectAppendLocked collects all append nodes in the range [start, end].
 // minRow: is the min row
 // maxRow: is the max row
 // commitTSVec: is the commit ts vector
 // abortVec: is the abort vector
 // aborts: is the aborted bitmap
 // If checkCommit, it ignore all uncommitted nodes
+// It assumes that append nodes are sorted by Prepare TS in ascending order (monotonically increasing).
+// This assumption is guaranteed by the insertion order: append nodes are inserted in the order
+// of their prepare operations, and the timestamp allocator ensures Prepare TS is monotonically increasing.
 func (n *AppendMVCCHandle) CollectAppendLocked(
 	start, end types.TS, mp *mpool.MPool,
 ) (
@@ -192,6 +199,12 @@ func (n *AppendMVCCHandle) GetCommitTSVecInRange(start, end types.TS, mp *mpool.
 // visible: is true if the txn can see any row
 // holes: is the bitmap of the holes that the txn cannot see
 // holes exists only if any append node was rollbacked
+// GetVisibleRowLocked returns the maximum visible row and holes for the given transaction.
+// It assumes that append nodes are sorted by Prepare TS in ascending order (monotonically increasing).
+// This assumption is guaranteed by the insertion order: append nodes are inserted in the order
+// of their prepare operations, and the timestamp allocator ensures Prepare TS is monotonically increasing.
+// The early break condition (an.Prepare > startTS) relies on this monotonicity: if we encounter
+// a node with Prepare > startTS, all subsequent nodes will also have Prepare >= current node's Prepare.
 func (n *AppendMVCCHandle) GetVisibleRowLocked(
 	ctx context.Context,
 	txn txnif.TxnReader,
@@ -321,6 +334,9 @@ func (n *AppendMVCCHandle) GetLatestAppendPrepareTSLocked() types.TS {
 
 // GetMaxCommitTS returns the maximum commit timestamp among all committed append nodes.
 // For shared aobj, this is used to determine if the object has data committed after a given timestamp.
+// It assumes that append nodes are sorted by Prepare TS in ascending order (monotonically increasing).
+// This assumption is guaranteed by the insertion order: append nodes are inserted in the order
+// of their prepare operations, and the timestamp allocator ensures Prepare TS is monotonically increasing.
 func (n *AppendMVCCHandle) GetMaxCommitTS() types.TS {
 	n.RLock()
 	defer n.RUnlock()
@@ -329,6 +345,11 @@ func (n *AppendMVCCHandle) GetMaxCommitTS() types.TS {
 
 // GetMaxCommitTSLocked returns the maximum commit timestamp of all committed append nodes.
 // It must be called with RLock held.
+// It assumes that append nodes are sorted by Prepare TS in ascending order (monotonically increasing).
+// This assumption is guaranteed by the insertion order: append nodes are inserted in the order
+// of their prepare operations, and the timestamp allocator ensures Prepare TS is monotonically increasing.
+// The implementation walks backwards from the last node, assuming the last node (by Prepare TS order)
+// is most likely to have the maximum commit timestamp.
 func (n *AppendMVCCHandle) GetMaxCommitTSLocked() types.TS {
 	if n.appends == nil || n.appends.IsEmpty() {
 		return types.TS{}

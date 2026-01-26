@@ -174,6 +174,10 @@ func (be *MVCCSlice[T]) forEachReverse(fn func(un T) bool) {
 // or returns the latest UpdateNode with commitTS less than the timestamp.
 // todo getend or getcommitts
 // if checkCommitted, it ignores uncommitted nodes
+// GetNodeToReadByPrepareTS returns the node to read by prepare timestamp using binary search.
+// It assumes that MVCC slice is sorted by Prepare TS in ascending order (monotonically increasing).
+// This assumption is guaranteed by the insertion order: append nodes are inserted in the order
+// of their prepare operations, and the timestamp allocator ensures Prepare TS is monotonically increasing.
 func (be *MVCCSlice[T]) GetNodeToReadByPrepareTS(ts types.TS) (offset int, node T) {
 	if len(be.MVCC) == 0 {
 		return 0, be.zero
@@ -258,6 +262,10 @@ func (be *MVCCSlice[T]) IsCommitted() bool {
 	return un.IsCommitted()
 }
 
+// LoopInRange loops through nodes in the range [start, end] by prepare timestamp.
+// It assumes that MVCC slice is sorted by Prepare TS in ascending order (monotonically increasing).
+// This assumption is guaranteed by the insertion order: append nodes are inserted in the order
+// of their prepare operations, and the timestamp allocator ensures Prepare TS is monotonically increasing.
 func (be *MVCCSlice[T]) LoopInRange(start, end types.TS, fn func(T) bool) {
 	startOffset, node := be.GetNodeToReadByPrepareTS(start)
 	prepareTS := node.GetPrepare()
