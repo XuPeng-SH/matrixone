@@ -26,7 +26,7 @@ MatrixOne 采用**存算分离、多角色分布式**架构，主要包含三类
 | **事务/存储节点** | TN (Transaction Node) | 事务协调、数据持久化、存储引擎（TAE）所在，负责写路径与持久化 |
 | **日志与协调** | Log Service | 分布式日志、元数据与协调（如 HAKeeper），保证一致性、高可用与选主 |
 
-![MatrixOne 架构图](https://github.com/matrixorigin/artwork/blob/main/docs/overview/architecture/architeture241113_en.png?raw=true)
+![MatrixOne 架构图](https://static001.geekbang.org/infoq/52/52e18455120049575b169a031bff8ff0.jpeg?x-oss-process=image%2Fresize%2Cp_80%2Fauto-orient%2C1)
 
 **请求大致路径**：客户端通过 MySQL 协议连接任意 CN → CN 解析、优化、生成执行计划，通过 RPC 与 TN、Log Service 交互 → TN 负责事务提交、日志落盘、数据写入存储引擎；读路径上 CN 从 TN/对象存储拉取数据块 → 存储可挂载对象存储（S3/MinIO），存算分离。**CN 负责算，TN 负责事务与存储，Log Service 负责日志与协调**，三者协同完成一条 SQL 从进入到落库/返回结果的全过程。
 
@@ -302,3 +302,13 @@ make dev-build && make dev-up
 | **独特亮点** | **Git for Data**（Clone/快照/回滚）；**极简架构 + 多模数据**（减少 ETL、强一致、低成本；多模态流水线元数据→时序→报表→向量检索只需 MatrixOne）；**AI 原生（向量+全文）**；**集成与同步**（外表/Stage/DataLink、Pub/Sub、备份与跨集群同步）；MySQL 兼容与云原生存算分离。 |
 
 在「需要 HTAP」「需要数据版本与回滚」「需要向量/全文/RAG」或「希望简化多库多 ETL」的场景中，可将 MatrixOne 纳入选型与 POC，用最小改造成本体验上述能力。
+
+---
+
+## 八、课后作业（选做）：开放性课题
+
+请从业务或技术视角**提出一个需求**，该需求若利用 MatrixOne 的 **Git for Data**（Clone、快照、PITR、回滚、分支等）、**Stage / 外表**、以及**多模态 / 一库多负载**（元数据 + 时序 + 报表 + 向量检索一体）等能力，可以**显著简化实现、加速落地，或仅依赖 MatrixOne 即可实现**（而无需多套库 + ETL）。
+
+在此基础上，对该需求做**价值评判**：为什么这个需求有价值？对谁有价值？优先级或落地可行性如何？
+
+**可参考的方向（不必局限）**：数据合规与审计、多环境 / 多租户数据隔离与复用、AI 训练或评估数据管线、故障演练与恢复、分析报表与检索统一、Agent 安全用数等。需求可来自当前项目、设想中的产品，或你看到的行业场景；篇幅不限，说清「需求是什么」「如何用 MO 简化/加速/唯一实现」「需求本身的价值」即可。
