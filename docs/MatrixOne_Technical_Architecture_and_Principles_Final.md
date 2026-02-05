@@ -26,25 +26,7 @@ MatrixOne 采用**存算分离、多角色分布式**架构，主要包含三类
 | **事务/存储节点** | TN (Transaction Node) | 事务协调、数据持久化、存储引擎（TAE）所在，负责写路径与持久化 |
 | **日志与协调** | Log Service | 分布式日志、元数据与协调（如 HAKeeper），保证一致性、高可用与选主 |
 
-```mermaid
-flowchart LR
-    subgraph client [客户端]
-        App[应用]
-    end
-    subgraph mo [MatrixOne]
-        CN[CN 计算节点<br/>解析/优化/执行]
-        TN[TN 事务/存储<br/>TAE 持久化]
-        Log[Log Service<br/>日志与协调]
-    end
-    subgraph storage [存储]
-        S3[(对象存储 S3/MinIO)]
-    end
-    App -->|MySQL 协议| CN
-    CN <-->|RPC 读写/事务| TN
-    CN <-->|元数据/协调| Log
-    TN <-->|日志| Log
-    TN <-->|数据块| S3
-```
+![MatrixOne 架构图](https://github.com/matrixorigin/artwork/blob/main/docs/overview/architecture/architeture241113_en.png?raw=true)
 
 **请求大致路径**：客户端通过 MySQL 协议连接任意 CN → CN 解析、优化、生成执行计划，通过 RPC 与 TN、Log Service 交互 → TN 负责事务提交、日志落盘、数据写入存储引擎；读路径上 CN 从 TN/对象存储拉取数据块 → 存储可挂载对象存储（S3/MinIO），存算分离。**CN 负责算，TN 负责事务与存储，Log Service 负责日志与协调**，三者协同完成一条 SQL 从进入到落库/返回结果的全过程。
 
@@ -114,7 +96,7 @@ flowchart LR
    按物理计划在 CN 上执行：扫描、连接、聚合等，部分下推到 TN 或通过 RPC 拉取数据。向量化执行器 + 列存，适合复杂分析查询。
 
 4. **事务与存储（TN + TAE）**  
-   TN：事务管理、提交、日志；TAE：块/段/表组织、压缩、索引（如主键、ZoneMap 等）。写路径由 CN 与 TN 协同完成 2PC/日志；读路径按快照读取，保证隔离性。
+   TN：事务管理、提交、日志；TAE：块/段/表组织、压缩、索引（如主键、ZoneMap 等）。写路径由 CN 与 TN 协同（事务提交、日志落盘）；读路径按快照读取，保证隔离性。
 
 5. **日志与协调（Log Service）**  
    存储日志、元数据；HAKeeper 等负责调度、选主、健康检查。保证集群一致性与高可用，对业务透明。
