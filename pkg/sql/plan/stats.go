@@ -1636,6 +1636,12 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 	stats.Outcnt = stats.Selectivity * stats.TableCnt
 	stats.Cost = stats.TableCnt * blockSel
 	stats.BlockNum = int32(float64(s.BlockNumber)*blockSel) + 1
+	
+	// Debug log for sysbench_db
+	if node.ObjRef != nil && node.ObjRef.GetSchemaName() == "sysbench_db" {
+		logutil.Infof("SYSBENCH_STATS_CALC table=%s total_blocks=%d block_sel=%.6f calculated_blocknum=%d selectivity=%.6f outcnt=%.2f filter_count=%d",
+			node.TableDef.Name, s.BlockNumber, blockSel, stats.BlockNum, stats.Selectivity, stats.Outcnt, len(node.FilterList))
+	}
 	// estimate average row size from collected table stats: sum(SizeMap)/TableCnt
 	// SizeMap stores approximate persisted bytes per column (using OriginSize); divide by total rows to get bytes/row
 	var totalSize uint64

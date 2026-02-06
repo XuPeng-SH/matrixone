@@ -4086,16 +4086,28 @@ func (c *Compile) handleDbRelContext(node *plan.Node, onRemoteCN bool) (engine.R
 
 func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 	schemaName := ""
+	tableName := ""
 	if node.ObjRef != nil {
 		schemaName = node.ObjRef.GetSchemaName()
+		tableName = node.ObjRef.GetObjName()
 	}
+	
+	// Debug: check if Stats is nil for sysbench_db
+	if schemaName == "sysbench_db" && node.Stats == nil {
+		getLogger(c.proc.GetService()).Warn("SYSBENCH_PIPELINE_TRIGGER node.Stats is nil!",
+			zap.String("table", tableName),
+			zap.String("node_type", node.NodeType.String()))
+	}
+	
 	if len(c.cnList) == 1 ||
-		node.Stats.ForceOneCN ||
+		(node.Stats != nil && node.Stats.ForceOneCN) ||
 		forceSingle {
 		if schemaName == "sysbench_db" {
 			getLogger(c.proc.GetService()).Info("SYSBENCH_PIPELINE_TRIGGER shouldScanOnCurrentCN=true",
+				zap.String("table", tableName),
 				zap.String("reason", "single_cn_or_force"),
 				zap.Int("cn_list_len", len(c.cnList)),
+				zap.Bool("stats_is_nil", node.Stats == nil),
 				zap.Bool("force_one_cn", node.Stats != nil && node.Stats.ForceOneCN),
 				zap.Bool("force_single", forceSingle),
 				zap.Bool("is_prepare", c.isPrepare),
@@ -4119,15 +4131,22 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 
 	if schemaName == "sysbench_db" {
 		blockNum, outcnt, cost := int32(0), float64(0), float64(0)
+		tableName := ""
 		if node.Stats != nil {
 			blockNum, outcnt, cost = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.Cost
 		}
+		if node.ObjRef != nil {
+			tableName = node.ObjRef.GetObjName()
+		}
 		getLogger(c.proc.GetService()).Info("SYSBENCH_PIPELINE_TRIGGER shouldScanOnCurrentCN=false will_use_multi_cn",
+			zap.String("table", tableName),
 			zap.Int("cn_list_len", len(c.cnList)),
 			zap.Bool("force_scan_multi_cn", plan2.GetForceScanOnMultiCN()),
 			zap.Int32("block_num", blockNum),
+			zap.Int32("threshold", int32(plan2.BlockThresholdForOneCN)),
 			zap.Float64("outcnt", outcnt),
 			zap.Float64("cost", cost),
+			zap.Int("filter_count", len(node.FilterList)),
 			zap.Bool("is_prepare", c.isPrepare),
 			zap.String("schema", schemaName))
 	}
