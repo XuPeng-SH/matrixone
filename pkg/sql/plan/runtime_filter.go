@@ -18,6 +18,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
 )
@@ -28,6 +29,13 @@ const (
 	BloomFilterCardLimit     = 100 * InFilterCardLimitNonPK
 	InFilterSelectivityLimit = 0.3
 )
+
+// logIndexJoinRFReason logs when generateRuntimeFilters skips or adds RF for INDEX join; grep PIPELINE_CN_CHOICE to compare local vs cloud.
+func logIndexJoinRFReason(node *plan.Node, reason string) {
+	if node != nil && node.JoinType == plan.Node_INDEX {
+		logutil.Infof("PIPELINE_CN_CHOICE generateRuntimeFilters INDEX join %s", reason)
+	}
+}
 
 func GetInFilterCardLimit(sid string) int32 {
 	v, ok := runtime.ServiceRuntime(sid).GetGlobalVariables("runtime_filter_limit_in")
@@ -82,6 +90,7 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 
 	// if this node has already pushed runtime filter, just return
 	if len(node.RuntimeFilterBuildList) > 0 {
+		logIndexJoinRFReason(node, "skip reason=already_has_runtime_filter")
 		return
 	}
 
@@ -108,14 +117,17 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 
 	// TODO: build runtime filters deeper than 1 level
 	if leftChild.NodeType != plan.Node_TABLE_SCAN || leftChild.Limit != nil {
+		logIndexJoinRFReason(node, "skip reason=left_not_table_scan_or_has_limit")
 		return
 	}
 
 	rightChild := builder.qry.Nodes[node.Children[1]]
 	if !mustRuntimeFilter(node) && rightChild.Stats.Outcnt > 5000000 {
+		logIndexJoinRFReason(node, "skip reason=right_outcnt_gt_5m")
 		return
 	}
-	if node.Stats.HashmapStats.HashOnPK && rightChild.Stats.Outcnt > 320000 {
+	if node.Stats.HashmapStats != nil && node.Stats.HashmapStats.HashOnPK && rightChild.Stats.Outcnt > 320000 {
+		logIndexJoinRFReason(node, "skip reason=hash_on_pk_right_outcnt_320000")
 		return
 	}
 
@@ -135,6 +147,7 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 		if isEquiCond(expr, leftTags, rightTags) {
 			args := expr.GetF().Args
 			if !ExprIsZonemappable(builder.GetContext(), args[0]) {
+				logIndexJoinRFReason(node, "skip reason=probe_expr_not_zonemappable")
 				return
 			}
 			probeExprs = append(probeExprs, args[0])
@@ -145,6 +158,7 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 
 	// No equi condition found
 	if probeExprs == nil {
+		logIndexJoinRFReason(node, "skip reason=no_equi_cond")
 		return
 	}
 
@@ -156,6 +170,7 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 		_, err := function.GetFunctionByName(builder.GetContext(), "in", args)
 		if err != nil {
 			//don't support this type
+			logIndexJoinRFReason(node, "skip reason=in_func_not_support_type")
 			return
 		}
 	}
@@ -165,6 +180,7 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 		tableDef := leftChild.TableDef
 		probeCol := probeExprs[0].GetCol()
 		if probeCol == nil {
+			logIndexJoinRFReason(node, "skip reason=probe_col_nil")
 			return
 		}
 		sortOrder := GetSortOrder(tableDef, probeCol.ColPos)
@@ -221,12 +237,14 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 		} else {
 			node.RuntimeFilterBuildList = append(node.RuntimeFilterBuildList, MakeRuntimeFilter(rfTag, false, inLimit, buildExpr, notOnPk))
 		}
+		logIndexJoinRFReason(node, "added RuntimeFilterBuildList")
 		recalcStatsByRuntimeFilter(leftChild, node, builder)
 		return
 	}
 
 	tableDef := leftChild.TableDef
 	if len(tableDef.Pkey.Names) < len(probeExprs) {
+		logIndexJoinRFReason(node, "skip reason=pk_parts_less_than_probe_exprs")
 		return
 	}
 
@@ -243,6 +261,7 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 	for i, expr := range probeExprs {
 		col := expr.GetCol()
 		if col == nil {
+			logIndexJoinRFReason(node, "skip reason=probe_expr_col_nil")
 			return
 		}
 		if pos, ok := name2Pos[tableDef.Cols[col.ColPos].Name]; ok {
@@ -258,11 +277,13 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 	}
 
 	if cnt != len(probeExprs) {
+		logIndexJoinRFReason(node, "skip reason=probe_exprs_not_on_pk_prefix")
 		return
 	}
 
 	pkIdx, ok := tableDef.Name2ColIndex[tableDef.Pkey.PkeyColName]
 	if !ok {
+		logIndexJoinRFReason(node, "skip reason=pk_col_not_found")
 		return
 	}
 
@@ -297,6 +318,7 @@ func (builder *QueryBuilder) generateRuntimeFilters(nodeID int32) {
 
 	buildExpr, _ := BindFuncExprImplByPlanExpr(builder.GetContext(), "serial", buildArgs)
 
+	logIndexJoinRFReason(node, "added RuntimeFilterBuildList")
 	node.RuntimeFilterBuildList = append(node.RuntimeFilterBuildList, MakeRuntimeFilter(rfTag, cnt < len(tableDef.Pkey.Names), GetInFilterCardLimitOnPK(sid, leftChild.Stats.TableCnt), buildExpr, false))
 	recalcStatsByRuntimeFilter(leftChild, node, builder)
 }

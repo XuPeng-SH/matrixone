@@ -4113,6 +4113,23 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 				zap.Bool("is_prepare", c.isPrepare),
 				zap.String("schema", schemaName))
 		}
+		// PIPELINE_CN_CHOICE: log for any TABLE_SCAN when multi-CN possible, to compare local vs cloud
+		if node.NodeType == plan.Node_TABLE_SCAN && len(c.cnList) != 1 {
+			reason := "single_cn_or_force"
+			if node.Stats != nil && node.Stats.ForceOneCN {
+				reason = "stats_force_one_cn"
+			} else if forceSingle {
+				reason = "force_single"
+			}
+			getLogger(c.proc.GetService()).Info("PIPELINE_CN_CHOICE shouldScanOnCurrentCN=true",
+				zap.String("reason", reason),
+				zap.Int("cn_list_len", len(c.cnList)),
+				zap.Bool("stats_force_one_cn", node.Stats != nil && node.Stats.ForceOneCN),
+				zap.Bool("force_single", forceSingle),
+				zap.String("schema", schemaName),
+				zap.String("table", tableName),
+				zap.String("node_type", node.NodeType.String()))
+		}
 		return true
 	}
 
@@ -4125,6 +4142,15 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 				zap.Int32("threshold", int32(plan2.BlockThresholdForOneCN)),
 				zap.Bool("is_prepare", c.isPrepare),
 				zap.String("schema", schemaName))
+		}
+		if node.NodeType == plan.Node_TABLE_SCAN {
+			getLogger(c.proc.GetService()).Info("PIPELINE_CN_CHOICE shouldScanOnCurrentCN=true",
+				zap.String("reason", "block_threshold"),
+				zap.Int("cn_list_len", len(c.cnList)),
+				zap.Int32("block_num", node.Stats.BlockNum),
+				zap.Int32("threshold", int32(plan2.BlockThresholdForOneCN)),
+				zap.String("schema", schemaName),
+				zap.String("table", tableName))
 		}
 		return true
 	}
@@ -4149,6 +4175,24 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 			zap.Int("filter_count", len(node.FilterList)),
 			zap.Bool("is_prepare", c.isPrepare),
 			zap.String("schema", schemaName))
+	}
+	// PIPELINE_CN_CHOICE: log when we choose multi-CN (any schema), grep to compare local vs cloud
+	if node.NodeType == plan.Node_TABLE_SCAN {
+		blockNum, outcnt, cost := int32(0), float64(0), float64(0)
+		if node.Stats != nil {
+			blockNum, outcnt, cost = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.Cost
+		}
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN_CHOICE shouldScanOnCurrentCN=false will_use_multi_cn",
+			zap.String("schema", schemaName),
+			zap.String("table", tableName),
+			zap.Int("cn_list_len", len(c.cnList)),
+			zap.Bool("force_scan_multi_cn", plan2.GetForceScanOnMultiCN()),
+			zap.Int32("block_num", blockNum),
+			zap.Int32("threshold", int32(plan2.BlockThresholdForOneCN)),
+			zap.Float64("outcnt", outcnt),
+			zap.Float64("cost", cost),
+			zap.Int("filter_count", len(node.FilterList)),
+			zap.Bool("is_prepare", c.isPrepare))
 	}
 	return false
 }
@@ -4205,8 +4249,10 @@ func (c *Compile) generateNodes(node *plan.Node) (engine.Nodes, error) {
 	}
 
 	schemaName := ""
+	tableName := ""
 	if node.ObjRef != nil {
 		schemaName = node.ObjRef.GetSchemaName()
+		tableName = node.ObjRef.GetObjName()
 	}
 	if schemaName == "sysbench_db" {
 		blockNum, outcnt := int32(0), float64(0)
@@ -4219,8 +4265,20 @@ func (c *Compile) generateNodes(node *plan.Node) (engine.Nodes, error) {
 			zap.Float64("outcnt", outcnt),
 			zap.Bool("is_prepare", c.isPrepare),
 			zap.String("schema", schemaName),
-			zap.String("table", node.ObjRef.GetObjName()))
+			zap.String("table", tableName))
 	}
+	// PIPELINE_CN_CHOICE: log whenever we choose multi-CN scan (any schema), grep to compare local vs cloud
+	blockNum, outcnt := int32(0), float64(0)
+	if node.Stats != nil {
+		blockNum, outcnt = node.Stats.BlockNum, node.Stats.Outcnt
+	}
+	getLogger(c.proc.GetService()).Info("PIPELINE_CN_CHOICE generateNodes scan_on_multi_cn",
+		zap.Int("cn_count", len(c.cnList)),
+		zap.Int32("block_num", blockNum),
+		zap.Float64("outcnt", outcnt),
+		zap.Bool("is_prepare", c.isPrepare),
+		zap.String("schema", schemaName),
+		zap.String("table", tableName))
 
 	// scan on multi CN
 	for i := range c.cnList {

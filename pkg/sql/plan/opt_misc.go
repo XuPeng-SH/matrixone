@@ -20,6 +20,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/rule"
@@ -1021,6 +1022,7 @@ func (builder *QueryBuilder) forceJoinOnOneCN(nodeID int32, force bool) {
 				}
 			case plan.Node_INDEX:
 				force = true
+				logutil.Infof("PIPELINE_CN_CHOICE forceJoinOnOneCN INDEX join has RuntimeFilterBuildList, forcing OneCN")
 			}
 		}
 	}
