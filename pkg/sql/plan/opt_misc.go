@@ -1005,6 +1005,11 @@ func (builder *QueryBuilder) forceJoinOnOneCN(nodeID int32, force bool) {
 	node := builder.qry.Nodes[nodeID]
 	if node.NodeType == plan.Node_TABLE_SCAN {
 		node.Stats.ForceOneCN = force
+		schema, table := "", ""
+		if node.ObjRef != nil {
+			schema, table = node.ObjRef.GetSchemaName(), node.ObjRef.GetObjName()
+		}
+		logutil.Infof("PIPELINE_CN plan forceJoinOnOneCN TABLE_SCAN schema=%s table=%s force=%v", schema, table, force)
 	} else if node.NodeType == plan.Node_JOIN {
 		if node.JoinType == plan.Node_DEDUP && !node.Stats.HashmapStats.Shuffle {
 			force = true
@@ -1022,7 +1027,7 @@ func (builder *QueryBuilder) forceJoinOnOneCN(nodeID int32, force bool) {
 				}
 			case plan.Node_INDEX:
 				force = true
-				logutil.Infof("PIPELINE_CN choice forceJoinOnOneCN INDEX join has RuntimeFilterBuildList, forcing OneCN")
+				logutil.Infof("PIPELINE_CN plan forceJoinOnOneCN INDEX join has RuntimeFilterBuildList, forcing OneCN")
 			}
 		}
 		// Pass reason to scan children so compile can log why multi-CN was chosen (cloud vs local)
@@ -1036,12 +1041,19 @@ func (builder *QueryBuilder) forceJoinOnOneCN(nodeID int32, force bool) {
 					reason += ":" + node.DebugRfSkipReason
 				}
 			}
+			schema, table := "", ""
+			if len(node.Children) > 0 {
+				if ch := builder.qry.Nodes[node.Children[0]]; ch.ObjRef != nil {
+					schema, table = ch.ObjRef.GetSchemaName(), ch.ObjRef.GetObjName()
+				}
+			}
 			for _, childID := range node.Children {
 				ch := builder.qry.Nodes[childID]
 				if ch.Stats != nil {
 					ch.Stats.ForceOneCnDebugReason = reason
 				}
 			}
+			logutil.Infof("PIPELINE_CN plan forceJoinOnOneCN INDEX join schema=%s table=%s force=%v reason=%s", schema, table, force, reason)
 		}
 	}
 	for _, childID := range node.Children {

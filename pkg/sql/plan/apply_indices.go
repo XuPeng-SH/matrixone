@@ -19,6 +19,7 @@ import (
 	"slices"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 )
 
@@ -1011,6 +1012,11 @@ func (builder *QueryBuilder) applyIndexJoin(idxDef *IndexDef, node *plan.Node, f
 		OnList:   []*plan.Expr{joinCond},
 	}
 	joinNodeID := builder.appendNode(joinNode, builder.ctxByNode[node.NodeId])
+	schema, table := "", ""
+	if node.ObjRef != nil {
+		schema, table = node.ObjRef.GetSchemaName(), node.ObjRef.GetObjName()
+	}
+	logutil.Infof("PIPELINE_CN plan applyIndices created INDEX join schema=%s table=%s", schema, table)
 
 	if len(node.FilterList) == 0 {
 		idxTableNode.Limit, idxTableNode.Offset = node.Limit, node.Offset
@@ -1295,6 +1301,11 @@ func (builder *QueryBuilder) applyIndicesForJoins(nodeID int32, node *plan.Node,
 			Offset:   leftChild.Offset,
 			OnList:   []*plan.Expr{pkJoinCond},
 		}, builder.ctxByNode[nodeID])
+		schema, table := "", ""
+		if leftChild.ObjRef != nil {
+			schema, table = leftChild.ObjRef.GetSchemaName(), leftChild.ObjRef.GetObjName()
+		}
+		logutil.Infof("PIPELINE_CN plan applyIndices created INDEX join (join) schema=%s table=%s", schema, table)
 
 		leftChild.Limit, leftChild.Offset = nil, nil
 

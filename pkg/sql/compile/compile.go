@@ -4106,7 +4106,7 @@ func logSysbenchOneCNChoice(c *Compile, schemaName, tableName, reason string, no
 		blockNum, outcnt, cost = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.Cost
 		debugReason = node.Stats.ForceOneCnDebugReason
 	}
-	getLogger(c.proc.GetService()).Info("PIPELINE_CN choice shouldScanOnCurrentCN=true will_use_one_cn",
+	getLogger(c.proc.GetService()).Info("PIPELINE_CN plan compile shouldScanOnCurrentCN=true will_use_one_cn",
 		zap.String("reason", reason),
 		zap.String("debug_reason", debugReason),
 		zap.String("exec_type", execTypeString(c.execType)),
@@ -4129,9 +4129,29 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 		tableName = node.ObjRef.GetObjName()
 	}
 
+	// PIPELINE_CN: one-line dump of all inputs for sysbench_db; grep PIPELINE_CN to see full plan+compile trace
+	if schemaName == "sysbench_db" && node.NodeType == plan.Node_TABLE_SCAN {
+		blockNum, outcnt, forceOneCN, debugReason := int32(0), 0.0, false, ""
+		if node.Stats != nil {
+			blockNum, outcnt, forceOneCN = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.ForceOneCN
+			debugReason = node.Stats.ForceOneCnDebugReason
+		}
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN plan compile shouldScanOnCurrentCN input",
+			zap.String("schema", schemaName),
+			zap.String("table", tableName),
+			zap.Int("cn_list_len", len(c.cnList)),
+			zap.Int32("block_num", blockNum),
+			zap.Int32("threshold", int32(plan2.BlockThresholdForOneCN)),
+			zap.Float64("outcnt", outcnt),
+			zap.Bool("force_one_cn", forceOneCN),
+			zap.String("plan_reason", debugReason),
+			zap.Bool("force_scan_multi_cn", plan2.GetForceScanOnMultiCN()),
+			zap.Bool("force_single_arg", forceSingle))
+	}
+
 	// Debug: check if Stats is nil for sysbench_db
 	if schemaName == "sysbench_db" && node.Stats == nil {
-		getLogger(c.proc.GetService()).Warn("PIPELINE_CN node.Stats is nil",
+		getLogger(c.proc.GetService()).Warn("PIPELINE_CN plan compile node.Stats is nil",
 			zap.String("table", tableName),
 			zap.String("node_type", node.NodeType.String()))
 	}
@@ -4170,7 +4190,7 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 		if node.ObjRef != nil {
 			tableName = node.ObjRef.GetObjName()
 		}
-		getLogger(c.proc.GetService()).Info("PIPELINE_CN shouldScanOnCurrentCN=false will_use_multi_cn",
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN plan compile shouldScanOnCurrentCN=false will_use_multi_cn",
 			zap.String("table", tableName),
 			zap.Int("cn_list_len", len(c.cnList)),
 			zap.Bool("force_scan_multi_cn", plan2.GetForceScanOnMultiCN()),
@@ -4182,7 +4202,8 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 			zap.Bool("is_prepare", c.isPrepare),
 			zap.String("schema", schemaName))
 	}
-	// PIPELINE_CN: log when we choose multi-CN; reason is set in plan so cloud log alone gives root cause
+	// PIPELINE_CN: log when we choose multi-CN; reason is set in plan so cloud log alone gives root cause.
+	// If plan did not set reason (e.g. not INDEX join, or plan built elsewhere), use fallback so log is never empty.
 	if node.NodeType == plan.Node_TABLE_SCAN {
 		blockNum, outcnt, cost := int32(0), float64(0), float64(0)
 		reason := ""
@@ -4190,7 +4211,14 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 			blockNum, outcnt, cost = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.Cost
 			reason = node.Stats.ForceOneCnDebugReason
 		}
-		getLogger(c.proc.GetService()).Info("PIPELINE_CN choice shouldScanOnCurrentCN=false will_use_multi_cn",
+		if reason == "" {
+			if plan2.GetForceScanOnMultiCN() {
+				reason = "plan_reason_empty:force_scan_multi_cn"
+			} else {
+				reason = "plan_reason_empty:block_num_above_threshold_or_no_force_one_cn"
+			}
+		}
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN plan compile shouldScanOnCurrentCN=false will_use_multi_cn",
 			zap.String("reason", reason),
 			zap.String("exec_type", execTypeString(c.execType)),
 			zap.String("schema", schemaName),
