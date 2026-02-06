@@ -1639,7 +1639,7 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 
 	// Debug log for sysbench_db
 	if node.ObjRef != nil && node.ObjRef.GetSchemaName() == "sysbench_db" {
-		logutil.Infof("SYSBENCH_STATS_CALC table=%s total_blocks=%d block_sel=%.6f calculated_blocknum=%d selectivity=%.6f outcnt=%.2f filter_count=%d",
+		logutil.Infof("PIPELINE_CN stats_calc table=%s total_blocks=%d block_sel=%.6f calculated_blocknum=%d selectivity=%.6f outcnt=%.2f filter_count=%d",
 			node.TableDef.Name, s.BlockNumber, blockSel, stats.BlockNum, stats.Selectivity, stats.Outcnt, len(node.FilterList))
 	}
 	// estimate average row size from collected table stats: sum(SizeMap)/TableCnt

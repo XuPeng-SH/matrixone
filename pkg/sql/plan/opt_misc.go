@@ -1022,7 +1022,7 @@ func (builder *QueryBuilder) forceJoinOnOneCN(nodeID int32, force bool) {
 				}
 			case plan.Node_INDEX:
 				force = true
-				logutil.Infof("PIPELINE_CN_CHOICE forceJoinOnOneCN INDEX join has RuntimeFilterBuildList, forcing OneCN")
+				logutil.Infof("PIPELINE_CN choice forceJoinOnOneCN INDEX join has RuntimeFilterBuildList, forcing OneCN")
 			}
 		}
 		// Pass reason to scan children so compile can log why multi-CN was chosen (cloud vs local)

@@ -79,7 +79,7 @@ func (s *Scope) remoteRun(c *Compile) (sender *messageSenderOnClient, err error)
 		if s.DataSource != nil {
 			relationName = s.DataSource.RelationName
 		}
-		getLogger(s.Proc.GetService()).Info("SYSBENCH_PIPELINE_TRIGGER remoteRun newMessageSenderOnClient",
+		getLogger(s.Proc.GetService()).Info("PIPELINE_CN remoteRun newMessageSenderOnClient",
 			zap.String("to_addr", s.NodeInfo.Addr),
 			zap.String("scope_magic", s.Magic.String()),
 			zap.String("schema", schemaName),

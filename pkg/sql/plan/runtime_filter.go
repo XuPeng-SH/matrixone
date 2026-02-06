@@ -30,14 +30,14 @@ const (
 	InFilterSelectivityLimit = 0.3
 )
 
-// logIndexJoinRFReason logs when generateRuntimeFilters skips or adds RF for INDEX join; grep PIPELINE_CN_CHOICE to compare local vs cloud.
+// logIndexJoinRFReason logs when generateRuntimeFilters skips or adds RF for INDEX join; grep PIPELINE_CN to compare local vs cloud.
 // When reason starts with "skip ", sets node.DebugRfSkipReason so compile can log it (plan may run elsewhere than compile in cloud).
 func logIndexJoinRFReason(node *plan.Node, reason string) {
 	if node != nil && node.JoinType == plan.Node_INDEX {
 		if len(reason) > 5 && reason[:5] == "skip " {
 			node.DebugRfSkipReason = reason
 		}
-		logutil.Infof("PIPELINE_CN_CHOICE generateRuntimeFilters INDEX join %s", reason)
+		logutil.Infof("PIPELINE_CN choice generateRuntimeFilters INDEX join %s", reason)
 	}
 }
 
