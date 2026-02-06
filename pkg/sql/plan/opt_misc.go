@@ -1025,6 +1025,24 @@ func (builder *QueryBuilder) forceJoinOnOneCN(nodeID int32, force bool) {
 				logutil.Infof("PIPELINE_CN_CHOICE forceJoinOnOneCN INDEX join has RuntimeFilterBuildList, forcing OneCN")
 			}
 		}
+		// Pass reason to scan children so compile can log why multi-CN was chosen (cloud vs local)
+		if node.JoinType == plan.Node_INDEX {
+			reason := ""
+			if force {
+				reason = "index_join_has_rf"
+			} else {
+				reason = "index_join_no_rf"
+				if node.DebugRfSkipReason != "" {
+					reason += ":" + node.DebugRfSkipReason
+				}
+			}
+			for _, childID := range node.Children {
+				ch := builder.qry.Nodes[childID]
+				if ch.Stats != nil {
+					ch.Stats.ForceOneCnDebugReason = reason
+				}
+			}
+		}
 	}
 	for _, childID := range node.Children {
 		builder.forceJoinOnOneCN(childID, force)

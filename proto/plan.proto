@@ -507,6 +507,8 @@ message Stats {
   int32 dop = 8;
   HashMapStats hashmapStats = 9;
   string sql = 10;
+  // debug: why multi-CN chosen (set in plan, logged in compile); grep PIPELINE_CN_CHOICE
+  string force_one_cn_debug_reason = 11;
 }
 
 message RowsetExpr {
@@ -916,6 +918,9 @@ message Node {
 
   // compile time performance setting
   int64 spill_mem = 70;
+
+  // debug: INDEX join skip adding runtime filter reason (set in generateRuntimeFilters); grep PIPELINE_CN_CHOICE
+  string debug_rf_skip_reason = 71;
 }
 
 message SnapshotExtraInfo {

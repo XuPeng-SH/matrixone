@@ -1636,7 +1636,7 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 	stats.Outcnt = stats.Selectivity * stats.TableCnt
 	stats.Cost = stats.TableCnt * blockSel
 	stats.BlockNum = int32(float64(s.BlockNumber)*blockSel) + 1
-	
+
 	// Debug log for sysbench_db
 	if node.ObjRef != nil && node.ObjRef.GetSchemaName() == "sysbench_db" {
 		logutil.Infof("SYSBENCH_STATS_CALC table=%s total_blocks=%d block_sel=%.6f calculated_blocknum=%d selectivity=%.6f outcnt=%.2f filter_count=%d",
@@ -2105,14 +2105,15 @@ func DeepCopyStats(stats *plan.Stats) *plan.Stats {
 		}
 	}
 	return &plan.Stats{
-		BlockNum:     stats.BlockNum,
-		Rowsize:      stats.Rowsize,
-		Cost:         stats.Cost,
-		Outcnt:       stats.Outcnt,
-		TableCnt:     stats.TableCnt,
-		Selectivity:  stats.Selectivity,
-		HashmapStats: hashmapStats,
-		ForceOneCN:   stats.ForceOneCN,
+		BlockNum:              stats.BlockNum,
+		Rowsize:               stats.Rowsize,
+		Cost:                  stats.Cost,
+		Outcnt:                stats.Outcnt,
+		TableCnt:              stats.TableCnt,
+		Selectivity:           stats.Selectivity,
+		HashmapStats:          hashmapStats,
+		ForceOneCN:            stats.ForceOneCN,
+		ForceOneCnDebugReason: stats.ForceOneCnDebugReason,
 	}
 }
 
