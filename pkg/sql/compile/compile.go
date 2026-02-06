@@ -4085,17 +4085,52 @@ func (c *Compile) handleDbRelContext(node *plan.Node, onRemoteCN bool) (engine.R
 }
 
 func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
+	schemaName := ""
+	if node.ObjRef != nil {
+		schemaName = node.ObjRef.GetSchemaName()
+	}
 	if len(c.cnList) == 1 ||
 		node.Stats.ForceOneCN ||
 		forceSingle {
+		if schemaName == "sysbench_db" {
+			getLogger(c.proc.GetService()).Info("SYSBENCH_PIPELINE_TRIGGER shouldScanOnCurrentCN=true",
+				zap.String("reason", "single_cn_or_force"),
+				zap.Int("cn_list_len", len(c.cnList)),
+				zap.Bool("force_one_cn", node.Stats != nil && node.Stats.ForceOneCN),
+				zap.Bool("force_single", forceSingle),
+				zap.Bool("is_prepare", c.isPrepare),
+				zap.String("schema", schemaName))
+		}
 		return true
 	}
 
 	if !plan2.GetForceScanOnMultiCN() &&
 		node.Stats.BlockNum <= int32(plan2.BlockThresholdForOneCN) {
+		if schemaName == "sysbench_db" {
+			getLogger(c.proc.GetService()).Info("SYSBENCH_PIPELINE_TRIGGER shouldScanOnCurrentCN=true",
+				zap.String("reason", "block_threshold"),
+				zap.Int32("block_num", node.Stats.BlockNum),
+				zap.Int32("threshold", int32(plan2.BlockThresholdForOneCN)),
+				zap.Bool("is_prepare", c.isPrepare),
+				zap.String("schema", schemaName))
+		}
 		return true
 	}
 
+	if schemaName == "sysbench_db" {
+		blockNum, outcnt, cost := int32(0), float64(0), float64(0)
+		if node.Stats != nil {
+			blockNum, outcnt, cost = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.Cost
+		}
+		getLogger(c.proc.GetService()).Info("SYSBENCH_PIPELINE_TRIGGER shouldScanOnCurrentCN=false will_use_multi_cn",
+			zap.Int("cn_list_len", len(c.cnList)),
+			zap.Bool("force_scan_multi_cn", plan2.GetForceScanOnMultiCN()),
+			zap.Int32("block_num", blockNum),
+			zap.Float64("outcnt", outcnt),
+			zap.Float64("cost", cost),
+			zap.Bool("is_prepare", c.isPrepare),
+			zap.String("schema", schemaName))
+	}
 	return false
 }
 
@@ -4148,6 +4183,24 @@ func (c *Compile) generateNodes(node *plan.Node) (engine.Nodes, error) {
 			CNCNT: 1,
 		})
 		return engNodes, nil
+	}
+
+	schemaName := ""
+	if node.ObjRef != nil {
+		schemaName = node.ObjRef.GetSchemaName()
+	}
+	if schemaName == "sysbench_db" {
+		blockNum, outcnt := int32(0), float64(0)
+		if node.Stats != nil {
+			blockNum, outcnt = node.Stats.BlockNum, node.Stats.Outcnt
+		}
+		getLogger(c.proc.GetService()).Info("SYSBENCH_PIPELINE_TRIGGER generateNodes scan_on_multi_cn",
+			zap.Int("cn_count", len(c.cnList)),
+			zap.Int32("block_num", blockNum),
+			zap.Float64("outcnt", outcnt),
+			zap.Bool("is_prepare", c.isPrepare),
+			zap.String("schema", schemaName),
+			zap.String("table", node.ObjRef.GetObjName()))
 	}
 
 	// scan on multi CN
