@@ -1007,7 +1007,11 @@ func estimateFilterBlockSelectivity(ctx context.Context, expr *plan.Expr, tableD
 	col := extractColRefInFilter(expr)
 	if col != nil {
 		sortOrder := GetSortOrder(tableDef, col.ColPos)
-		blocksel := calcBlockSelectivityUsingShuffleRange(s, col.Name, expr)
+		logTable := ""
+		if tableDef != nil {
+			logTable = tableDef.Name
+		}
+		blocksel := calcBlockSelectivityUsingShuffleRange(s, col.Name, expr, logTable)
 		switch sortOrder {
 		case 0:
 			blocksel = math.Min(blocksel, 0.2)
@@ -1636,6 +1640,10 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 	stats.Outcnt = stats.Selectivity * stats.TableCnt
 	stats.Cost = stats.TableCnt * blockSel
 	stats.BlockNum = int32(float64(s.BlockNumber)*blockSel) + 1
+	if node.TableDef != nil && (stats.BlockNum > BlockThresholdForOneCN || blockSel >= 0.3) {
+		logutil.Infof("multi_cn_block_sel result table=%s total_block_sel=%.6f s.BlockNumber=%d calculated_BlockNum=%d (BlockNum>%d or block_sel>=0.3 -> pipeline may use multi-CN)",
+			node.TableDef.Name, blockSel, s.BlockNumber, stats.BlockNum, BlockThresholdForOneCN)
+	}
 	// estimate average row size from collected table stats: sum(SizeMap)/TableCnt
 	// SizeMap stores approximate persisted bytes per column (using OriginSize); divide by total rows to get bytes/row
 	var totalSize uint64
@@ -2117,36 +2125,51 @@ func getOverlap(s *pb.StatsInfo, colname string) float64 {
 	return s.ShuffleRangeMap[colname].Overlap
 }
 
-func calcBlockSelectivityUsingShuffleRange(s *pb.StatsInfo, colname string, expr *plan.Expr) float64 {
+// calcBlockSelectivityUsingShuffleRange returns block selectivity for a filter. When it returns a high value
+// (e.g. 0.5 from hasDynamicParam branch), BlockNum becomes large and the scan may use multiple CNs (pipeline-client).
+// For root-cause debugging of multi-CN point select: grep "multi_cn_block_sel" to see table, col, overlap, branch, and returned block_sel.
+func calcBlockSelectivityUsingShuffleRange(s *pb.StatsInfo, colname string, expr *plan.Expr, logTable string) float64 {
 	sel := expr.Selectivity
 	switch expr.GetF().Func.ObjName {
 	case "isnull", "is_null", "prefix_eq", "prefix_in": //special handle
 		return sel
 	}
 	overlap := getOverlap(s, colname)
-	if overlap < overlapThreshold/3 {
-		//very good overlap
-		return sel
-	}
+	hasShuffleRange := s != nil && s.ShuffleRangeMap != nil && s.ShuffleRangeMap[colname] != nil
 	_, _, _, _, hasDynamicParam := extractColRefAndLiteralsInFilter(expr)
-	if hasDynamicParam {
-		// assume dynamic parameter always has low selectivity
+
+	var ret float64
+	var branch string
+	if overlap < overlapThreshold/3 {
+		ret = sel
+		branch = "overlap_low"
+	} else if hasDynamicParam {
 		if sel <= 0.02 {
-			return sel * 50
+			ret = sel * 50
+			branch = "hasDynamicParam_sel50"
 		} else {
-			return 1
+			ret = 1
+			branch = "hasDynamicParam_sel1"
 		}
-	}
-	if overlap > overlapThreshold {
+	} else if overlap > overlapThreshold {
 		if sel <= 0.002 {
-			return sel * 500
+			ret = sel * 500
+			branch = "overlap_high_sel500"
 		} else {
-			return 1
+			ret = 1
+			branch = "overlap_high_sel1"
 		}
+	} else {
+		ret = sel * 100 / (1 - overlap)
+		if ret > 1 {
+			ret = 1
+		}
+		branch = "default_sel100_overlap"
 	}
-	ret := sel * 100 / (1 - overlap)
-	if ret > 1 {
-		ret = 1
+
+	if logTable != "" && ret >= 0.3 {
+		logutil.Infof("multi_cn_block_sel table=%s col=%s hasShuffleRange=%v overlap=%.4f sel=%.6f hasDynamicParam=%v branch=%s block_sel=%.4f (high block_sel -> large BlockNum -> pipeline multi-CN)",
+			logTable, colname, hasShuffleRange, overlap, sel, hasDynamicParam, branch, ret)
 	}
 	return ret
 }

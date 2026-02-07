@@ -1024,6 +1024,12 @@ func (c *client) createBackendWithBookkeeping(backend string, lock bool) (Backen
 	// Update metrics (same as existing creation path)
 	c.updatePoolSizeMetricsLocked()
 
+	c.logger.Info("pool_size_debug add",
+		zap.String("client", c.name),
+		zap.String("backend", backend),
+		zap.Int("pool_total", c.getPoolSizeLocked()),
+		zap.String("reason", "getBackendLocked_append"))
+
 	return b, nil
 }
 
@@ -1055,9 +1061,18 @@ func (c *client) doRemoveInactive(remote string) {
 		}
 		newBackends = append(newBackends, backend)
 	}
+	removed := len(backends) - len(newBackends)
 	c.mu.backends[remote] = newBackends
 
 	c.updatePoolSizeMetricsLocked()
+	if removed > 0 {
+		c.logger.Info("pool_size_debug remove",
+			zap.String("client", c.name),
+			zap.String("remote", remote),
+			zap.Int("removed", removed),
+			zap.Int("pool_total", c.getPoolSizeLocked()),
+			zap.String("reason", "doRemoveInactive"))
+	}
 }
 
 // doRemoveInactiveAll removes all explicitly closed (inactive) backends for every remote.
@@ -1071,6 +1086,7 @@ func (c *client) doRemoveInactiveAll() {
 		return
 	}
 
+	totalRemoved := 0
 	for remote, backends := range c.mu.backends {
 		newBackends := backends[:0]
 		for _, backend := range backends {
@@ -1080,9 +1096,17 @@ func (c *client) doRemoveInactiveAll() {
 			}
 			newBackends = append(newBackends, backend)
 		}
+		totalRemoved += len(backends) - len(newBackends)
 		c.mu.backends[remote] = newBackends
 	}
 	c.updatePoolSizeMetricsLocked()
+	if totalRemoved > 0 {
+		c.logger.Info("pool_size_debug remove",
+			zap.String("client", c.name),
+			zap.Int("removed", totalRemoved),
+			zap.Int("pool_total", c.getPoolSizeLocked()),
+			zap.String("reason", "doRemoveInactiveAll"))
+	}
 }
 
 func (c *client) closeIdleBackends() int {
@@ -1107,12 +1131,20 @@ func (c *client) closeIdleBackends() int {
 		c.mu.backends[k] = newBackends
 	}
 	c.updatePoolSizeMetricsLocked()
+	idleCount := len(idleBackends)
+	if idleCount > 0 {
+		c.logger.Info("pool_size_debug remove",
+			zap.String("client", c.name),
+			zap.Int("removed", idleCount),
+			zap.Int("pool_total", c.getPoolSizeLocked()),
+			zap.String("reason", "closeIdleBackends"))
+	}
 	c.mu.Unlock()
 
 	for _, b := range idleBackends {
 		b.Close()
 	}
-	return len(idleBackends)
+	return idleCount
 }
 
 func (c *client) createBackendLocked(backend string) (Backend, error) {
@@ -1128,6 +1160,11 @@ func (c *client) createBackendLocked(backend string) (Backend, error) {
 	if _, ok := c.mu.ops[backend]; !ok {
 		c.mu.ops[backend] = &op{}
 	}
+	c.logger.Info("pool_size_debug add",
+		zap.String("client", c.name),
+		zap.String("backend", backend),
+		zap.Int("pool_total", c.getPoolSizeLocked()),
+		zap.String("reason", "createBackendLocked_async"))
 	return b, nil
 }
 
@@ -1146,11 +1183,16 @@ func (c *client) canCreateLocked(backend string) bool {
 	return len(c.mu.backends[backend]) < c.options.maxBackendsPerHost
 }
 
-func (c *client) updatePoolSizeMetricsLocked() {
+func (c *client) getPoolSizeLocked() int {
 	n := 0
 	for _, backends := range c.mu.backends {
 		n += len(backends)
 	}
+	return n
+}
+
+func (c *client) updatePoolSizeMetricsLocked() {
+	n := c.getPoolSizeLocked()
 	c.metrics.poolSizeGauge.Set(float64(n))
 }
 
