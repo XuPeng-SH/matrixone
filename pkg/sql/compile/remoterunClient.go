@@ -70,17 +70,6 @@ func (s *Scope) remoteRun(c *Compile) (sender *messageSenderOnClient, err error)
 		return nil, err
 	}
 
-	relationName := ""
-	if s.DataSource != nil {
-		relationName = s.DataSource.RelationName
-	}
-	if relationName != "" && (strings.HasPrefix(relationName, "sbtest") || strings.Contains(relationName, ".sbtest")) {
-		getLogger(s.Proc.GetService()).Info("PIPELINE_CN sbtest remoteRun newMessageSenderOnClient",
-			zap.String("table", relationName),
-			zap.String("to_addr", s.NodeInfo.Addr),
-			zap.Int("mcpu", int(s.NodeInfo.Mcpu)))
-	}
-
 	// generate a new sender to do send work.
 	sender, err = newMessageSenderOnClient(
 		s.Proc.Ctx,

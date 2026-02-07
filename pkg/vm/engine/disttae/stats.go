@@ -1294,6 +1294,40 @@ func CollectAndCalculateStats(ctx context.Context, req *updateStatsRequest, exec
 	if err != nil {
 		return 0, err
 	}
+	// PIPELINE_CN sbtest: after collect, before UpdateStatsInfo - see why one table may have empty ShuffleRangeMap
+	if strings.HasPrefix(baseTableDef.Name, "sbtest") || strings.Contains(baseTableDef.Name, ".sbtest") {
+		parts := make([]string, 0, len(baseTableDef.Cols)-1)
+		for i, coldef := range baseTableDef.Cols[:len(baseTableDef.Cols)-1] {
+			hasRange := i < len(info.ShuffleRanges) && info.ShuffleRanges[i] != nil
+			parts = append(parts, fmt.Sprintf("%s:%v", coldef.Name, hasRange))
+		}
+		logutil.Infof("PIPELINE_CN sbtest collect_done table=%s ShuffleRanges_by_col=%s", baseTableDef.Name, strings.Join(parts, ","))
+		// For columns with no range, log why (so we know how to fix when collect_done shows all false)
+		for i, coldef := range baseTableDef.Cols[:len(baseTableDef.Cols)-1] {
+			if i >= len(info.ShuffleRanges) || info.ShuffleRanges[i] != nil {
+				continue
+			}
+			ndv := 0.0
+			if i < len(info.ColumnNDVs) {
+				ndv = info.ColumnNDVs[i]
+			}
+			threshold := 0.1 * float64(info.TableRowCount)
+			if threshold < 100 {
+				threshold = 100
+			}
+			oid := types.T_any
+			if i < len(info.DataTypes) {
+				oid = info.DataTypes[i].Oid
+			}
+			ndvMet := ndv > 100 || ndv > 0.1*float64(info.TableRowCount)
+			reason := "ndv_not_met"
+			if ndvMet {
+				reason = "type_unsupported_or_other"
+			}
+			logutil.Infof("PIPELINE_CN sbtest collect_skip_reason table=%s col=%s reason=%s ndv=%.0f threshold_0.1*rows=%.0f type_oid=%v",
+				baseTableDef.Name, coldef.Name, reason, ndv, 0.1*float64(info.TableRowCount), oid)
+		}
+	}
 	plan2.UpdateStatsInfo(info, baseTableDef, req.statsInfo)
 	plan2.AdjustNDV(info, baseTableDef, req.statsInfo)
 
