@@ -1085,8 +1085,15 @@ func collectTableStats(
 		updateMu.Unlock()
 
 		// ===== Phase 2: Sampling decision =====
-		if isSampling && !shouldSampleObject(objName, samplingThreshold) {
-			return nil // Skip non-sampled objects, no IO
+		// Root cause fix: when sampling, ensure at least one object is chosen so Phase 2 runs and ColumnNDVs are set.
+		// Otherwise (no_objects_sampled) all NDV stay 0 -> no ShuffleRange -> empty ShuffleRangeMap -> point select block_num~611.
+		if isSampling {
+			updateMu.Lock()
+			forceOne := sampledObjectCount == 0
+			updateMu.Unlock()
+			if !forceOne && !shouldSampleObject(objName, samplingThreshold) {
+				return nil // Skip non-sampled objects, no IO
+			}
 		}
 
 		// Sampled object: read ObjectMeta (requires IO)
@@ -1271,12 +1278,12 @@ func collectTableStats(
 	}
 
 	// Debug: root-cause log for empty ShuffleRangeMap (point select block_num). Grep "stats collect ROOT_CAUSE" after reproduce to determine root cause.
+	// Why isSampling can be true while exactObj=19: approxObjectNum comes from partition index Len() (can include non-visible), so approx>100 enables sampling; ForeachVisibleObjects(ts) only yields visible-at-ts count (e.g. 19). So we sample with ratio R over 19 objects -> P(0 sampled)=(1-R)^19 is significant (e.g. 0.93^19~26%).
 	tableName := req.tableDef.Name
 	if info.TableRowCount > 0 && exactObjectNumber > 0 {
 		if sampledObjectCount == 0 {
-			// ROOT CAUSE: table had visible objects but none were sampled -> Phase2 never ran -> ColumnNDVs never set -> all 0 -> no ShuffleRange.
-			logutil.Infof("stats collect ROOT_CAUSE table=%s exactObj=%d sampledObj=0 isSampling=%v actualRatio=%.4f tableRows=%.0f blockNum=%d reason=no_objects_sampled",
-				tableName, exactObjectNumber, isSampling, actualSamplingRatio, info.TableRowCount, info.BlockNumber)
+			logutil.Infof("stats collect ROOT_CAUSE table=%s approxObj=%d exactObj=%d sampledObj=0 isSampling=%v samplingRatio=%.4f actualRatio=%.4f tableRows=%.0f blockNum=%d reason=no_objects_sampled",
+				tableName, req.approxObjectNum, exactObjectNumber, isSampling, samplingRatio, actualSamplingRatio, info.TableRowCount, info.BlockNumber)
 		} else if len(info.ColumnNDVs) > 0 {
 			allNdvZero := true
 			for _, ndv := range info.ColumnNDVs {
@@ -1286,9 +1293,8 @@ func collectTableStats(
 				}
 			}
 			if allNdvZero {
-				// ROOT CAUSE: had sampled objects but every column NDV ended 0 (object metadata Ndv()=0 or scaling).
-				logutil.Infof("stats collect ROOT_CAUSE table=%s exactObj=%d sampledObj=%d isSampling=%v actualRatio=%.4f tableRows=%.0f blockNum=%d reason=all_sampled_objects_ndv_zero_in_meta",
-					tableName, exactObjectNumber, sampledObjectCount, isSampling, actualSamplingRatio, info.TableRowCount, info.BlockNumber)
+				logutil.Infof("stats collect ROOT_CAUSE table=%s approxObj=%d exactObj=%d sampledObj=%d isSampling=%v reason=all_sampled_objects_ndv_zero_in_meta",
+					tableName, req.approxObjectNum, exactObjectNumber, sampledObjectCount, isSampling)
 			}
 		}
 	}
