@@ -836,6 +836,19 @@ func (c *Compile) compileQuery(qry *plan.Query) ([]*Scope, error) {
 		sort.Slice(c.cnList, func(i, j int) bool { return c.cnList[i].Addr < c.cnList[j].Addr })
 	}
 
+	// PIPELINE_CN: log for sysbench_db to trace how plan led to this exec_type and cn_list_len
+	if qry != nil {
+		for _, node := range qry.GetNodes() {
+			if node.ObjRef != nil && node.ObjRef.GetSchemaName() == "sysbench_db" {
+				getLogger(c.proc.GetService()).Info("PIPELINE_CN compile sysbench_db exec_type and cn_list",
+					zap.String("exec_type", execTypeString(c.execType)),
+					zap.Int("cn_list_len", len(c.cnList)),
+					zap.Bool("is_prepare", c.isPrepare))
+				break
+			}
+		}
+	}
+
 	if c.isPrepare && !c.IsTpQuery() {
 		return nil, cantCompileForPrepareErr
 	}

@@ -1566,6 +1566,18 @@ func recalcStatsByRuntimeFilter(scanNode *plan.Node, joinNode *plan.Node, builde
 }
 
 func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
+	if node.ObjRef != nil && node.ObjRef.GetSchemaName() == "sysbench_db" {
+		filterCnt := 0
+		if node.FilterList != nil {
+			filterCnt = len(node.FilterList)
+		}
+		tableName := ""
+		if node.TableDef != nil {
+			tableName = node.TableDef.Name
+		}
+		logutil.Infof("PIPELINE_CN stats_calc sysbench_db enter table=%s filter_count=%d is_restore=%v skip_stats=%v",
+			tableName, filterCnt, builder.isRestore, builder.skipStats)
+	}
 	if builder.isRestore {
 		return DefaultHugeStats()
 	}
@@ -1639,7 +1651,7 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 
 	// Debug log for sysbench_db
 	if node.ObjRef != nil && node.ObjRef.GetSchemaName() == "sysbench_db" {
-		logutil.Infof("PIPELINE_CN stats_calc table=%s total_blocks=%d block_sel=%.6f calculated_blocknum=%d selectivity=%.6f outcnt=%.2f filter_count=%d",
+		logutil.Infof("PIPELINE_CN stats_calc sysbench_db table=%s total_blocks=%d block_sel=%.6f calculated_blocknum=%d selectivity=%.6f outcnt=%.2f filter_count=%d",
 			node.TableDef.Name, s.BlockNumber, blockSel, stats.BlockNum, stats.Selectivity, stats.Outcnt, len(node.FilterList))
 	}
 	// estimate average row size from collected table stats: sum(SizeMap)/TableCnt
@@ -2007,13 +2019,26 @@ func GetExecType(qry *plan.Query, txnHaveDDL bool, isPrepare bool) ExecType {
 		return ExecTypeAP_MULTICN
 	}
 	ret := ExecTypeTP
+	var planHasSysbenchDb bool
 	for _, node := range qry.GetNodes() {
+		schemaName := ""
+		if node.ObjRef != nil {
+			schemaName = node.ObjRef.GetSchemaName()
+		}
+		if schemaName == "sysbench_db" {
+			planHasSysbenchDb = true
+		}
 		switch node.NodeType {
 		case plan.Node_RECURSIVE_CTE, plan.Node_RECURSIVE_SCAN:
 			ret = ExecTypeAP_ONECN
 		}
 		stats := node.Stats
 		if stats == nil || stats.BlockNum > int32(BlockThresholdForOneCN) && stats.Cost > float64(costThresholdForOneCN) {
+			if schemaName == "sysbench_db" && node.NodeType == plan.Node_TABLE_SCAN && node.ObjRef != nil {
+				tableName := node.ObjRef.GetObjName()
+				logutil.Infof("PIPELINE_CN GetExecType sysbench_db node triggers AP block_num=%d cost=%.0f threshold_block=%d threshold_cost=%d table=%s node_type=%s txn_have_ddl=%v",
+					stats.BlockNum, stats.Cost, BlockThresholdForOneCN, costThresholdForOneCN, tableName, node.NodeType.String(), txnHaveDDL)
+			}
 			if txnHaveDDL {
 				return ExecTypeAP_ONECN
 			} else {
@@ -2043,7 +2068,23 @@ func GetExecType(qry *plan.Query, txnHaveDDL bool, isPrepare bool) ExecType {
 			ret = ExecTypeAP_ONECN
 		}
 	}
+	if planHasSysbenchDb {
+		logutil.Infof("PIPELINE_CN GetExecType sysbench_db result=%s is_prepare=%v", execTypeStringForLog(ret), isPrepare)
+	}
 	return ret
+}
+
+func execTypeStringForLog(t ExecType) string {
+	switch t {
+	case ExecTypeTP:
+		return "TP"
+	case ExecTypeAP_ONECN:
+		return "AP_ONECN"
+	case ExecTypeAP_MULTICN:
+		return "AP_MULTICN"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 func GetPlanTitle(qry *plan.Query, txnHaveDDL bool) string {
