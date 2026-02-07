@@ -17,8 +17,10 @@ package disttae
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -1294,6 +1296,24 @@ func CollectAndCalculateStats(ctx context.Context, req *updateStatsRequest, exec
 	}
 	plan2.UpdateStatsInfo(info, baseTableDef, req.statsInfo)
 	plan2.AdjustNDV(info, baseTableDef, req.statsInfo)
+
+	// PIPELINE_CN sbtest1: log stats after update (root view of what stats are)
+	if baseTableDef.Name == "sbtest1" || strings.Contains(baseTableDef.Name, "sbtest1") {
+		shuffleStr := "nil"
+		if req.statsInfo.ShuffleRangeMap != nil {
+			parts := make([]string, 0, len(req.statsInfo.ShuffleRangeMap))
+			for col, sr := range req.statsInfo.ShuffleRangeMap {
+				if sr != nil {
+					parts = append(parts, fmt.Sprintf("%s:overlap=%.4f", col, sr.Overlap))
+				} else {
+					parts = append(parts, col+":nil")
+				}
+			}
+			shuffleStr = strings.Join(parts, ",")
+		}
+		logutil.Infof("PIPELINE_CN sbtest1 update_stats_done tableCnt=%.0f blockNum=%d ShuffleRangeMap=%s",
+			req.statsInfo.TableCnt, req.statsInfo.BlockNumber, shuffleStr)
+	}
 
 	for i, coldef := range baseTableDef.Cols[:len(baseTableDef.Cols)-1] {
 		colName := coldef.Name

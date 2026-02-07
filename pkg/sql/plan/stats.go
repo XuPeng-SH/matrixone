@@ -363,12 +363,29 @@ func UpdateStatsInfo(info *TableStatsInfo, tableDef *plan.TableDef, s *pb.StatsI
 
 		}
 
+		if tableDef.Name == "sbtest1" && info.ShuffleRanges[i] == nil {
+			logutil.Infof("PIPELINE_CN sbtest1 UpdateStatsInfo ShuffleRangeMap col=%s no_range (ShuffleRanges[i]==nil)", colName)
+		}
 		if info.ShuffleRanges[i] != nil {
-			if s.MinValMap[colName] != s.MaxValMap[colName] &&
+			canFill := s.MinValMap[colName] != s.MaxValMap[colName] &&
 				s.TableCnt > ShuffleThreshHoldOfNDV*2 &&
 				info.ColumnNDVs[i] >= ShuffleThreshHoldOfNDV &&
 				!util.JudgeIsCompositeClusterByColumn(colName) &&
-				colName != catalog.CPrimaryKeyColName {
+				colName != catalog.CPrimaryKeyColName
+			if tableDef.Name == "sbtest1" {
+				reason := "filled"
+				if !canFill {
+					reason = fmt.Sprintf("skip minEqMax=%v cntOk=%v ndvOk=%v composite=%v isPk=%v",
+						s.MinValMap[colName] == s.MaxValMap[colName],
+						s.TableCnt > ShuffleThreshHoldOfNDV*2,
+						info.ColumnNDVs[i] >= ShuffleThreshHoldOfNDV,
+						util.JudgeIsCompositeClusterByColumn(colName),
+						colName == catalog.CPrimaryKeyColName)
+				}
+				logutil.Infof("PIPELINE_CN sbtest1 UpdateStatsInfo ShuffleRangeMap col=%s %s tableCnt=%v ndv=%v",
+					colName, reason, s.TableCnt, info.ColumnNDVs[i])
+			}
+			if canFill {
 				info.ShuffleRanges[i].Eval()
 				info.ShuffleRanges[i].ReleaseUnused()
 				s.ShuffleRangeMap[colName] = info.ShuffleRanges[i]
@@ -1005,9 +1022,14 @@ func estimateFilterBlockSelectivity(ctx context.Context, expr *plan.Expr, tableD
 	if tableDef != nil {
 		tableName = tableDef.Name
 	}
+	isSbtest1 := tableName == "sbtest1" || strings.Contains(tableName, "sbtest1")
+	if isSbtest1 {
+		logutil.Infof("PIPELINE_CN sbtest1 calc_enter %s", formatStatsSummaryForSbtest1(s))
+	}
 	if !ExprIsZonemappable(ctx, expr) {
-		if tableName == "sbtest1" {
+		if isSbtest1 {
 			logutil.Infof("PIPELINE_CN sbtest1 block_sel zonemappable=false ret=1")
+			logutil.Infof("PIPELINE_CN sbtest1 calc_exit blockSel=1")
 		}
 		return 1
 	}
@@ -1023,10 +1045,14 @@ func estimateFilterBlockSelectivity(ctx context.Context, expr *plan.Expr, tableD
 		case 2:
 			blocksel = math.Min(blocksel, 0.7)
 		}
-		if tableName == "sbtest1" {
+		if isSbtest1 {
 			logutil.Infof("PIPELINE_CN sbtest1 block_sel sortOrder=%d blocksel=%.6f col=%s", sortOrder, blocksel, col.Name)
+			logutil.Infof("PIPELINE_CN sbtest1 calc_exit blockSel=%.6f", blocksel)
 		}
 		return blocksel
+	}
+	if isSbtest1 {
+		logutil.Infof("PIPELINE_CN sbtest1 calc_exit blockSel=1 no_col")
 	}
 	return 1
 }
@@ -1615,6 +1641,10 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 	if err != nil || s == nil {
 		return DefaultStats()
 	}
+	// PIPELINE_CN sbtest1: what stats plan sees when reading from ctx
+	if node.TableDef != nil && (node.TableDef.Name == "sbtest1" || strings.Contains(node.TableDef.Name, "sbtest1")) {
+		logutil.Infof("PIPELINE_CN sbtest1 stats_from_ctx %s", formatStatsSummaryForSbtest1(s))
+	}
 
 	stats := new(plan.Stats)
 	stats.TableCnt = s.TableCnt
@@ -2177,6 +2207,26 @@ func getOverlap(s *pb.StatsInfo, colname string) float64 {
 	return s.ShuffleRangeMap[colname].Overlap
 }
 
+// formatStatsSummaryForSbtest1 returns a short string for PIPELINE_CN sbtest1 logs only.
+func formatStatsSummaryForSbtest1(s *pb.StatsInfo) string {
+	if s == nil {
+		return "nil"
+	}
+	shuffleStr := "nil"
+	if s.ShuffleRangeMap != nil {
+		parts := make([]string, 0, len(s.ShuffleRangeMap))
+		for col, sr := range s.ShuffleRangeMap {
+			if sr != nil {
+				parts = append(parts, fmt.Sprintf("%s:%.4f", col, sr.Overlap))
+			} else {
+				parts = append(parts, col+":nil")
+			}
+		}
+		shuffleStr = strings.Join(parts, ",")
+	}
+	return fmt.Sprintf("tableCnt=%.0f blockNum=%d shuffle=%s", s.TableCnt, s.BlockNumber, shuffleStr)
+}
+
 func calcBlockSelectivityUsingShuffleRange(s *pb.StatsInfo, colname string, expr *plan.Expr, logTable string) float64 {
 	sel := expr.Selectivity
 	switch expr.GetF().Func.ObjName {
@@ -2186,7 +2236,18 @@ func calcBlockSelectivityUsingShuffleRange(s *pb.StatsInfo, colname string, expr
 		}
 		return sel
 	}
+	// Root-cause log: why overlap_low vs hasDynamicParam branch (only sbtest1)
 	overlap := getOverlap(s, colname)
+	hasShuffleRange := s != nil && s.ShuffleRangeMap != nil && s.ShuffleRangeMap[colname] != nil
+	thresholdThird := overlapThreshold / 3
+	if logTable == "sbtest1" {
+		branch := "hasDynamicParam_or_overlap_high"
+		if overlap < thresholdThird {
+			branch = "overlap_low"
+		}
+		logutil.Infof("PIPELINE_CN sbtest1 ShuffleRange root_cause col=%s hasShuffleRange=%v overlap=%.6f threshold_third=%.6f sel=%.6f branch_will_be=%s",
+			colname, hasShuffleRange, overlap, thresholdThird, sel, branch)
+	}
 	if overlap < overlapThreshold/3 {
 		if logTable == "sbtest1" {
 			logutil.Infof("PIPELINE_CN sbtest1 ShuffleRange overlap_low sel=%.6f ret=%.6f", sel, sel)
