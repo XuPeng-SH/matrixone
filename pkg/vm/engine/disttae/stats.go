@@ -1297,8 +1297,8 @@ func CollectAndCalculateStats(ctx context.Context, req *updateStatsRequest, exec
 	plan2.UpdateStatsInfo(info, baseTableDef, req.statsInfo)
 	plan2.AdjustNDV(info, baseTableDef, req.statsInfo)
 
-	// PIPELINE_CN sbtest1: log stats after update (root view of what stats are)
-	if baseTableDef.Name == "sbtest1" || strings.Contains(baseTableDef.Name, "sbtest1") {
+	// PIPELINE_CN sbtest: log stats after update for sbtest* tables (root view of what stats are)
+	if strings.HasPrefix(baseTableDef.Name, "sbtest") || strings.Contains(baseTableDef.Name, ".sbtest") {
 		shuffleStr := "nil"
 		if req.statsInfo.ShuffleRangeMap != nil {
 			parts := make([]string, 0, len(req.statsInfo.ShuffleRangeMap))
@@ -1311,8 +1311,8 @@ func CollectAndCalculateStats(ctx context.Context, req *updateStatsRequest, exec
 			}
 			shuffleStr = strings.Join(parts, ",")
 		}
-		logutil.Infof("PIPELINE_CN sbtest1 update_stats_done tableCnt=%.0f blockNum=%d ShuffleRangeMap=%s",
-			req.statsInfo.TableCnt, req.statsInfo.BlockNumber, shuffleStr)
+		logutil.Infof("PIPELINE_CN sbtest update_stats_done table=%s tableCnt=%.0f blockNum=%d ShuffleRangeMap=%s",
+			baseTableDef.Name, req.statsInfo.TableCnt, req.statsInfo.BlockNumber, shuffleStr)
 	}
 
 	for i, coldef := range baseTableDef.Cols[:len(baseTableDef.Cols)-1] {

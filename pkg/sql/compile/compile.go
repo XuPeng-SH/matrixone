@@ -836,11 +836,12 @@ func (c *Compile) compileQuery(qry *plan.Query) ([]*Scope, error) {
 		sort.Slice(c.cnList, func(i, j int) bool { return c.cnList[i].Addr < c.cnList[j].Addr })
 	}
 
-	// PIPELINE_CN: log for sbtest1 only to trace exec_type and cn_list
+	// PIPELINE_CN: log for sbtest* tables to trace exec_type and cn_list
 	if qry != nil {
 		for _, node := range qry.GetNodes() {
-			if node.ObjRef != nil && node.ObjRef.GetSchemaName() == "sysbench_db" && node.ObjRef.GetObjName() == "sbtest1" {
-				getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest1 compile exec_type and cn_list",
+			if node.ObjRef != nil && isSbtestTable(node.ObjRef.GetObjName()) {
+				getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest compile exec_type and cn_list",
+					zap.String("table", node.ObjRef.GetObjName()),
 					zap.String("exec_type", execTypeString(c.execType)),
 					zap.Int("cn_list_len", len(c.cnList)),
 					zap.Bool("is_prepare", c.isPrepare))
@@ -4111,7 +4112,12 @@ func execTypeString(t plan2.ExecType) string {
 	}
 }
 
-// logSysbenchOneCNChoice logs one-CN choice for sysbench_db with same stats as multi-CN log for comparison.
+// isSbtestTable returns true for table names with sbtest prefix (e.g. sbtest1, sbtest2).
+func isSbtestTable(name string) bool {
+	return name != "" && (strings.HasPrefix(name, "sbtest") || strings.Contains(name, ".sbtest"))
+}
+
+// logSysbenchOneCNChoice logs one-CN choice for sbtest* tables with same stats as multi-CN log for comparison.
 func logSysbenchOneCNChoice(c *Compile, schemaName, tableName, reason string, node *plan.Node, cnListLen int) {
 	blockNum, outcnt, cost := int32(0), float64(0), float64(0)
 	debugReason := ""
@@ -4119,7 +4125,8 @@ func logSysbenchOneCNChoice(c *Compile, schemaName, tableName, reason string, no
 		blockNum, outcnt, cost = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.Cost
 		debugReason = node.Stats.ForceOneCnDebugReason
 	}
-	getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest1 shouldScanOnCurrentCN=true will_use_one_cn",
+	getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest shouldScanOnCurrentCN=true will_use_one_cn",
+		zap.String("table", tableName),
 		zap.String("reason", reason),
 		zap.String("debug_reason", debugReason),
 		zap.String("exec_type", execTypeString(c.execType)),
@@ -4140,13 +4147,14 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 		tableName = node.ObjRef.GetObjName()
 	}
 
-	if schemaName == "sysbench_db" && tableName == "sbtest1" && node.NodeType == plan.Node_TABLE_SCAN {
+	if isSbtestTable(tableName) && node.NodeType == plan.Node_TABLE_SCAN {
 		blockNum, outcnt, forceOneCN, debugReason := int32(0), 0.0, false, ""
 		if node.Stats != nil {
 			blockNum, outcnt, forceOneCN = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.ForceOneCN
 			debugReason = node.Stats.ForceOneCnDebugReason
 		}
-		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest1 shouldScanOnCurrentCN input",
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest shouldScanOnCurrentCN input",
+			zap.String("table", tableName),
 			zap.Int("cn_list_len", len(c.cnList)),
 			zap.Int32("block_num", blockNum),
 			zap.Int32("threshold", int32(plan2.BlockThresholdForOneCN)),
@@ -4157,8 +4165,8 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 			zap.Bool("force_single_arg", forceSingle))
 	}
 
-	if schemaName == "sysbench_db" && tableName == "sbtest1" && node.Stats == nil {
-		getLogger(c.proc.GetService()).Warn("PIPELINE_CN sbtest1 node.Stats is nil", zap.String("node_type", node.NodeType.String()))
+	if isSbtestTable(tableName) && node.Stats == nil {
+		getLogger(c.proc.GetService()).Warn("PIPELINE_CN sbtest node.Stats is nil", zap.String("table", tableName), zap.String("node_type", node.NodeType.String()))
 	}
 
 	if len(c.cnList) == 1 ||
@@ -4172,7 +4180,7 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 		} else if forceSingle {
 			reason = "force_single"
 		}
-		if schemaName == "sysbench_db" && tableName == "sbtest1" && node.NodeType == plan.Node_TABLE_SCAN {
+		if isSbtestTable(tableName) && node.NodeType == plan.Node_TABLE_SCAN {
 			logSysbenchOneCNChoice(c, schemaName, tableName, reason, node, len(c.cnList))
 		}
 		return true
@@ -4180,18 +4188,19 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 
 	if !plan2.GetForceScanOnMultiCN() &&
 		node.Stats.BlockNum <= int32(plan2.BlockThresholdForOneCN) {
-		if schemaName == "sysbench_db" && tableName == "sbtest1" && node.NodeType == plan.Node_TABLE_SCAN {
+		if isSbtestTable(tableName) && node.NodeType == plan.Node_TABLE_SCAN {
 			logSysbenchOneCNChoice(c, schemaName, tableName, "block_threshold", node, len(c.cnList))
 		}
 		return true
 	}
 
-	if schemaName == "sysbench_db" && tableName == "sbtest1" {
+	if isSbtestTable(tableName) {
 		blockNum, outcnt, cost := int32(0), float64(0), float64(0)
 		if node.Stats != nil {
 			blockNum, outcnt, cost = node.Stats.BlockNum, node.Stats.Outcnt, node.Stats.Cost
 		}
-		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest1 shouldScanOnCurrentCN=false will_use_multi_cn",
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest shouldScanOnCurrentCN=false will_use_multi_cn",
+			zap.String("table", tableName),
 			zap.Int("cn_list_len", len(c.cnList)),
 			zap.Bool("force_scan_multi_cn", plan2.GetForceScanOnMultiCN()),
 			zap.Int32("block_num", blockNum),
@@ -4201,7 +4210,7 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 			zap.Int("filter_count", len(node.FilterList)),
 			zap.Bool("is_prepare", c.isPrepare))
 	}
-	if node.NodeType == plan.Node_TABLE_SCAN && schemaName == "sysbench_db" && tableName == "sbtest1" {
+	if node.NodeType == plan.Node_TABLE_SCAN && isSbtestTable(tableName) {
 		blockNum, outcnt, cost := int32(0), float64(0), float64(0)
 		reason := ""
 		if node.Stats != nil {
@@ -4215,7 +4224,8 @@ func shouldScanOnCurrentCN(c *Compile, node *plan.Node, forceSingle bool) bool {
 				reason = "plan_reason_empty:block_num_above_threshold_or_no_force_one_cn"
 			}
 		}
-		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest1 will_use_multi_cn",
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest will_use_multi_cn",
+			zap.String("table", tableName),
 			zap.String("reason", reason),
 			zap.String("exec_type", execTypeString(c.execType)),
 			zap.Int("cn_list_len", len(c.cnList)),
@@ -4281,18 +4291,17 @@ func (c *Compile) generateNodes(node *plan.Node) (engine.Nodes, error) {
 		return engNodes, nil
 	}
 
-	schemaName := ""
 	tableName := ""
 	if node.ObjRef != nil {
-		schemaName = node.ObjRef.GetSchemaName()
 		tableName = node.ObjRef.GetObjName()
 	}
-	if schemaName == "sysbench_db" && tableName == "sbtest1" {
+	if isSbtestTable(tableName) {
 		blockNum, outcnt := int32(0), float64(0)
 		if node.Stats != nil {
 			blockNum, outcnt = node.Stats.BlockNum, node.Stats.Outcnt
 		}
-		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest1 generateNodes scan_on_multi_cn",
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest generateNodes scan_on_multi_cn",
+			zap.String("table", tableName),
 			zap.Int("cn_count", len(c.cnList)),
 			zap.Int32("block_num", blockNum),
 			zap.Float64("outcnt", outcnt),
@@ -4302,8 +4311,9 @@ func (c *Compile) generateNodes(node *plan.Node) (engine.Nodes, error) {
 	if node.Stats != nil {
 		blockNum, outcnt = node.Stats.BlockNum, node.Stats.Outcnt
 	}
-	if schemaName == "sysbench_db" && tableName == "sbtest1" {
-		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest1 choice scan_on_multi_cn",
+	if isSbtestTable(tableName) {
+		getLogger(c.proc.GetService()).Info("PIPELINE_CN sbtest choice scan_on_multi_cn",
+			zap.String("table", tableName),
 			zap.Int("cn_count", len(c.cnList)),
 			zap.Int32("block_num", blockNum),
 			zap.Float64("outcnt", outcnt),
