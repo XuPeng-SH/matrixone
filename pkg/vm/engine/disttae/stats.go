@@ -17,10 +17,8 @@ package disttae
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"math"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -1272,6 +1270,29 @@ func collectTableStats(
 		}
 	}
 
+	// Debug: root-cause log for empty ShuffleRangeMap (point select block_num). Grep "stats collect ROOT_CAUSE" after reproduce to determine root cause.
+	tableName := req.tableDef.Name
+	if info.TableRowCount > 0 && exactObjectNumber > 0 {
+		if sampledObjectCount == 0 {
+			// ROOT CAUSE: table had visible objects but none were sampled -> Phase2 never ran -> ColumnNDVs never set -> all 0 -> no ShuffleRange.
+			logutil.Infof("stats collect ROOT_CAUSE table=%s exactObj=%d sampledObj=0 isSampling=%v actualRatio=%.4f tableRows=%.0f blockNum=%d reason=no_objects_sampled",
+				tableName, exactObjectNumber, isSampling, actualSamplingRatio, info.TableRowCount, info.BlockNumber)
+		} else if len(info.ColumnNDVs) > 0 {
+			allNdvZero := true
+			for _, ndv := range info.ColumnNDVs {
+				if ndv > 0 {
+					allNdvZero = false
+					break
+				}
+			}
+			if allNdvZero {
+				// ROOT CAUSE: had sampled objects but every column NDV ended 0 (object metadata Ndv()=0 or scaling).
+				logutil.Infof("stats collect ROOT_CAUSE table=%s exactObj=%d sampledObj=%d isSampling=%v actualRatio=%.4f tableRows=%.0f blockNum=%d reason=all_sampled_objects_ndv_zero_in_meta",
+					tableName, exactObjectNumber, sampledObjectCount, isSampling, actualSamplingRatio, info.TableRowCount, info.BlockNumber)
+			}
+		}
+	}
+
 	return actualSamplingRatio, nil
 }
 
@@ -1294,60 +1315,8 @@ func CollectAndCalculateStats(ctx context.Context, req *updateStatsRequest, exec
 	if err != nil {
 		return 0, err
 	}
-	// PIPELINE_CN sbtest: after collect, before UpdateStatsInfo - see why one table may have empty ShuffleRangeMap
-	if strings.HasPrefix(baseTableDef.Name, "sbtest") || strings.Contains(baseTableDef.Name, ".sbtest") {
-		parts := make([]string, 0, len(baseTableDef.Cols)-1)
-		for i, coldef := range baseTableDef.Cols[:len(baseTableDef.Cols)-1] {
-			hasRange := i < len(info.ShuffleRanges) && info.ShuffleRanges[i] != nil
-			parts = append(parts, fmt.Sprintf("%s:%v", coldef.Name, hasRange))
-		}
-		logutil.Infof("PIPELINE_CN sbtest collect_done table=%s ShuffleRanges_by_col=%s", baseTableDef.Name, strings.Join(parts, ","))
-		// For columns with no range, log why (so we know how to fix when collect_done shows all false)
-		for i, coldef := range baseTableDef.Cols[:len(baseTableDef.Cols)-1] {
-			if i >= len(info.ShuffleRanges) || info.ShuffleRanges[i] != nil {
-				continue
-			}
-			ndv := 0.0
-			if i < len(info.ColumnNDVs) {
-				ndv = info.ColumnNDVs[i]
-			}
-			threshold := 0.1 * float64(info.TableRowCount)
-			if threshold < 100 {
-				threshold = 100
-			}
-			oid := types.T_any
-			if i < len(info.DataTypes) {
-				oid = info.DataTypes[i].Oid
-			}
-			ndvMet := ndv > 100 || ndv > 0.1*float64(info.TableRowCount)
-			reason := "ndv_not_met"
-			if ndvMet {
-				reason = "type_unsupported_or_other"
-			}
-			logutil.Infof("PIPELINE_CN sbtest collect_skip_reason table=%s col=%s reason=%s ndv=%.0f threshold_0.1*rows=%.0f type_oid=%v",
-				baseTableDef.Name, coldef.Name, reason, ndv, 0.1*float64(info.TableRowCount), oid)
-		}
-	}
 	plan2.UpdateStatsInfo(info, baseTableDef, req.statsInfo)
 	plan2.AdjustNDV(info, baseTableDef, req.statsInfo)
-
-	// PIPELINE_CN sbtest: log stats after update for sbtest* tables (root view of what stats are)
-	if strings.HasPrefix(baseTableDef.Name, "sbtest") || strings.Contains(baseTableDef.Name, ".sbtest") {
-		shuffleStr := "nil"
-		if req.statsInfo.ShuffleRangeMap != nil {
-			parts := make([]string, 0, len(req.statsInfo.ShuffleRangeMap))
-			for col, sr := range req.statsInfo.ShuffleRangeMap {
-				if sr != nil {
-					parts = append(parts, fmt.Sprintf("%s:overlap=%.4f", col, sr.Overlap))
-				} else {
-					parts = append(parts, col+":nil")
-				}
-			}
-			shuffleStr = strings.Join(parts, ",")
-		}
-		logutil.Infof("PIPELINE_CN sbtest update_stats_done table=%s tableCnt=%.0f blockNum=%d ShuffleRangeMap=%s",
-			baseTableDef.Name, req.statsInfo.TableCnt, req.statsInfo.BlockNumber, shuffleStr)
-	}
 
 	for i, coldef := range baseTableDef.Cols[:len(baseTableDef.Cols)-1] {
 		colName := coldef.Name

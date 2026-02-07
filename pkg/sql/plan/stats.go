@@ -363,28 +363,12 @@ func UpdateStatsInfo(info *TableStatsInfo, tableDef *plan.TableDef, s *pb.StatsI
 
 		}
 
-		if isSbtestTable(tableDef.Name) && info.ShuffleRanges[i] == nil {
-			logutil.Infof("PIPELINE_CN sbtest UpdateStatsInfo table=%s col=%s no_range (ShuffleRanges[i]==nil)", tableDef.Name, colName)
-		}
 		if info.ShuffleRanges[i] != nil {
 			canFill := s.MinValMap[colName] != s.MaxValMap[colName] &&
 				s.TableCnt > ShuffleThreshHoldOfNDV*2 &&
 				info.ColumnNDVs[i] >= ShuffleThreshHoldOfNDV &&
 				!util.JudgeIsCompositeClusterByColumn(colName) &&
 				colName != catalog.CPrimaryKeyColName
-			if isSbtestTable(tableDef.Name) {
-				reason := "filled"
-				if !canFill {
-					reason = fmt.Sprintf("skip minEqMax=%v cntOk=%v ndvOk=%v composite=%v isPk=%v",
-						s.MinValMap[colName] == s.MaxValMap[colName],
-						s.TableCnt > ShuffleThreshHoldOfNDV*2,
-						info.ColumnNDVs[i] >= ShuffleThreshHoldOfNDV,
-						util.JudgeIsCompositeClusterByColumn(colName),
-						colName == catalog.CPrimaryKeyColName)
-				}
-				logutil.Infof("PIPELINE_CN sbtest UpdateStatsInfo table=%s col=%s %s tableCnt=%v ndv=%v",
-					tableDef.Name, colName, reason, s.TableCnt, info.ColumnNDVs[i])
-			}
 			if canFill {
 				info.ShuffleRanges[i].Eval()
 				info.ShuffleRanges[i].ReleaseUnused()
@@ -1614,10 +1598,6 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 	if err != nil || s == nil {
 		return DefaultStats()
 	}
-	// PIPELINE_CN sbtest: what stats plan sees when reading from ctx
-	if node.TableDef != nil && isSbtestTable(node.TableDef.Name) {
-		logutil.Infof("PIPELINE_CN sbtest stats_from_ctx table=%s %s", node.TableDef.Name, formatStatsSummaryForSbtest(s))
-	}
 
 	stats := new(plan.Stats)
 	stats.TableCnt = s.TableCnt
@@ -1662,10 +1642,6 @@ func calcScanStats(node *plan.Node, builder *QueryBuilder) *plan.Stats {
 	stats.Cost = stats.TableCnt * blockSel
 	stats.BlockNum = int32(float64(s.BlockNumber)*blockSel) + 1
 
-	if node.TableDef != nil && isSbtestTable(node.TableDef.Name) {
-		logutil.Infof("PIPELINE_CN sbtest stats_calc result table=%s total_blocks=%d block_sel=%.6f calculated_blocknum=%d selectivity=%.6f outcnt=%.2f filter_count=%d",
-			node.TableDef.Name, s.BlockNumber, blockSel, stats.BlockNum, stats.Selectivity, stats.Outcnt, len(node.FilterList))
-	}
 	// estimate average row size from collected table stats: sum(SizeMap)/TableCnt
 	// SizeMap stores approximate persisted bytes per column (using OriginSize); divide by total rows to get bytes/row
 	var totalSize uint64
@@ -2161,31 +2137,6 @@ func getOverlap(s *pb.StatsInfo, colname string) float64 {
 	return s.ShuffleRangeMap[colname].Overlap
 }
 
-// isSbtestTable returns true for table names with sbtest prefix (e.g. sbtest1, sbtest2, db.sbtest1).
-func isSbtestTable(name string) bool {
-	return name != "" && (strings.HasPrefix(name, "sbtest") || strings.Contains(name, ".sbtest"))
-}
-
-// formatStatsSummaryForSbtest returns a short string for PIPELINE_CN sbtest* logs only.
-func formatStatsSummaryForSbtest(s *pb.StatsInfo) string {
-	if s == nil {
-		return "nil"
-	}
-	shuffleStr := "nil"
-	if s.ShuffleRangeMap != nil {
-		parts := make([]string, 0, len(s.ShuffleRangeMap))
-		for col, sr := range s.ShuffleRangeMap {
-			if sr != nil {
-				parts = append(parts, fmt.Sprintf("%s:%.4f", col, sr.Overlap))
-			} else {
-				parts = append(parts, col+":nil")
-			}
-		}
-		shuffleStr = strings.Join(parts, ",")
-	}
-	return fmt.Sprintf("tableCnt=%.0f blockNum=%d shuffle=%s", s.TableCnt, s.BlockNumber, shuffleStr)
-}
-
 func calcBlockSelectivityUsingShuffleRange(s *pb.StatsInfo, colname string, expr *plan.Expr, logTable string) float64 {
 	sel := expr.Selectivity
 	switch expr.GetF().Func.ObjName {
@@ -2193,13 +2144,6 @@ func calcBlockSelectivityUsingShuffleRange(s *pb.StatsInfo, colname string, expr
 		return sel
 	}
 	overlap := getOverlap(s, colname)
-	hasShuffleRange := s != nil && s.ShuffleRangeMap != nil && s.ShuffleRangeMap[colname] != nil
-	thresholdThird := overlapThreshold / 3
-	branch := "hasDynamicParam_or_overlap_high"
-	if overlap < thresholdThird {
-		branch = "overlap_low"
-	}
-	logSbtestShuffleRangeRootCause(logTable, colname, hasShuffleRange, overlap, thresholdThird, sel, branch)
 	if overlap < overlapThreshold/3 {
 		return sel
 	}
@@ -2221,14 +2165,6 @@ func calcBlockSelectivityUsingShuffleRange(s *pb.StatsInfo, colname string, expr
 		ret = 1
 	}
 	return ret
-}
-
-// logSbtestShuffleRangeRootCause logs once per (table,col) for sbtest* to diagnose empty ShuffleRangeMap; call from estimateFilterBlockSelectivity when needed.
-func logSbtestShuffleRangeRootCause(logTable, colname string, hasShuffleRange bool, overlap, thresholdThird, sel float64, branch string) {
-	if isSbtestTable(logTable) {
-		logutil.Infof("PIPELINE_CN sbtest ShuffleRange table=%s root_cause col=%s hasShuffleRange=%v overlap=%.6f threshold_third=%.6f sel=%.6f branch_will_be=%s",
-			logTable, colname, hasShuffleRange, overlap, thresholdThird, sel, branch)
-	}
 }
 
 func (builder *QueryBuilder) canSkipStats() bool {
