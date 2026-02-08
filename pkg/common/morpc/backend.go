@@ -263,6 +263,8 @@ func NewRemoteBackend(
 	}
 
 	rb.active()
+	rb.logger.Info("pool_size_debug backend created",
+		zap.String("remote", rb.remote))
 	return rb, nil
 }
 

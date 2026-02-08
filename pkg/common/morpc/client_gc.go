@@ -359,6 +359,8 @@ func (m *clientGCManager) doGCInactivePeriodic() {
 	}
 	m.mu.RUnlock()
 
+	poolSizeDebugLog.Info("pool_size_debug doGCInactivePeriodic running",
+		zap.Int("client_count", len(clients)))
 	for _, c := range clients {
 		c.doRemoveInactiveAll()
 	}

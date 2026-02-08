@@ -76,6 +76,8 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,6 +90,8 @@ import (
 )
 
 var (
+	// poolSizeDebugLog is used for pool_size_debug add/remove so logs appear regardless of per-client logger level.
+	poolSizeDebugLog = logutil.GetGlobalLogger().Named("morpc-pool")
 	// DefaultRetryPolicy is the default retry policy for morpc client.
 	// It retries indefinitely (MaxRetries=0) with exponential backoff starting at 10ms,
 	// maxing out at 1s, with 20% jitter. The retry loop exits when context is cancelled.
@@ -1024,7 +1028,7 @@ func (c *client) createBackendWithBookkeeping(backend string, lock bool) (Backen
 	// Update metrics (same as existing creation path)
 	c.updatePoolSizeMetricsLocked()
 
-	c.logger.Info("pool_size_debug add",
+	poolSizeDebugLog.Info("pool_size_debug add",
 		zap.String("client", c.name),
 		zap.String("backend", backend),
 		zap.Int("pool_total", c.getPoolSizeLocked()),
@@ -1066,7 +1070,7 @@ func (c *client) doRemoveInactive(remote string) {
 
 	c.updatePoolSizeMetricsLocked()
 	if removed > 0 {
-		c.logger.Info("pool_size_debug remove",
+		poolSizeDebugLog.Info("pool_size_debug remove",
 			zap.String("client", c.name),
 			zap.String("remote", remote),
 			zap.Int("removed", removed),
@@ -1086,26 +1090,41 @@ func (c *client) doRemoveInactiveAll() {
 		return
 	}
 
+	var perRemoteDetail []string
 	totalRemoved := 0
 	for remote, backends := range c.mu.backends {
+		inactiveCnt := 0
 		newBackends := backends[:0]
 		for _, backend := range backends {
 			if backend.LastActiveTime() == (time.Time{}) {
+				inactiveCnt++
 				backend.Close()
 				continue
 			}
 			newBackends = append(newBackends, backend)
 		}
-		totalRemoved += len(backends) - len(newBackends)
+		removed := len(backends) - len(newBackends)
+		totalRemoved += removed
 		c.mu.backends[remote] = newBackends
+		if len(backends) > 0 {
+			perRemoteDetail = append(perRemoteDetail, remote+":total="+strconv.Itoa(len(backends))+",inactive="+strconv.Itoa(inactiveCnt)+",removed="+strconv.Itoa(removed))
+		}
 	}
 	c.updatePoolSizeMetricsLocked()
-	if totalRemoved > 0 {
-		c.logger.Info("pool_size_debug remove",
+	poolTotal := c.getPoolSizeLocked()
+
+	// Always log so we see GC ran and result (heartbeat every ~10s per client).
+	poolSizeDebugLog.Info("pool_size_debug doRemoveInactiveAll done",
+		zap.String("client", c.name),
+		zap.Int("pool_total", poolTotal),
+		zap.Int("removed", totalRemoved),
+		zap.String("reason", "doRemoveInactiveAll"))
+	// When nothing removed but pool has backends, log per-remote inactive to find why.
+	if totalRemoved == 0 && poolTotal > 0 && len(perRemoteDetail) > 0 {
+		poolSizeDebugLog.Info("pool_size_debug doRemoveInactiveAll no_removal_detail",
 			zap.String("client", c.name),
-			zap.Int("removed", totalRemoved),
-			zap.Int("pool_total", c.getPoolSizeLocked()),
-			zap.String("reason", "doRemoveInactiveAll"))
+			zap.Int("pool_total", poolTotal),
+			zap.String("per_remote", strings.Join(perRemoteDetail, "; ")))
 	}
 }
 
@@ -1133,7 +1152,7 @@ func (c *client) closeIdleBackends() int {
 	c.updatePoolSizeMetricsLocked()
 	idleCount := len(idleBackends)
 	if idleCount > 0 {
-		c.logger.Info("pool_size_debug remove",
+		poolSizeDebugLog.Info("pool_size_debug remove",
 			zap.String("client", c.name),
 			zap.Int("removed", idleCount),
 			zap.Int("pool_total", c.getPoolSizeLocked()),
@@ -1160,7 +1179,7 @@ func (c *client) createBackendLocked(backend string) (Backend, error) {
 	if _, ok := c.mu.ops[backend]; !ok {
 		c.mu.ops[backend] = &op{}
 	}
-	c.logger.Info("pool_size_debug add",
+	poolSizeDebugLog.Info("pool_size_debug add",
 		zap.String("client", c.name),
 		zap.String("backend", backend),
 		zap.Int("pool_total", c.getPoolSizeLocked()),
