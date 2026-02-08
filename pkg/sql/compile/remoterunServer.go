@@ -172,6 +172,7 @@ func handlePipelineMessage(receiver *messageReceiverOnServer) error {
 		// because we need to receive the error from dispatchProc.DispatchNotifyCh.
 		case err = <-infoToDispatchOperator.Err:
 		}
+		logutil.GetGlobalLogger().Info("pool_diag server_send_end", zap.Uint64("message_id", receiver.messageId), zap.String("message_typ", "PrepareDoneNotify"))
 		return err
 
 	case pipeline.Method_PipelineMessage:

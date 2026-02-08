@@ -30,6 +30,7 @@ import (
 	commonutil "github.com/matrixorigin/matrixone/pkg/common/util"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	pbpipeline "github.com/matrixorigin/matrixone/pkg/pb/pipeline"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -323,6 +324,15 @@ func (s *Scope) MergeRun(c *Compile) error {
 	var notifyMessageResultReceiveChan chan notifyMessageResult
 	if len(s.RemoteReceivRegInfos) > 0 {
 		notifyMessageResultReceiveChan = make(chan notifyMessageResult, len(s.RemoteReceivRegInfos))
+		// pool_diag: multi-CN pipeline (dispatch to remote receivers)
+		remoteAddrs := make([]string, 0, len(s.RemoteReceivRegInfos))
+		for i := range s.RemoteReceivRegInfos {
+			remoteAddrs = append(remoteAddrs, s.RemoteReceivRegInfos[i].FromAddr)
+		}
+		logutil.GetGlobalLogger().Info("pool_diag multi_cn_pipeline",
+			zap.Int("remote_receivers", len(s.RemoteReceivRegInfos)),
+			zap.Strings("remote_addrs", remoteAddrs),
+			zap.String("scope_tree", DebugShowScopes([]*Scope{s}, OldLevel)))
 		s.sendNotifyMessage(&wg, notifyMessageResultReceiveChan)
 	}
 
@@ -851,6 +861,7 @@ func (s *Scope) sendNotifyMessage(wg *sync.WaitGroup, resultChan chan notifyMess
 					fromAddr,
 					s.Proc.Mp(),
 					nil,
+					"notify",
 				)
 				if err != nil {
 					closeWithError(err, s.Proc.Reg.MergeReceivers[receiverIdx], nil)
@@ -882,6 +893,8 @@ func (s *Scope) sendNotifyMessage(wg *sync.WaitGroup, resultChan chan notifyMess
 }
 
 func receiveMsgAndForward(sender *messageSenderOnClient, forwardCh chan process.PipelineSignal) error {
+	logutil.GetGlobalLogger().Info("pool_diag notify_wait_end_enter", zap.Uint64("stream_id", sender.streamSender.ID()))
+	defer logutil.GetGlobalLogger().Info("pool_diag notify_wait_end_exit", zap.Uint64("stream_id", sender.streamSender.ID()))
 	for {
 		bat, end, err := sender.receiveBatch()
 		if err != nil || end || bat == nil {

@@ -263,8 +263,6 @@ func NewRemoteBackend(
 	}
 
 	rb.active()
-	rb.logger.Info("pool_size_debug backend created",
-		zap.String("remote", rb.remote))
 	return rb, nil
 }
 
@@ -427,8 +425,6 @@ func (rb *remoteBackend) Close() {
 	rb.stopper.Stop()
 	rb.doClose()
 	rb.inactive()
-	rb.logger.Info("pool_size_debug backend closed (inactive)",
-		zap.String("remote", rb.remote))
 }
 
 func (rb *remoteBackend) Busy() bool {

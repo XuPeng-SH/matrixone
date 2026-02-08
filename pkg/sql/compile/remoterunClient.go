@@ -32,6 +32,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/dispatch"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/value_scan"
 	"github.com/matrixorigin/matrixone/pkg/sql/models"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm"
@@ -77,6 +78,7 @@ func (s *Scope) remoteRun(c *Compile) (sender *messageSenderOnClient, err error)
 		s.NodeInfo.Addr,
 		s.Proc.Mp(),
 		c.anal,
+		"remote_run",
 	)
 	if err != nil {
 		c.proc.Errorf(s.Proc.Ctx, "Failed to newMessageSenderOnClient sql=%s, txnID=%s, err=%v",
@@ -354,6 +356,7 @@ func newMessageSenderOnClient(
 	toAddr string,
 	mp *mpool.MPool,
 	analyzeModule *AnalyzeModule,
+	caller string, // "remote_run" or "notify" for pool_diag
 ) (*messageSenderOnClient, error) {
 	streamSender, err := cnclient.GetPipelineClient(sid).NewStream(ctx, toAddr)
 	if err != nil {
@@ -382,6 +385,7 @@ func newMessageSenderOnClient(
 	// when Receive() fails, remoteRun returns nil and never calls close(), so we must not Inc() to avoid gauge leak.
 	if err == nil {
 		v2.PipelineMessageSenderGauge.Inc()
+		logutil.GetGlobalLogger().Info("pool_diag sender_created", zap.String("caller", caller), zap.String("toAddr", toAddr), zap.Uint64("stream_id", streamSender.ID()))
 	}
 	return sender, moerr.AttachCause(ctx, err)
 }
@@ -558,6 +562,7 @@ func (sender *messageSenderOnClient) close() {
 	// alreadyClose is true (stream already closed by remote); otherwise we'd leak the gauge.
 	defer sender.gaugeDecOnce.Do(func() { v2.PipelineMessageSenderGauge.Dec() })
 
+	logutil.GetGlobalLogger().Info("pool_diag sender_closed", zap.Uint64("stream_id", sender.streamSender.ID()))
 	sender.waitingTheStopResponse()
 
 	if sender.ctxCancel != nil {

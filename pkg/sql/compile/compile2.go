@@ -17,12 +17,14 @@ package compile
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	gotrace "runtime/trace"
 	"strings"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	commonutil "github.com/matrixorigin/matrixone/pkg/common/util"
+	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -45,6 +47,17 @@ type runSQLCoordinator interface {
 
 type runSQLCoordinatorWithSQL interface {
 	CancelAndWaitRunningSQLWithSQL(ctx context.Context, keepToken uint64, currentSQL string) error
+}
+
+// isSbtestQuery returns true if sql references any of sbtest1..sbtest10 (for pool_diag logging).
+func isSbtestQuery(sql string) bool {
+	lower := strings.ToLower(sql)
+	for i := 1; i <= 10; i++ {
+		if strings.Contains(lower, fmt.Sprintf("sbtest%d", i)) {
+			return true
+		}
+	}
+	return false
 }
 
 // I create this file to store the two most important entry functions for the Compile struct and their helper functions.
@@ -141,6 +154,13 @@ func (c *Compile) Compile(
 		if len(s.NodeInfo.Addr) == 0 {
 			s.NodeInfo.Addr = c.addr
 		}
+	}
+
+	// pool_diag: log scope tree for sbtest1..sbtest10 at compile time
+	if isSbtestQuery(c.sql) && len(c.scopes) > 0 {
+		logutil.GetGlobalLogger().Info("pool_diag sbtest_compile_scope",
+			zap.String("sql", commonutil.Abbreviate(c.sql, 300)),
+			zap.String("scope_tree", DebugShowScopes(c.scopes, OldLevel)))
 	}
 
 	return c.proc.GetQueryContextError()
@@ -320,6 +340,15 @@ func (c *Compile) Run(_ uint64) (queryResult *util2.RunResult, err error) {
 	//if !isInExecutor {
 	c.AnalyzeExecPlan(runC, queryResult, stats, isExplainPhyPlan, option)
 	//}
+
+	// pool_diag: log physical plan for sbtest1..sbtest10 queries
+	if isSbtestQuery(executeSQL) && c.anal != nil && c.anal.GetPhyPlan() != nil {
+		if buf := makeExplainPhyPlanBuffer(c.scopes, queryResult, stats, c.anal, &ExplainOption{}); buf != nil {
+			logutil.GetGlobalLogger().Info("pool_diag sbtest_phy_plan",
+				zap.String("sql", commonutil.Abbreviate(executeSQL, 300)),
+				zap.String("phy_plan", buf.String()))
+		}
+	}
 
 	return queryResult, err
 }
