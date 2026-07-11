@@ -16,10 +16,9 @@ package disttae
 
 import (
 	"context"
+	"sync"
 	"testing"
-	"time"
 
-	"github.com/matrixorigin/matrixone/pkg/clusterservice"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
@@ -27,12 +26,12 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
-	"github.com/matrixorigin/matrixone/pkg/shardservice"
+	"github.com/matrixorigin/matrixone/pkg/testutil"
 	"github.com/matrixorigin/matrixone/pkg/txn/client"
 	"github.com/matrixorigin/matrixone/pkg/txn/rpc"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae/cache"
-	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newTxnTableForTest() *txnTable {
@@ -91,72 +90,84 @@ func makeBatchForTest(
 	return bat
 }
 
-func TestTxnTable_Reset(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func TestReusableRelationHandleResetDoesNotMutateSharedTable(t *testing.T) {
+	oldCanonical := newTxnTableForTest()
+	oldCanonical.accountId = 0
+	oldCanonical.tableId = 42
+	oldCanonical.tableName = "t"
+	oldCanonical.db.accountId = 0
+	oldCanonical.db.databaseId = 10
+	oldCanonical.db.databaseName = "db"
 
-	t.Run("nil workspace", func(t *testing.T) {
-		tbl := newTxnTableForTest()
-		newOp, closeFn := client.NewTestTxnOperator(ctx)
-		defer closeFn()
-		assert.Error(t, tbl.Reset(newOp))
+	shared := &txnTableDelegate{origin: oldCanonical}
+	shared.isLocal = shared.isLocalFunc
+	require.Error(t, shared.Reset(oldCanonical.db.op))
+
+	handle1 := shared.NewRelationHandle().(*txnTableDelegate)
+	handle2 := shared.NewRelationHandle().(*txnTableDelegate)
+	require.NotSame(t, shared, handle1)
+	require.Same(t, oldCanonical, handle1.origin)
+
+	ctx := context.Background()
+	newOp, closeFn := client.NewTestTxnOperator(ctx)
+	defer closeFn()
+	newProc := testutil.NewProc(t)
+	defer newProc.Free()
+	newTxn := &Transaction{
+		op:          newOp,
+		proc:        newProc,
+		engine:      oldCanonical.eng.(*Engine),
+		tableCache:  new(sync.Map),
+		tableOps:    newTableOps(),
+		databaseOps: newDbOps(),
+	}
+	newOp.AddWorkspace(newTxn)
+
+	newDB := &txnDatabase{
+		accountId:    0,
+		databaseId:   10,
+		databaseName: "db",
+		op:           newOp,
+	}
+	newCanonical := &txnTable{
+		accountId: 0,
+		tableId:   42,
+		tableName: "t",
+		db:        newDB,
+		eng:       oldCanonical.eng,
+		lastTS:    newOp.SnapshotTS(),
+	}
+	newCanonical.proc.Store(newProc)
+	newShared := &txnTableDelegate{origin: newCanonical}
+	newShared.isLocal = newShared.isLocalFunc
+	newTxn.tableCache.Store(genTableKey(0, "t", 10, "db"), newShared)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, handle := range []*txnTableDelegate{handle1, handle2} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- handle.Reset(newOp)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	require.Same(t, oldCanonical, shared.origin)
+	require.Same(t, newCanonical, handle1.origin)
+	require.Same(t, newCanonical, handle2.origin)
+	require.Same(t, newCanonical, newShared.origin)
+
+	var resetErr error
+	allocs := testing.AllocsPerRun(100, func() {
+		resetErr = handle1.Reset(newOp)
 	})
-
-	t.Run("ok", func(t *testing.T) {
-		tbl := newTxnTableForTest()
-		newOp, closeFn := client.NewTestTxnOperator(ctx)
-		defer closeFn()
-		newProc := &process.Process{}
-		newOp.AddWorkspace(&Transaction{
-			proc: newProc,
-		})
-		assert.NoError(t, tbl.Reset(newOp))
-		assert.Equal(t, newOp, tbl.db.op)
-		assert.Equal(t, newProc, tbl.proc.Load())
-	})
-
-	t.Run("delegate", func(t *testing.T) {
-		op, closeFn := client.NewTestTxnOperator(ctx)
-		defer closeFn()
-		proc := &process.Process{
-			Base: &process.BaseProcess{},
-		}
-		op.AddWorkspace(&Transaction{
-			proc: proc,
-		})
-		orig, err := newTxnTable(ctx, &txnDatabase{
-			op: op,
-		}, cache.TableItem{})
-		assert.NoError(t, err)
-		rt := runtime.DefaultRuntime()
-		runtime.SetupServiceBasedRuntime("s1", rt)
-		mc := clusterservice.NewMOCluster("s1", nil, time.Second,
-			clusterservice.WithDisableRefresh())
-		rt.SetGlobalVariables(runtime.ClusterService, mc)
-		st := shardservice.NewShardStorage("", rt.Clock(), nil, nil, nil, nil)
-		sv := shardservice.NewService(shardservice.Config{
-			ServiceID: "s1",
-		}, st)
-		tbl, err := MockTableDelegate(orig, sv)
-		assert.NoError(t, err)
-		assert.NotNil(t, tbl)
-
-		newOp, closeFn1 := client.NewTestTxnOperator(ctx)
-		defer closeFn1()
-		newProc := &process.Process{
-			Base: &process.BaseProcess{},
-		}
-		newOp.AddWorkspace(&Transaction{
-			proc: newProc,
-		})
-		assert.NoError(t, tbl.Reset(newOp))
-
-		tbl.(*txnTableDelegate).combined.is = true
-		tbl.(*txnTableDelegate).combined.tbl = &combinedTxnTable{
-			primary: newTxnTableForTest(),
-		}
-		assert.NoError(t, tbl.Reset(newOp))
-	})
+	require.NoError(t, resetErr)
+	require.Zero(t, allocs, "steady-state relation handle reset must not allocate")
 }
 
 // func TestPrimaryKeyCheck(t *testing.T) {

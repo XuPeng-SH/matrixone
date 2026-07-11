@@ -2910,17 +2910,13 @@ func (c *Compile) compileTableScanDataSource(s *Scope) error {
 		}
 		rel, err = db.Relation(ctx, node.TableDef.Name, c.proc)
 		if err != nil {
-			if txnOp.IsSnapOp() {
-				return err
-			}
 			return err
 		}
-		tblDef = rel.GetTableDef(ctx)
-		s.DataSource.Rel = rel
-	} else {
-		s.DataSource.Rel.Reset(txnOp)
-		tblDef = s.DataSource.Rel.GetTableDef(ctx)
+		s.DataSource.Rel = engine.NewRelationHandle(rel)
+	} else if err = s.DataSource.Rel.Reset(txnOp); err != nil {
+		return err
 	}
+	tblDef = s.DataSource.Rel.GetTableDef(ctx)
 
 	if len(node.FilterList) != len(s.DataSource.FilterList) {
 		s.DataSource.FilterList = plan2.DeepCopyExprList(node.FilterList)

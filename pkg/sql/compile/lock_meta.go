@@ -74,6 +74,8 @@ func (l *LockMeta) clear(proc *process.Process) {
 	l.lockMetaVecs = nil
 	l.lockDbVec = nil
 	l.lockTableVec = nil
+	l.database_rel = nil
+	l.table_rel = nil
 }
 
 func (l *LockMeta) appendMetaTables(objRes *plan.ObjectRef) {
@@ -211,9 +213,10 @@ func (l *LockMeta) lockMetaRows(e engine.Engine, proc *process.Process, rel engi
 
 func (l *LockMeta) initLockExe(e engine.Engine, proc *process.Process) error {
 	if l.lockTableExe != nil {
-		l.table_rel.Reset(proc.GetTxnOperator())
-		l.database_rel.Reset(proc.GetTxnOperator())
-		return nil
+		if err := l.table_rel.Reset(proc.GetTxnOperator()); err != nil {
+			return err
+		}
+		return l.database_rel.Reset(proc.GetTxnOperator())
 	}
 
 	accountTyp := types.T_uint32.ToType()
@@ -274,15 +277,17 @@ func (l *LockMeta) initLockExe(e engine.Engine, proc *process.Process) error {
 	if err != nil {
 		return err
 	}
-	l.database_table_id = rel.GetTableID(proc.Ctx)
-	l.database_rel = rel
+	databaseRel := engine.NewRelationHandle(rel)
 
 	rel, err = dbSource.Relation(proc.Ctx, catalog.MO_TABLES, nil)
 	if err != nil {
 		return err
 	}
+
+	l.database_table_id = databaseRel.GetTableID(proc.Ctx)
+	l.database_rel = databaseRel
 	l.table_table_id = rel.GetTableID(proc.Ctx)
-	l.table_rel = rel
+	l.table_rel = engine.NewRelationHandle(rel)
 
 	return nil
 }

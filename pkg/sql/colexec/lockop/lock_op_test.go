@@ -1376,12 +1376,14 @@ func TestLockOpResetClearsLockCount(t *testing.T) {
 	arg.ctr.lockCount = 7
 	arg.ctr.defChanged = true
 	arg.ctr.retryError = moerr.NewTxnNeedRetryNoCtx()
+	arg.ctr.relations = []engine.Relation{nil}
 
 	arg.Reset(nil, false, nil)
 
 	require.Equal(t, int64(0), arg.ctr.lockCount)
 	require.False(t, arg.ctr.defChanged)
 	require.Nil(t, arg.ctr.retryError)
+	require.Len(t, arg.ctr.relations, 1)
 }
 
 func runLockNonBlockingOpTest(

@@ -114,8 +114,7 @@ func (lockOp *LockOp) Prepare(proc *process.Process) error {
 	} else {
 		for i, target := range lockOp.targets {
 			if target.objRef != nil {
-				err := lockOp.ctr.relations[i].Reset(proc.GetTxnOperator())
-				if err != nil {
+				if err := lockOp.ctr.relations[i].Reset(proc.GetTxnOperator()); err != nil {
 					return err
 				}
 			}
