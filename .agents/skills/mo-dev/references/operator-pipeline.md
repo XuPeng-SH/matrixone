@@ -42,6 +42,11 @@ Test output must be from the current turn:
 2. Exit code is 0.
 3. Timestamp is after the last edit.
 
+For concurrency/lifecycle regressions, also apply
+[the regression-test design gate](../../mo-self-review/references/regression-test-design.md).
+Encode observable partial order rather than scheduler timing, assert the complete
+terminal state, and keep test cleanup safe on assertion failure.
+
 ### Completion Gate
 
 Before declaring a change done, all boxes must be checked:
@@ -54,14 +59,17 @@ Before declaring a change done, all boxes must be checked:
 □ Regression: at least one test from dependent package passes
 ```
 
-Hang = failure. If `go test` produces more than 10s of no output, investigate.
+An actual hang is a failure. No-output duration alone is not proof: first identify
+whether Go is compiling, CGo is linking, the test binary is starting, or the test
+body is blocked. Use timeout stacks and the concrete wait chain to diagnose a test
+hang; use a CI-appropriate command timeout only as the final guard.
 
 ## 3. Fault Diagnosis
 
 | Symptom | Look At |
 |---------|---------|
 | Test hangs exactly 30s | `CloseWithTimeout` waiting for nil-batch that never arrives. Check if typed signals are being sent instead. |
-| Test hangs >5s, no output | Deadlock or blocking channel send. Check whether `done` channel is closed and whether `sendSignal` uses non-blocking `select`. |
+| Test body starts, then stops making progress | Check timeout stacks, `done` closure, and blocking sends after excluding compile/link/startup latency. |
 | `context deadline exceeded` after 30s | `WaitingEndWithTimeout` timed out. Check whether all senders called `Reset()` and sent typed terminal signals. |
 | `CGO_CFLAGS` not working | Run `go env CGO_CFLAGS` to verify. Use `export` if the package has sub-packages. |
 
@@ -94,3 +102,4 @@ When sending terminal signals into a bounded channel, the send may fail because 
 5. Never assume `go build` success means `go test` will pass.
 6. Never skip bottom-up testing.
 7. Never add per-algorithm `switch`/`if` on index algo names in the SQL layer. Route through `indexplugin.Get(algo)`.
+8. Never use `time.Sleep` or a short timeout to establish concurrent ordering; use observable lifecycle state or synchronization events.

@@ -19,6 +19,7 @@ Load only the reference needed for the task:
 | CGo link/header/runtime errors, layered testing, "pre-existing" test claims, GPU/cuVS/CUDA builds | [references/cgo-build-test.md](references/cgo-build-test.md) |
 | `colexec` operator edits, `process` signal types, pipeline spools, Call/Reset cleanup, hung tests | [references/operator-pipeline.md](references/operator-pipeline.md) |
 | Vector/fulltext index algorithm work, plugin registry, GPU-only algorithm registration, index-plugin review | [references/index-plugin.md](references/index-plugin.md) |
+| Deterministic concurrency/lifecycle regressions, test overfitting, slow-CI-safe timeouts | [mo-self-review regression-test design](../mo-self-review/references/regression-test-design.md) |
 
 ## Enforcement Gates
 
@@ -32,7 +33,8 @@ Consult the referenced material before acting:
 | **G-IDXPLUGIN** | Before adding/editing an index-algorithm plugin, OR adding any `switch`/`if` on an index **algo** name in `pkg/sql/{compile,plan}` or `pkg/catalog` | Read [index-plugin.md](references/index-plugin.md). Route through `pkg/indexplugin`; new algo switches are forbidden. |
 | **G-IDXREVIEW** | Reviewing a diff that touches index-algorithm dispatch, `pkg/vectorindex/<algo>/plugin/`, `pkg/fulltext/plugin`, or `pkg/indexplugin` | Read [index-plugin.md](references/index-plugin.md) section 9 and run its greps. |
 | **G-DONE** | Before declaring "done"/"complete"/"passes" | Apply the completion gate below. |
-| **G-TEST-FAIL** | `go test` returns non-zero or hangs >10s | Read [operator-pipeline.md](references/operator-pipeline.md) section 4 and [cgo-build-test.md](references/cgo-build-test.md) section 4 before attributing cause. |
+| **G-TEST-FAIL** | `go test` returns non-zero or appears stalled | First classify compile, link, startup, or test-body phase. Then read [operator-pipeline.md](references/operator-pipeline.md) sections 2–4 and [cgo-build-test.md](references/cgo-build-test.md) sections 3–4 before attributing cause. Silence alone is not a hang verdict. |
+| **G-TEST-DESIGN** | Adding/changing a concurrency, lifecycle, cancellation, restart, or cleanup regression | Apply [mo-self-review regression-test design](../mo-self-review/references/regression-test-design.md). Require deterministic ordering, terminal-closure assertions, cleanup-safe test code, and CI-stable guards. |
 
 ## Project Structure
 
@@ -104,7 +106,10 @@ Before declaring any MatrixOne code change done, check all boxes:
 □ Regression: at least one test from dependent package passes
 ```
 
-Hang = failure. If `go test` produces >10s of no output, investigate instead of calling it slow.
+An actual hang is a failure, but silence alone does not prove one. Identify whether
+the command is compiling, CGo-linking, starting the test binary, or blocked inside
+a test. Use a CI-appropriate command timeout as a final guard and diagnose a test
+hang from timeout stacks or wait-chain evidence.
 
 Hard rule: never claim a failure is "pre-existing" without proving it from clean HEAD. Use the stash protocol in [references/cgo-build-test.md](references/cgo-build-test.md) section 4.
 
@@ -113,7 +118,7 @@ Hard rule: never claim a failure is "pre-existing" without proving it from clean
 | Symptom | First Place To Look |
 |---------|---------------------|
 | Test hangs exactly 30s | `CloseWithTimeout` waiting for nil-batch that never arrives. Read [operator-pipeline.md](references/operator-pipeline.md). |
-| Test hangs >5s, no output | Deadlock or blocking channel send. Check `done` channel and non-blocking `select`. |
+| Test body starts, then stops making progress | Inspect timeout stacks and wait chains for deadlock or blocking channel sends; first exclude compile/link/startup latency. |
 | `context deadline exceeded` after 30s | Did all senders call `Reset()` and send typed terminal signals? |
 | `fatal error: 'xxhash.h' file not found` | `CGO_CFLAGS`; read [cgo-build-test.md](references/cgo-build-test.md). |
 | `Undefined symbols` / `undefined symbol:` | `CGO_LDFLAGS` and stale `libusearch_c`; read [cgo-build-test.md](references/cgo-build-test.md). |
@@ -129,3 +134,4 @@ Hard rule: never claim a failure is "pre-existing" without proving it from clean
 5. Never assume `go build` success means `go test` will pass.
 6. Never skip bottom-up testing: pure Go -> CGo-transitive -> CGo-direct.
 7. Never add a per-algorithm `switch`/`if` on an index algo name in the SQL layer. Route through `indexplugin.Get(algo)`.
+8. Never use sleeps, short timeouts, or wall-clock performance assertions to prove functional concurrency correctness.

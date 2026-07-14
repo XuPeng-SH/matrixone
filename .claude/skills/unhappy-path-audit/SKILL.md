@@ -80,6 +80,24 @@ For each Layer:
 Output: final risk matrix + Bug list
 ```
 
+### Phase 4 — Fix Verification (when implementation is in scope)
+
+For each fixed Q1/Q2/Q3 bug, require a deterministic regression that reaches the
+broken terminal chain and proves it is repaired. Apply the regression-test gate in
+[mo-self-review's test-design reference](../mo-self-review/references/regression-test-design.md):
+
+1. Do not use sleeps or short timeouts to manufacture ordering.
+2. Assert absence of retained ownership, waiters, or unbounded growth after the
+   operation, not only the immediate error/result.
+3. Exercise the opposite linearization order and the next generation/reuse when
+   relevant.
+4. Audit the test itself with Q1–Q3: locks/resources release on assertion failure,
+   helper goroutines terminate, receives/retries are bounded, and accumulated test
+   state is recycled.
+
+If the task is audit/report only, recommend this verification shape without
+modifying code.
+
 ---
 
 ## Output Format
@@ -121,7 +139,7 @@ Entry
 
 1. **Anti-confirmation-bias**: prove "definitely leaks/hangs", not "looks like it might" — exhaust all bypass paths before ruling
 2. **Batch hard limit**: ≤ 6 read_file per batch, must output audit conclusion for that batch before continuing
-3. **Exit self-check**: before ending the turn confirm — ①conclusion in first paragraph ②audit table present ③Bug has Issue
+3. **Exit self-check**: before ending the turn confirm — ①conclusion in first paragraph ②audit table present ③Bug has Issue ④when a fix is in scope, its regression passes Phase 4
 4. **Drill-down discipline**: when termination condition is not satisfied, mark "pending drill-down", do not speculate at the current layer
 
 ### Bug Claim Verification Checklist (BEFORE filing ANY bug)

@@ -126,6 +126,27 @@ go test -ldflags="-extldflags '-L$(pwd)/cgo -lmo -L$(pwd)/thirdparties/install/l
 
 Bottom-up testing matters: pure Go tests finish in seconds with zero env setup. If they fail, the problem is in code, not CGo.
 
+### Classify Silence Before Diagnosing A Hang
+
+A `go test` command has distinct phases: Go compile, C/C++ compile, external link,
+test-binary startup, and test-body execution. CGo cold builds and links can be slow
+and silent on loaded CI workers. No-output duration alone does not identify the
+phase and must not be reported as a deadlock or a pass.
+
+Use these signals:
+
+| Evidence | Conclusion |
+|----------|------------|
+| Compiler/linker child process is active | Build/link is still in progress; continue within the command's CI budget |
+| A named test started and Go timeout prints goroutine stacks | Diagnose the test-body wait chain |
+| Command exits non-zero with link/header/loader output | Diagnose the CGo environment using §2 |
+| Command exits zero | Test passed; intermediate silence is irrelevant |
+
+Set the command timeout from the package's observed cost and the slower CI
+environment. Use it as a final termination guard, never as synchronization inside
+the test. Do not add small wall-clock upper bounds to functional tests; performance
+requirements belong in calibrated benchmarks or explicit SLO tests.
+
 ### `go build` vs `go test` Is Not Equivalent
 
 | Command | CGo Behavior |

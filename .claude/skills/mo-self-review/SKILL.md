@@ -9,6 +9,11 @@ metadata:
 
 Compatibility: designed for Codex CLI and compatible agents. Requires a git working tree with a diff vs the base branch and the unhappy-path-audit skill (for Q1-Q3 depth).
 
+Reference: when the diff adds or changes regression tests for correctness—especially
+concurrency, lifecycle, cancellation, restart, or cleanup—read
+[references/regression-test-design.md](references/regression-test-design.md) before
+writing or accepting the test.
+
 ## Running this skill IS the review (don't retype the long prompt)
 
 Invoking this skill — `/mo-self-review [target]` or the Skill tool — **runs the
@@ -64,6 +69,7 @@ stream of nitpicks.
 | Gate | When | Action |
 |------|------|--------|
 | **G-SELF-REVIEW** | Before `git push`, before opening/updating a PR, or before declaring a change "done" | Run §1–§4 over the full diff, apply §5 convergence discipline, then check the §7 exit gate. Do not push until it passes. |
+| **G-REGRESSION-DESIGN** | A change fixes a correctness/concurrency/lifecycle bug or adds a regression test | Apply the regression-test gate in §4 and read [references/regression-test-design.md](references/regression-test-design.md). Reject tests that depend on scheduler luck, distort production design, or prove only the immediate return value. |
 
 Scope = the complete diff vs the base branch (`git diff <base>...HEAD` + staged/unstaged), **not** just the last file you touched.
 
@@ -127,6 +133,32 @@ diff touches:
 Apply its 5-gate false-positive filter (G1 full-graph, G2 can-fail, G3 symmetry,
 G4 line-reread, G5 calibrate-last) before keeping any finding.
 
+### Regression-test gate
+
+For every correctness, concurrency, lifecycle, cancellation, restart, or cleanup
+fix, require a regression test unless infeasible; record the reason when infeasible.
+Before accepting the test, verify all of the following:
+
+1. State the invariant and the old concrete failure before choosing the test shape.
+2. Establish concurrent ordering with observable state, channels, barriers, or real
+   lifecycle transitions. Never use sleeps or a short timeout as synchronization.
+3. Keep the production design neutral: prefer public behavior, then real internal
+   transitions, then an existing injection seam. Do not add production hooks or
+   reshape locking solely to manufacture an interleaving.
+4. Assert the terminal closure, not only the returned error: ownership, counts,
+   queues, capacity, terminal state, and later reuse/restart as applicable.
+5. Cover both relevant linearization orders and generation boundaries when either
+   side can win or state can be reused.
+6. Make the test's own failure path safe: release locks/resources even if an
+   assertion fails, terminate helper goroutines, and bound channel receives.
+7. Treat timeouts only as generous deadlock guards for slow CI. Do not put
+   wall-clock performance bounds in functional tests.
+8. Demonstrate red-before/green-after when practical, then run focused repetition,
+   `-race` for concurrency changes, the full package, and a dependent package.
+
+Use [references/regression-test-design.md](references/regression-test-design.md)
+for the design template, implementation-neutrality test, and validation ladder.
+
 ---
 
 ## 5. Convergence discipline — this is what actually breaks the loop
@@ -173,7 +205,9 @@ skill; for CGo build/test env and MO operator/format specifics, see **mo-dev**.
 □ Q1–Q3 unhappy paths (§4) checked on touched resources/waits/growth
 □ every finding either FIXED or written to the decision log (§5.2)
 □ severity calibrated to the merge bar (§5.1) — zero open blockers
-□ new/changed tests run green (incl. -race where concurrency changed)
+□ each bug fix has a contract-first regression test, or an explicit infeasibility reason
+□ regression tests pass G-REGRESSION-DESIGN: deterministic, implementation-neutral, cleanup-safe, CI-stable, and terminal-closure complete
+□ new/changed tests run green after the final edit (incl. focused repetition and -race where concurrency changed)
 □ applicable domain guards passed (index-plugin → §8) — additive to the §1–§4 sweep above, never a substitute for it
 ```
 
