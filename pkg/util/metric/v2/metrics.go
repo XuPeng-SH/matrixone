@@ -150,8 +150,6 @@ func initTxnMetrics() {
 	registry.MustRegister(TxnDeadlockDetectorEnqueueCounter)
 	registry.MustRegister(TxnDeadlockOwnerLocalCounter)
 	registry.MustRegister(TxnRemoteLockOwnerTimeoutCounter)
-	registry.MustRegister(TxnLockActiveTxnRecoveryCounter)
-	registry.MustRegister(TxnLockRPCQueueRejectCounter)
 	registry.MustRegister(txnPKChangeCheckCounter)
 	registry.MustRegister(txnPKMayBeChangedCounter)
 

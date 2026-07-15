@@ -162,8 +162,7 @@ func WithDisableRefresh() Option {
 type cluster struct {
 	logger          *log.MOLogger
 	stopper         *stopper.Stopper
-	refreshGateOnce sync.Once
-	refreshGateC    chan struct{}
+	mu              sync.Mutex
 	client          ClusterClient
 	refreshInterval time.Duration
 	forceRefreshC   chan struct{}
@@ -308,7 +307,7 @@ func (c *cluster) ForceRefresh(sync bool) {
 		return
 	}
 	if sync {
-		c.refreshAndLog(context.Background())
+		c.refresh()
 		return
 	}
 
@@ -316,25 +315,6 @@ func (c *cluster) ForceRefresh(sync bool) {
 	case c.forceRefreshC <- struct{}{}:
 	default:
 	}
-}
-
-// Refresh obtains and publishes a new HAKeeper snapshot, or returns the reason
-// why freshness could not be established. Unlike ForceRefresh, this method is
-// suitable for callers whose correctness depends on a successful refresh.
-func (c *cluster) Refresh(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if c.options.disableRefresh {
-		// WithDisableRefresh makes the supplied static snapshot authoritative.
-		return nil
-	}
-	ctx, cancel := context.WithTimeoutCause(ctx, c.refreshInterval, moerr.CauseRefresh)
-	defer cancel()
-	return c.refreshWithContext(ctx)
 }
 
 func (c *cluster) Close() {
@@ -450,36 +430,32 @@ func (c *cluster) refreshTask(ctx context.Context) {
 			c.logger.Info("refresh cluster details task stopped")
 			return
 		case <-timer.C:
-			c.refreshAndLog(ctx)
+			c.refresh()
 			timer.Reset(c.refreshInterval)
 		case <-c.forceRefreshC:
-			c.refreshAndLog(ctx)
+			c.refresh()
 		}
 	}
 }
 
-func (c *cluster) refreshAndLog(parent context.Context) {
-	if err := c.Refresh(parent); err != nil {
-		c.logger.Error("failed to refresh cluster details from hakeeper",
-			zap.Error(err))
-	}
-}
-
-func (c *cluster) refreshWithContext(ctx context.Context) error {
+func (c *cluster) refresh() {
 	defer c.logger.LogAction("refresh from hakeeper",
 		log.DefaultLogOptions().WithLevel(zap.DebugLevel))()
 
-	// Serialize snapshots so an older concurrent HAKeeper response cannot
-	// overwrite a newer one. Admission is context-aware: freshness callers must
-	// not wait past their own deadline behind another refresh.
-	if err := c.acquireRefresh(ctx); err != nil {
-		return moerr.AttachCause(ctx, err)
-	}
-	defer c.releaseRefresh()
+	// There is data race as ForceRefresh and refreshTask may call this function
+	// at the same time, which will cause inconsistent CN services.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ctx, cancel := context.WithTimeoutCause(context.Background(), c.refreshInterval, moerr.CauseRefresh)
+	defer cancel()
 
 	details, err := c.client.GetClusterDetails(ctx)
 	if err != nil {
-		return moerr.AttachCause(ctx, err)
+		err = moerr.AttachCause(ctx, err)
+		c.logger.Error("failed to refresh cluster details from hakeeper",
+			zap.Error(err))
+		return
 	}
 
 	c.logger.Debug("refresh cluster details from hakeeper",
@@ -515,24 +491,6 @@ func (c *cluster) refreshWithContext(ctx context.Context) error {
 		c.ready.Store(true)
 		close(c.readyC)
 	})
-	return nil
-}
-
-func (c *cluster) acquireRefresh(ctx context.Context) error {
-	c.refreshGateOnce.Do(func() {
-		c.refreshGateC = make(chan struct{}, 1)
-		c.refreshGateC <- struct{}{}
-	})
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-c.refreshGateC:
-		return nil
-	}
-}
-
-func (c *cluster) releaseRefresh() {
-	c.refreshGateC <- struct{}{}
 }
 
 func (c *cluster) copyServices() *services {
