@@ -55,6 +55,12 @@ type ShufflePool struct {
 	readyBuckets chan int32
 	finalCursor  atomic.Uint32
 
+	// Fixed-bucket shuffle has one consumer per bucket. Keep its capacity and
+	// wake-up state bucket-local so unrelated workers do not contend on the
+	// drain-all readyLock.
+	fixedReadyLimit   int
+	fixedSpaceWaiters []chan struct{}
+
 	memoryLock sync.Mutex
 	tracked    map[*batch.Batch]int64
 	current    int64
@@ -65,19 +71,21 @@ func NewShufflePool(bucketNum int32, maxHolders int32, drainAll bool) *ShufflePo
 	allBuckets := drainAll
 	readyLimit := max(2, int(maxHolders)*2)
 	sp := &ShufflePool{
-		bucketNum:      bucketNum,
-		maxHolders:     maxHolders,
-		drainAll:       allBuckets,
-		batchSets:      make([]*batch.BatchSet, bucketNum),
-		batchLocks:     make([]sync.Mutex, bucketNum),
-		batchWaiters:   make([]chan bool, bucketNum),
-		endingWaiters:  make([]chan bool, bucketNum),
-		batchPool:      make([]*batch.Batch, 0, readyLimit),
-		anyBatchWaiter: make(chan struct{}, 1),
-		endingWaiter:   make(chan struct{}),
-		readyLimit:     readyLimit,
-		spaceWaiter:    make(chan struct{}),
-		tracked:        make(map[*batch.Batch]int64),
+		bucketNum:         bucketNum,
+		maxHolders:        maxHolders,
+		drainAll:          allBuckets,
+		batchSets:         make([]*batch.BatchSet, bucketNum),
+		batchLocks:        make([]sync.Mutex, bucketNum),
+		batchWaiters:      make([]chan bool, bucketNum),
+		endingWaiters:     make([]chan bool, bucketNum),
+		batchPool:         make([]*batch.Batch, 0, readyLimit),
+		anyBatchWaiter:    make(chan struct{}, 1),
+		endingWaiter:      make(chan struct{}),
+		readyLimit:        readyLimit,
+		spaceWaiter:       make(chan struct{}),
+		fixedReadyLimit:   2,
+		fixedSpaceWaiters: make([]chan struct{}, bucketNum),
+		tracked:           make(map[*batch.Batch]int64),
 	}
 	if allBuckets {
 		sp.readyBuckets = make(chan int32, readyLimit)
@@ -86,6 +94,7 @@ func NewShufflePool(bucketNum int32, maxHolders int32, drainAll bool) *ShufflePo
 		sp.batchSets[i] = batch.NewBatchSet(objectio.BlockMaxRows)
 		sp.batchWaiters[i] = make(chan bool, 1)
 		sp.endingWaiters[i] = make(chan bool, 1)
+		sp.fixedSpaceWaiters[i] = make(chan struct{})
 	}
 	return sp
 }
@@ -298,6 +307,21 @@ func (sp *ShufflePool) releaseReady(count int) {
 	sp.readyLock.Unlock()
 }
 
+// reserveFixedReady is called with batchLocks[bucket] held. ReadyCount is
+// protected by the same lock, so fixed-bucket writers need no global counter.
+func (sp *ShufflePool) reserveFixedReady(bucket int, count int) (<-chan struct{}, bool) {
+	if count == 0 || sp.batchSets[bucket].ReadyCount()+count <= sp.fixedReadyLimit {
+		return nil, true
+	}
+	return sp.fixedSpaceWaiters[bucket], false
+}
+
+// releaseFixedReady is called with batchLocks[bucket] held.
+func (sp *ShufflePool) releaseFixedReady(bucket int32) {
+	close(sp.fixedSpaceWaiters[bucket])
+	sp.fixedSpaceWaiters[bucket] = make(chan struct{})
+}
+
 func (sp *ShufflePool) publishReady(bucket int32, count int) {
 	if count == 0 {
 		return
@@ -321,11 +345,9 @@ func (sp *ShufflePool) getFullBatch(shuffleIDX int32) *batch.Batch {
 	if sp.batchSets[shuffleIDX].ReadyCount() > 0 {
 		bat = sp.batchSets[shuffleIDX].PopFront()
 		bat.ShuffleIDX = shuffleIDX
+		sp.releaseFixedReady(shuffleIDX)
 	}
 	sp.batchLocks[shuffleIDX].Unlock()
-	if bat != nil {
-		sp.releaseReady(1)
-	}
 	return bat
 }
 
@@ -442,7 +464,12 @@ func (sp *ShufflePool) tryWrite(
 			chunk := current[offset:end]
 			sp.batchLocks[bucket].Lock()
 			readyDelta := sp.batchSets[bucket].ReadyDelta(len(chunk))
-			wait, ok := sp.reserveReady(readyDelta)
+			var ok bool
+			if sp.drainAll {
+				wait, ok = sp.reserveReady(readyDelta)
+			} else {
+				wait, ok = sp.reserveFixedReady(bucket, readyDelta)
+			}
 			if !ok {
 				sp.batchLocks[bucket].Unlock()
 				return bucket, offset, wait, false, nil
@@ -461,7 +488,7 @@ func (sp *ShufflePool) tryWrite(
 			// rescanning the entire bucket after every chunk.
 			sp.syncBatchSetFrom(batchSet, max(0, oldLength-1))
 			actualDelta := batchSet.ReadyCount() - oldReady
-			if actualDelta < readyDelta {
+			if sp.drainAll && actualDelta < readyDelta {
 				sp.releaseReady(readyDelta - actualDelta)
 			}
 			sp.batchLocks[bucket].Unlock()

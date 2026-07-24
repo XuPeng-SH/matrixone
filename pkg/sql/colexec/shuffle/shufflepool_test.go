@@ -180,6 +180,61 @@ func TestShufflePoolBoundsReadyBatchesAndResumes(t *testing.T) {
 	require.Equal(t, int64(0), proc.Mp().CurrNB())
 }
 
+func TestShufflePoolFixedBucketBackpressureIsIsolated(t *testing.T) {
+	proc := testutil.NewProcessWithMPool(t, "", mpool.MustNewZero())
+	defer proc.Free()
+	sp := NewShufflePool(2, 2, false)
+
+	rows := objectio.BlockMaxRows * 3
+	input := testutil.NewBatch([]types.Type{types.T_int64.ToType()}, false, rows, proc.Mp())
+	sels := make([][]int32, 2)
+	sels[0] = make([]int32, rows)
+	for i := range sels[0] {
+		sels[0][i] = int32(i)
+	}
+
+	bucket, offset, waiter, done, err := sp.tryWrite(input, sels, 0, 0, proc)
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, 0, bucket)
+	require.Equal(t, objectio.BlockMaxRows*2, offset)
+	require.NotNil(t, waiter)
+	require.Equal(t, sp.fixedReadyLimit, sp.batchSets[0].ReadyCount())
+
+	other := testutil.NewBatch(
+		[]types.Type{types.T_int64.ToType()},
+		false,
+		objectio.BlockMaxRows,
+		proc.Mp(),
+	)
+	otherSels := make([][]int32, 2)
+	otherSels[1] = make([]int32, objectio.BlockMaxRows)
+	for i := range otherSels[1] {
+		otherSels[1][i] = int32(i)
+	}
+	_, _, _, otherDone, err := sp.tryWrite(other, otherSels, 0, 0, proc)
+	require.NoError(t, err)
+	require.True(t, otherDone, "a full bucket must not block unrelated buckets")
+
+	full := sp.getFullBatch(0)
+	require.NotNil(t, full)
+	sp.discardBatch(full, proc.Mp())
+	select {
+	case <-waiter:
+	default:
+		t.Fatal("draining the blocked bucket did not wake its writer")
+	}
+
+	_, _, _, done, err = sp.tryWrite(input, sels, bucket, offset, proc)
+	require.NoError(t, err)
+	require.True(t, done)
+
+	input.Clean(proc.Mp())
+	other.Clean(proc.Mp())
+	sp.abort(proc.Mp())
+	require.Equal(t, int64(0), proc.Mp().CurrNB())
+}
+
 func TestShufflePoolFinalDrainDoesNotStealClaimedReadyBatch(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
