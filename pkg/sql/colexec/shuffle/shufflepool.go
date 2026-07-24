@@ -269,7 +269,10 @@ func (sp *ShufflePool) reserveReady(count int) (<-chan struct{}, bool) {
 	}
 	sp.readyLock.Lock()
 	defer sp.readyLock.Unlock()
-	if sp.readyCount+count > sp.readyLimit {
+	// Local shared-pool consumers drain one fixed bucket each. Applying the
+	// distributed drain-all ready limit here can block every producer behind
+	// batches that only another holder can consume.
+	if sp.drainAll && sp.readyCount+count > sp.readyLimit {
 		return sp.spaceWaiter, false
 	}
 	sp.readyCount += count

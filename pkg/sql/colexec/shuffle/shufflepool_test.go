@@ -180,6 +180,28 @@ func TestShufflePoolBoundsReadyBatchesAndResumes(t *testing.T) {
 	require.Equal(t, int64(0), proc.Mp().CurrNB())
 }
 
+func TestShufflePoolLocalWritersDoNotUseGlobalReadyLimit(t *testing.T) {
+	proc := testutil.NewProcessWithMPool(t, "", mpool.MustNewZero())
+	defer proc.Free()
+	sp := NewShufflePool(1, 1, false)
+	require.True(t, sp.hold())
+
+	rows := objectio.BlockMaxRows * 4
+	input := testutil.NewBatch([]types.Type{types.T_int64.ToType()}, false, rows, proc.Mp())
+	done, err := writeBatchToBucketForTest(sp, input, proc, 0)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Greater(t, sp.readyCount, sp.readyLimit)
+
+	for bat := sp.getFullBatch(0); bat != nil; bat = sp.getFullBatch(0) {
+		sp.discardBatch(bat, proc.Mp())
+	}
+	input.Clean(proc.Mp())
+	_, ownsStats := sp.release(proc.Mp(), false)
+	require.True(t, ownsStats)
+	require.Equal(t, int64(0), proc.Mp().CurrNB())
+}
+
 func TestShufflePoolFinalDrainDoesNotStealClaimedReadyBatch(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
