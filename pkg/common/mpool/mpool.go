@@ -869,7 +869,7 @@ func (mp *MPool) ReallocZero(old []byte, sz int, offHeap bool) ([]byte, error) {
 	mp.stats.RecordFree(mp.tag, int64(oldcap))
 	globalStats.RecordAlloc("global", int64(sz))
 	mp.stats.RecordAlloc(mp.tag, int64(sz))
-	mp.resource.recordFree(int64(oldSize))
+	mp.resource.recordFree(int64(oldcap))
 	mp.recordResourcePeak(mp.resource.recordAlloc(int64(sz)))
 	return newbs, nil
 }
