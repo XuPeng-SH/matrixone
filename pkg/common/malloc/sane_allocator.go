@@ -22,21 +22,12 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/prometheus/client_golang/prometheus"
-	"golang.org/x/sys/unix"
 )
 
 /*
 #include <stdlib.h>
 */
 import "C"
-
-const (
-	// simpleCAllocatorMmapThreshold keeps small, frequently reused allocations on
-	// libc's fast path while ensuring large buffers have deterministic release
-	// semantics. In particular, it avoids depending on libc's adaptive mmap
-	// threshold, which can otherwise retain freed buffers in per-thread arenas.
-	simpleCAllocatorMmapThreshold = 128 << 10
-)
 
 type SimpleCAllocator struct {
 	allocateBytesCounter   prometheus.Counter
@@ -145,39 +136,23 @@ func (sca *SimpleCAllocator) ReallocZero(old []byte, oldSize, size uint64) ([]by
 	}
 
 	if size == 0 {
-		deallocateSimpleCAllocatorMemory(old, oldSize)
+		deallocateSimpleCAllocatorMemory(old)
 		sca.recordReallocation(oldSize, 0)
 		sca.inuseObjects.Add(-1)
 		sca.triggerUpdate()
 		return nil, nil
 	}
 
-	if !simpleCAllocatorUsesMmap(oldSize) && !simpleCAllocatorUsesMmap(size) {
-		oldptr := unsafe.Pointer(unsafe.SliceData(old))
-		ptr := C.realloc(oldptr, C.ulong(size))
-		if ptr == nil {
-			return old, moerr.NewOOMNoCtx()
-		}
-
-		slice := unsafe.Slice((*byte)(ptr), size)
-		if size > oldLength {
-			clear(slice[oldLength:])
-		}
-		sca.recordReallocation(oldSize, size)
-		sca.triggerUpdate()
-		return slice, nil
+	oldptr := unsafe.Pointer(unsafe.SliceData(old))
+	ptr := C.realloc(oldptr, C.ulong(size))
+	if ptr == nil {
+		return old, moerr.NewOOMNoCtx()
 	}
 
-	// C.realloc cannot resize memory obtained from mmap, and allowing libc to
-	// choose the destination allocator would reintroduce arena retention.
-	// Allocate first so an allocation failure leaves old valid and owned by the
-	// caller, then copy and release the old backing store.
-	slice, err := allocateSimpleCAllocatorMemory(size, true)
-	if err != nil {
-		return old, err
+	slice := unsafe.Slice((*byte)(ptr), size)
+	if size > oldLength {
+		clear(slice[oldLength:])
 	}
-	copy(slice, old)
-	deallocateSimpleCAllocatorMemory(old, oldSize)
 	sca.recordReallocation(oldSize, size)
 	sca.triggerUpdate()
 	return slice, nil
@@ -196,7 +171,7 @@ func (sca *SimpleCAllocator) Deallocate(slice []byte, size uint64) {
 		panic(moerr.NewInternalErrorNoCtxf("deallocate size mismatch, expected %d, got %d", size, cap(slice)))
 	}
 
-	deallocateSimpleCAllocatorMemory(slice, size)
+	deallocateSimpleCAllocatorMemory(slice)
 
 	sca.inuseBytes.Add(-int64(size))
 	sca.currentInuse.Add(-int64(size))
@@ -217,30 +192,7 @@ func (sca *SimpleCAllocator) recordReallocation(oldSize, newSize uint64) {
 	}
 }
 
-func simpleCAllocatorUsesMmap(size uint64) bool {
-	return size >= simpleCAllocatorMmapThreshold
-}
-
 func allocateSimpleCAllocatorMemory(size uint64, clearMemory bool) ([]byte, error) {
-	if simpleCAllocatorUsesMmap(size) {
-		if size > uint64(maxIntValue()) {
-			return nil, moerr.NewOOMNoCtx()
-		}
-		slice, err := unix.Mmap(
-			-1,
-			0,
-			int(size),
-			unix.PROT_READ|unix.PROT_WRITE,
-			unix.MAP_PRIVATE|unix.MAP_ANONYMOUS,
-		)
-		if err != nil {
-			return nil, moerr.NewOOMNoCtx()
-		}
-		// Anonymous mappings are zero-filled by the kernel. This also satisfies
-		// Malloc's weaker contract, which does not promise non-zero contents.
-		return slice, nil
-	}
-
 	var ptr unsafe.Pointer
 	if clearMemory {
 		ptr = C.calloc(C.ulong(size), C.ulong(1))
@@ -253,23 +205,9 @@ func allocateSimpleCAllocatorMemory(size uint64, clearMemory bool) ([]byte, erro
 	return unsafe.Slice((*byte)(ptr), size), nil
 }
 
-func deallocateSimpleCAllocatorMemory(slice []byte, size uint64) {
+func deallocateSimpleCAllocatorMemory(slice []byte) {
 	ptr := unsafe.Pointer(unsafe.SliceData(slice))
-	if simpleCAllocatorUsesMmap(size) {
-		if size > uint64(maxIntValue()) {
-			panic(moerr.NewInternalErrorNoCtxf("cannot unmap allocation larger than max int: %d", size))
-		}
-		fullAllocation := unsafe.Slice((*byte)(ptr), int(size))
-		if err := unix.Munmap(fullAllocation); err != nil {
-			panic(moerr.NewInternalErrorNoCtxf("failed to unmap %d-byte allocation: %v", size, err))
-		}
-		return
-	}
 	C.free(ptr)
-}
-
-func maxIntValue() int {
-	return int(^uint(0) >> 1)
 }
 
 func (sca *SimpleCAllocator) triggerUpdate() {
