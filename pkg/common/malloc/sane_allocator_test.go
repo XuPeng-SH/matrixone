@@ -27,18 +27,14 @@ func newTestSimpleCAllocator() *SimpleCAllocator {
 	return NewSimpleCAllocator(nil, nil, nil, nil, nil)
 }
 
-func TestSimpleCAllocatorMmapBoundary(t *testing.T) {
-	require.False(t, simpleCAllocatorUsesMmap(simpleCAllocatorMmapThreshold-1))
-	require.True(t, simpleCAllocatorUsesMmap(simpleCAllocatorMmapThreshold))
-	require.True(t, simpleCAllocatorUsesMmap(simpleCAllocatorMmapThreshold+1))
-}
+const simpleCAllocatorTestSize = 128 << 10
 
 func TestSimpleCAllocatorAllocateAndDeallocate(t *testing.T) {
 	for _, size := range []uint64{
 		1,
-		simpleCAllocatorMmapThreshold - 1,
-		simpleCAllocatorMmapThreshold,
-		simpleCAllocatorMmapThreshold + 1,
+		simpleCAllocatorTestSize - 1,
+		simpleCAllocatorTestSize,
+		simpleCAllocatorTestSize + 1,
 	} {
 		t.Run(testNameForSize(size), func(t *testing.T) {
 			allocator := newTestSimpleCAllocator()
@@ -73,8 +69,8 @@ func TestSimpleCAllocatorZeroSize(t *testing.T) {
 
 func TestSimpleCAllocatorMallocAndDeallocate(t *testing.T) {
 	for _, size := range []uint64{
-		simpleCAllocatorMmapThreshold - 1,
-		simpleCAllocatorMmapThreshold,
+		simpleCAllocatorTestSize - 1,
+		simpleCAllocatorTestSize,
 	} {
 		t.Run(testNameForSize(size), func(t *testing.T) {
 			allocator := newTestSimpleCAllocator()
@@ -101,23 +97,23 @@ func TestSimpleCAllocatorReallocZeroTransitions(t *testing.T) {
 	}{
 		{
 			name:    "small-to-small",
-			oldSize: simpleCAllocatorMmapThreshold / 2,
-			newSize: simpleCAllocatorMmapThreshold - 1,
+			oldSize: simpleCAllocatorTestSize / 2,
+			newSize: simpleCAllocatorTestSize - 1,
 		},
 		{
 			name:    "small-to-large",
-			oldSize: simpleCAllocatorMmapThreshold - 1,
-			newSize: simpleCAllocatorMmapThreshold,
+			oldSize: simpleCAllocatorTestSize - 1,
+			newSize: simpleCAllocatorTestSize,
 		},
 		{
 			name:    "large-to-large",
-			oldSize: simpleCAllocatorMmapThreshold,
-			newSize: simpleCAllocatorMmapThreshold * 2,
+			oldSize: simpleCAllocatorTestSize,
+			newSize: simpleCAllocatorTestSize * 2,
 		},
 		{
 			name:    "large-to-small",
-			oldSize: simpleCAllocatorMmapThreshold,
-			newSize: simpleCAllocatorMmapThreshold / 2,
+			oldSize: simpleCAllocatorTestSize,
+			newSize: simpleCAllocatorTestSize / 2,
 		},
 	}
 
@@ -163,21 +159,21 @@ func TestSimpleCAllocatorReallocZeroReducedCapacityTransitions(t *testing.T) {
 	}{
 		{
 			name:          "small-to-large",
-			oldSize:       simpleCAllocatorMmapThreshold - 1,
-			logicalLength: simpleCAllocatorMmapThreshold / 2,
-			newSize:       simpleCAllocatorMmapThreshold,
+			oldSize:       simpleCAllocatorTestSize - 1,
+			logicalLength: simpleCAllocatorTestSize / 2,
+			newSize:       simpleCAllocatorTestSize,
 		},
 		{
 			name:          "large-to-small",
-			oldSize:       simpleCAllocatorMmapThreshold,
-			logicalLength: simpleCAllocatorMmapThreshold / 4,
-			newSize:       simpleCAllocatorMmapThreshold / 2,
+			oldSize:       simpleCAllocatorTestSize,
+			logicalLength: simpleCAllocatorTestSize / 4,
+			newSize:       simpleCAllocatorTestSize / 2,
 		},
 		{
 			name:          "large-to-large",
-			oldSize:       simpleCAllocatorMmapThreshold * 2,
-			logicalLength: simpleCAllocatorMmapThreshold / 2,
-			newSize:       simpleCAllocatorMmapThreshold * 3,
+			oldSize:       simpleCAllocatorTestSize * 2,
+			logicalLength: simpleCAllocatorTestSize / 2,
+			newSize:       simpleCAllocatorTestSize * 3,
 		},
 	}
 
@@ -220,12 +216,12 @@ func TestSimpleCAllocatorReallocZeroReducedCapacityTransitions(t *testing.T) {
 func TestSimpleCAllocatorReallocZeroFromAndToEmpty(t *testing.T) {
 	allocator := newTestSimpleCAllocator()
 
-	slice, err := allocator.ReallocZero(nil, 0, simpleCAllocatorMmapThreshold)
+	slice, err := allocator.ReallocZero(nil, 0, simpleCAllocatorTestSize)
 	require.NoError(t, err)
-	require.Len(t, slice, simpleCAllocatorMmapThreshold)
-	require.Equal(t, int64(simpleCAllocatorMmapThreshold), allocator.currentInuse.Load())
+	require.Len(t, slice, simpleCAllocatorTestSize)
+	require.Equal(t, int64(simpleCAllocatorTestSize), allocator.currentInuse.Load())
 
-	slice, err = allocator.ReallocZero(slice, simpleCAllocatorMmapThreshold, 0)
+	slice, err = allocator.ReallocZero(slice, simpleCAllocatorTestSize, 0)
 	require.NoError(t, err)
 	require.Nil(t, slice)
 	require.Zero(t, allocator.currentInuse.Load())
@@ -243,12 +239,12 @@ func TestSimpleCAllocatorDeallocateSizeMismatch(t *testing.T) {
 		allocator.Deallocate(nil, 1)
 	})
 
-	slice, err := allocator.Allocate(simpleCAllocatorMmapThreshold)
+	slice, err := allocator.Allocate(simpleCAllocatorTestSize)
 	require.NoError(t, err)
 	require.Panics(t, func() {
-		allocator.Deallocate(slice, simpleCAllocatorMmapThreshold-1)
+		allocator.Deallocate(slice, simpleCAllocatorTestSize-1)
 	})
-	allocator.Deallocate(slice, simpleCAllocatorMmapThreshold)
+	allocator.Deallocate(slice, simpleCAllocatorTestSize)
 }
 
 func TestSimpleCAllocatorConcurrentTransitions(t *testing.T) {
@@ -263,7 +259,7 @@ func TestSimpleCAllocatorConcurrentTransitions(t *testing.T) {
 		go func() {
 			defer waitGroup.Done()
 			for iteration := 0; iteration < iterations; iteration++ {
-				slice, err := allocator.Allocate(simpleCAllocatorMmapThreshold - 1)
+				slice, err := allocator.Allocate(simpleCAllocatorTestSize - 1)
 				if err != nil {
 					errs <- err
 					return
@@ -272,8 +268,8 @@ func TestSimpleCAllocatorConcurrentTransitions(t *testing.T) {
 
 				slice, err = allocator.ReallocZero(
 					slice,
-					simpleCAllocatorMmapThreshold-1,
-					simpleCAllocatorMmapThreshold,
+					simpleCAllocatorTestSize-1,
+					simpleCAllocatorTestSize,
 				)
 				if err != nil {
 					errs <- err
@@ -284,7 +280,7 @@ func TestSimpleCAllocatorConcurrentTransitions(t *testing.T) {
 					return
 				}
 
-				allocator.Deallocate(slice, simpleCAllocatorMmapThreshold)
+				allocator.Deallocate(slice, simpleCAllocatorTestSize)
 			}
 		}()
 	}
@@ -298,12 +294,12 @@ func TestSimpleCAllocatorConcurrentTransitions(t *testing.T) {
 
 func testNameForSize(size uint64) string {
 	switch size {
-	case simpleCAllocatorMmapThreshold - 1:
-		return "below-threshold"
-	case simpleCAllocatorMmapThreshold:
-		return "at-threshold"
-	case simpleCAllocatorMmapThreshold + 1:
-		return "above-threshold"
+	case simpleCAllocatorTestSize - 1:
+		return "below-test-size"
+	case simpleCAllocatorTestSize:
+		return "at-test-size"
+	case simpleCAllocatorTestSize + 1:
+		return "above-test-size"
 	default:
 		return "size-" + strconv.FormatUint(size, 10)
 	}
