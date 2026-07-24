@@ -47,10 +47,10 @@ type ShufflePool struct {
 	aborted    bool
 	cleaned    bool
 
-	batchSets  []*batch.BatchSet
-	batchLocks []sync.Mutex
-	batchPool  []*batch.Batch
-	batchLock  sync.Mutex
+	batchSets      []*batch.BatchSet
+	batchLocks     []sync.Mutex
+	batchPools     [][]*batch.Batch
+	batchPoolCount atomic.Int64
 
 	batchWaiters   []chan bool
 	endingWaiters  []chan bool
@@ -87,7 +87,7 @@ func NewShufflePool(bucketNum int32, maxHolders int32, drainAll bool) *ShufflePo
 		batchLocks:        make([]sync.Mutex, bucketNum),
 		batchWaiters:      make([]chan bool, bucketNum),
 		endingWaiters:     make([]chan bool, bucketNum),
-		batchPool:         make([]*batch.Batch, 0, readyLimit),
+		batchPools:        make([][]*batch.Batch, bucketNum),
 		anyBatchWaiter:    make(chan struct{}, 1),
 		endingWaiter:      make(chan struct{}),
 		readyLimit:        readyLimit,
@@ -211,25 +211,60 @@ func (sp *ShufflePool) cleanupLocked(m *mpool.MPool) {
 }
 
 func (sp *ShufflePool) cleanBatchPool(m *mpool.MPool) {
-	sp.batchLock.Lock()
-	defer sp.batchLock.Unlock()
-	for _, bat := range sp.batchPool {
-		sp.forgetBatch(bat)
-		bat.Clean(m)
+	for bucket := range sp.batchPools {
+		for _, bat := range sp.batchPools[bucket] {
+			sp.forgetBatch(bat)
+			bat.Clean(m)
+		}
+		sp.batchPools[bucket] = nil
 	}
-	sp.batchPool = sp.batchPool[:0]
+	sp.batchPoolCount.Store(0)
 }
 
 func (sp *ShufflePool) putBatchToPool(buf *batch.Batch, m *mpool.MPool) {
 	sp.syncBatch(buf)
-	sp.batchLock.Lock()
-	defer sp.batchLock.Unlock()
-	if len(sp.batchPool) < sp.readyLimit {
-		sp.batchPool = append(sp.batchPool, buf)
-		return
+	bucket := buf.ShuffleIDX
+	if bucket < 0 || bucket >= sp.bucketNum {
+		bucket = 0
+	}
+	sp.batchLocks[bucket].Lock()
+	sp.putBatchToPoolLocked(bucket, buf, m)
+	sp.batchLocks[bucket].Unlock()
+}
+
+// putBatchToPoolLocked is called with batchLocks[bucket] held.
+func (sp *ShufflePool) putBatchToPoolLocked(bucket int32, buf *batch.Batch, m *mpool.MPool) {
+	for {
+		count := sp.batchPoolCount.Load()
+		if count >= int64(sp.readyLimit) {
+			break
+		}
+		if sp.batchPoolCount.CompareAndSwap(count, count+1) {
+			sp.batchPools[bucket] = append(sp.batchPools[bucket], buf)
+			return
+		}
 	}
 	sp.forgetBatch(buf)
 	buf.Clean(m)
+}
+
+// getBatchFromPoolLocked is called with batchLocks[bucket] held.
+func (sp *ShufflePool) getBatchFromPoolLocked(bucket int32) *batch.Batch {
+	pool := sp.batchPools[bucket]
+	if len(pool) == 0 {
+		return nil
+	}
+	last := len(pool) - 1
+	buf := pool[last]
+	sp.batchPools[bucket] = pool[:last]
+	if sp.batchPoolCount.Add(-1) < 0 {
+		panic("shuffle pool negative recycle batch count")
+	}
+	return buf
+}
+
+func (sp *ShufflePool) batchPoolLength() int {
+	return int(sp.batchPoolCount.Load())
 }
 
 func (sp *ShufflePool) discardBatch(buf *batch.Batch, m *mpool.MPool) {
@@ -238,18 +273,6 @@ func (sp *ShufflePool) discardBatch(buf *batch.Batch, m *mpool.MPool) {
 	}
 	sp.forgetBatch(buf)
 	buf.Clean(m)
-}
-
-func (sp *ShufflePool) getBatchFromPool() *batch.Batch {
-	sp.batchLock.Lock()
-	defer sp.batchLock.Unlock()
-	if len(sp.batchPool) == 0 {
-		return nil
-	}
-	last := len(sp.batchPool) - 1
-	buf := sp.batchPool[last]
-	sp.batchPool = sp.batchPool[:last]
-	return buf
 }
 
 func (sp *ShufflePool) syncBatch(buf *batch.Batch) {
@@ -502,10 +525,11 @@ func (sp *ShufflePool) tryWrite(
 			batchSet := sp.batchSets[bucket]
 			oldReady := batchSet.ReadyCount()
 			oldLength := batchSet.Length()
-			buf := sp.getBatchFromPool()
+			buf := sp.getBatchFromPoolLocked(int32(bucket))
 			consumed, writeErr := batchSet.Union(proc.Mp(), srcBatch, chunk, buf)
 			if !consumed && buf != nil {
-				sp.putBatchToPool(buf, proc.Mp())
+				sp.syncBatch(buf)
+				sp.putBatchToPoolLocked(int32(bucket), buf, proc.Mp())
 			}
 			// Union can only grow the previous writable tail and append new
 			// batches. Full batches before that tail are immutable, so avoid
