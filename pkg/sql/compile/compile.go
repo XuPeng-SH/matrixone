@@ -3306,12 +3306,12 @@ func (c *Compile) compileLocalShuffleJoin(node, left, right *plan.Node, leftscop
 	for i := range leftscopes {
 		leftscopes[i].PreScopes = append(leftscopes[i].PreScopes, rightscopes[i])
 		if !reuse {
-			shuffleOpForProbe := constructShuffleOperatorForJoin(int32(bucketNum), node, true)
+			shuffleOpForProbe := constructLocalShuffleOperatorForJoin(int32(bucketNum), node, true)
 			shuffleOpForProbe.SetAnalyzeControl(c.anal.curNodeIdx, false)
 			leftscopes[i].setRootOperator(shuffleOpForProbe)
 		}
 
-		shuffleOpForBuild := constructShuffleOperatorForJoin(int32(bucketNum), node, false)
+		shuffleOpForBuild := constructLocalShuffleOperatorForJoin(int32(bucketNum), node, false)
 		shuffleOpForBuild.SetAnalyzeControl(c.anal.curNodeIdx, false)
 		rightscopes[i].setRootOperator(shuffleOpForBuild)
 	}

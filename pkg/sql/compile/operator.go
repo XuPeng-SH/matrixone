@@ -1646,6 +1646,14 @@ func constructShuffleOperatorForJoin(bucketNum int32, node *plan.Node, left bool
 	return arg
 }
 
+func constructLocalShuffleOperatorForJoin(bucketNum int32, node *plan.Node, left bool) *shuffle.Shuffle {
+	arg := constructShuffleOperatorForJoin(bucketNum, node, left)
+	// The local build is already a direct pre-scope of the probe. Preserve the
+	// V2 path without an extra PASS-message barrier between those pipelines.
+	arg.RuntimeFilterSpec = nil
+	return arg
+}
+
 func constructShuffleArgForGroup(bucketNum int32, node *plan.Node) *shuffle.Shuffle {
 	arg := shuffle.NewArgument()
 	expr := node.GroupBy[node.Stats.HashmapStats.ShuffleColIdx]

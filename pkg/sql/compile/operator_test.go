@@ -301,6 +301,9 @@ func TestConstructShuffleOperatorForJoinSupportsColumnsAndExpressions(t *testing
 	require.Nil(t, leftShuffle.ShuffleExpr)
 	require.Equal(t, int32(42), leftShuffle.RuntimeFilterSpec.Tag)
 
+	localLeftShuffle := constructLocalShuffleOperatorForJoin(4, node, true)
+	require.Nil(t, localLeftShuffle.RuntimeFilterSpec)
+
 	rightShuffle := constructShuffleOperatorForJoin(4, node, false)
 	require.Equal(t, right.Typ.Id, rightShuffle.ShuffleExpr.Typ.Id)
 	require.Equal(t, "serial_full", rightShuffle.ShuffleExpr.GetF().Func.ObjName)
