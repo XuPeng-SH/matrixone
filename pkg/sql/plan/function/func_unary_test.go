@@ -829,6 +829,19 @@ func TestOrdBinaryUsesFirstOctet(t *testing.T) {
 	}
 }
 
+func TestOrdUsesRowStringDomain(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	tc := NewFunctionTestCase(proc,
+		[]FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{"é", "é", "ignored"}, []bool{false, false, true}),
+		},
+		NewFunctionTestResult(types.T_int64.ToType(), false, []int64{0xC3, 0xC3A9, 0}, []bool{false, false, true}),
+		Ord)
+	require.NoError(t, tc.parameters[0].SetRuntimeStringDomainAtWithMP(0, types.RuntimeStringBinary, proc.Mp()))
+	ok, info := tc.Run()
+	require.True(t, ok, info)
+}
+
 // QUOTE
 func initQuoteTestCase() []tcTemp {
 	return []tcTemp{

@@ -163,3 +163,7 @@ DROP DATABASE regexp_utf8_test;
 SELECT REGEXP_INSTR(CAST(_binary'中中' AS BINARY(6)), CAST(_binary'中' AS BINARY(3)), 2) AS binary_pos,
        REGEXP_INSTR(CAST(_binary'中中' AS VARBINARY(6)), CAST(_binary'中' AS VARBINARY(3)), 2) AS varbinary_pos,
        REGEXP_INSTR(CAST(_binary'中中' AS VARBINARY(6)), CAST(_binary'中' AS VARBINARY(3)), 2, 1, 1) AS varbinary_end;
+
+# Binary regexp escape atoms and ranges operate on bytes, not Unicode code points.
+SELECT REGEXP_INSTR(CAST(X'FF' AS BINARY(1)), CAST(X'5C784646' AS BINARY(4))) AS hex_escape,
+       REGEXP_INSTR(CAST(X'FF' AS BINARY(1)), CAST(X'5B5C7838302D5C7846465D' AS BINARY(11))) AS byte_range;

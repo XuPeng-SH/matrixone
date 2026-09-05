@@ -287,3 +287,7 @@ REGEXP_INSTR(CAST(_binary'中中' AS VARBINARY(6)), CAST(_binary'中' AS VARBINA
 REGEXP_INSTR(CAST(_binary'中中' AS VARBINARY(6)), CAST(_binary'中' AS VARBINARY(3)), 2, 1, 1) AS varbinary_end;
 binary_pos    varbinary_pos    varbinary_end
 4    4    7
+SELECT REGEXP_INSTR(CAST(X'FF' AS BINARY(1)), CAST(X'5C784646' AS BINARY(4))) AS hex_escape,
+REGEXP_INSTR(CAST(X'FF' AS BINARY(1)), CAST(X'5B5C7838302D5C7846465D' AS BINARY(11))) AS byte_range;
+hex_escape    byte_range
+1    1

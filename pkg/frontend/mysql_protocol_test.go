@@ -3151,6 +3151,32 @@ func TestParseExecuteDataPreservesYearWireType(t *testing.T) {
 	require.Equal(t, []byte{byte(defines.MYSQL_TYPE_YEAR), 0}, prepareStmt.ParamTypes)
 }
 
+func TestParseExecuteDataPreservesStringDomainAcrossRebinds(t *testing.T) {
+	ctx := context.TODO()
+	proto, proc, prepareStmt := newBinaryPrepareProtocolTestCase(t, "select ?")
+	defer func() {
+		proc.SetPrepareParams(nil)
+		prepareStmt.Close()
+	}()
+
+	for _, tc := range []struct {
+		mysqlType defines.MysqlType
+		binary    bool
+	}{
+		{mysqlType: defines.MYSQL_TYPE_BLOB, binary: true},
+		{mysqlType: defines.MYSQL_TYPE_VAR_STRING, binary: false},
+		{mysqlType: defines.MYSQL_TYPE_LONG_BLOB, binary: true},
+	} {
+		require.NoError(t, proto.ParseExecuteData(ctx, proc, prepareStmt,
+			buildStringExecutePacket(proto, tc.mysqlType, "中中"), 0))
+		require.Equal(t, []byte{byte(tc.mysqlType), 0}, prepareStmt.ParamTypes)
+		proc.SetPrepareParamsWithMetadata(prepareStmt.params, nil,
+			[]bool{binaryProtocolPrepareParamIsBinaryString(tc.mysqlType)})
+		require.Equal(t, tc.binary, proc.GetPrepareParamIsBinaryString(0))
+		require.Equal(t, "中中", proc.GetPrepareParams().GetStringAt(0))
+	}
+}
+
 func buildStringExecutePacket(proto *MysqlProtocolImpl, tp defines.MysqlType, payload string) []byte {
 	data := make([]byte, 8+2+9+len(payload))
 	copy(data, []byte{0, 0, 0, 0, 0, 0, 1, byte(tp), 0})

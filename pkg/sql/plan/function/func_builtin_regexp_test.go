@@ -16,6 +16,7 @@ package function
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -283,6 +284,47 @@ func Test_BuiltIn_RegexpBinaryMatcherStartsAtEveryByte(t *testing.T) {
 		require.True(t, matched)
 		require.Equal(t, want, []byte(got))
 	}
+}
+
+func Test_BuiltIn_RegexpBinaryPatternByteEscapes(t *testing.T) {
+	op := newOpBuiltInRegexp()
+	for value := 0x80; value <= 0xff; value++ {
+		got, err := op.regMap.regularInstrWithMode(
+			fmt.Sprintf(`\x%02X`, value), string([]byte{byte(value)}), 1, 1, 0, true)
+		require.NoError(t, err, "byte 0x%02X", value)
+		require.Equal(t, int64(1), got, "byte 0x%02X", value)
+	}
+	for _, tc := range []struct {
+		name    string
+		pattern string
+		subject string
+		want    int64
+	}{
+		{name: "raw byte", pattern: string([]byte{0xff}), subject: string([]byte{0xff}), want: 1},
+		{name: "hex byte", pattern: `\xFF`, subject: string([]byte{0xff}), want: 1},
+		{name: "braced hex byte", pattern: `\x{FF}`, subject: string([]byte{0xff}), want: 1},
+		{name: "octal byte", pattern: `\377`, subject: string([]byte{0xff}), want: 1},
+		{name: "byte range", pattern: `[\x80-\xFF]`, subject: string([]byte{0x7f, 0x80}), want: 2},
+		{name: "negated byte range", pattern: `[^\x00-\xFE]`, subject: string([]byte{0xfe, 0xff}), want: 2},
+		{name: "ascii hex", pattern: `\x41`, subject: "A", want: 1},
+		{name: "quoted escape text", pattern: `\Q\xFF\E`, subject: `\xFF`, want: 1},
+		{name: "escaped slash", pattern: `\\xFF`, subject: `\xFF`, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := op.regMap.regularInstrWithMode(tc.pattern, tc.subject, 1, 1, 0, true)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+
+	matched, got, err := op.regMap.regularSubstrWithMode(`\xFF`, string([]byte{0xfe, 0xff}), 1, 1, true)
+	require.NoError(t, err)
+	require.True(t, matched)
+	require.Equal(t, []byte{0xff}, []byte(got))
+
+	got, err = op.regMap.regularReplaceWithMode(`[\x80-\xFF]`, string([]byte{0x7f, 0x80, 0xff}), "X", 1, 0, true)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0x7f, 'X', 'X'}, []byte(got))
 }
 
 func Test_BuiltIn_RegexpAnchorsRemainRelativeToOriginalSubject(t *testing.T) {

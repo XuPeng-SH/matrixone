@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -812,7 +813,7 @@ func (rs *regexpSet) getRegularMatcherWithMode(pat string, binary bool) (*regexp
 		key.pattern = pat
 		expression := pat
 		if binary {
-			expression, _ = encodeBinaryRegexpBytes(pat, 0)
+			expression = encodeBinaryRegexpPattern(pat)
 		}
 		reg, err = regexp.Compile(expression)
 		if err != nil {
@@ -1251,16 +1252,114 @@ func encodeBinaryRegexpBytes(value string, startByte int) (encoded string, encod
 		if i == startByte {
 			encodedStart = b.Len()
 		}
-		if value[i] < utf8.RuneSelf {
-			b.WriteByte(value[i])
-		} else {
-			b.WriteRune(rune(0xE000) + rune(value[i]))
-		}
+		writeBinaryRegexpByte(&b, value[i])
 	}
 	if startByte == len(value) {
 		encodedStart = b.Len()
 	}
 	return b.String(), encodedStart
+}
+
+// encodeBinaryRegexpPattern maps literal bytes to the same alphabet used for
+// binary subjects, but preserves regexp syntax. In particular, hexadecimal and
+// octal escapes that denote non-ASCII bytes must be mapped as bytes as well;
+// leaving \xFF unchanged would make RE2 look for U+00FF while a subject byte
+// 0xFF is represented by U+E0FF.
+func encodeBinaryRegexpPattern(pattern string) string {
+	var b strings.Builder
+	b.Grow(len(pattern) * 2)
+	quoted := false
+	for i := 0; i < len(pattern); {
+		if pattern[i] != '\\' {
+			writeBinaryRegexpByte(&b, pattern[i])
+			i++
+			continue
+		}
+
+		if i+1 >= len(pattern) {
+			b.WriteByte(pattern[i])
+			break
+		}
+		if quoted {
+			if pattern[i+1] == 'E' {
+				b.WriteString(pattern[i : i+2])
+				quoted = false
+				i += 2
+				continue
+			}
+			b.WriteByte(pattern[i])
+			i++
+			continue
+		}
+		if pattern[i+1] == 'Q' {
+			b.WriteString(pattern[i : i+2])
+			quoted = true
+			i += 2
+			continue
+		}
+
+		value, end, ok := binaryRegexpByteEscape(pattern, i)
+		if ok {
+			if value >= utf8.RuneSelf {
+				writeBinaryRegexpByte(&b, value)
+			} else {
+				b.WriteString(pattern[i:end])
+			}
+			i = end
+			continue
+		}
+		// Consume an ordinary escape as one token. Advancing only over the
+		// backslash would misread the second slash in `\\xFF` as a byte escape.
+		b.WriteString(pattern[i : i+2])
+		i += 2
+	}
+	return b.String()
+}
+
+// binaryRegexpByteEscape recognizes the numeric escapes accepted by Go RE2
+// when they denote one byte. Keeping recognition here deliberately narrow
+// avoids reinterpreting escapes such as \\b, \\p, or quoted regexp text.
+func binaryRegexpByteEscape(pattern string, start int) (byte, int, bool) {
+	if start+1 >= len(pattern) || pattern[start] != '\\' {
+		return 0, start, false
+	}
+	if pattern[start+1] == 'x' {
+		if start+2 < len(pattern) && pattern[start+2] == '{' {
+			close := strings.IndexByte(pattern[start+3:], '}')
+			if close < 0 {
+				return 0, start, false
+			}
+			end := start + 3 + close
+			value, err := strconv.ParseUint(pattern[start+3:end], 16, 8)
+			if err != nil {
+				return 0, start, false
+			}
+			return byte(value), end + 1, true
+		}
+		if start+4 > len(pattern) {
+			return 0, start, false
+		}
+		value, err := strconv.ParseUint(pattern[start+2:start+4], 16, 8)
+		if err != nil {
+			return 0, start, false
+		}
+		return byte(value), start + 4, true
+	}
+	if start+4 <= len(pattern) {
+		value, err := strconv.ParseUint(pattern[start+1:start+4], 8, 8)
+		if err == nil {
+			return byte(value), start + 4, true
+		}
+	}
+	return 0, start, false
+}
+
+func writeBinaryRegexpByte(b *strings.Builder, value byte) {
+	if value < utf8.RuneSelf {
+		b.WriteByte(value)
+		return
+	}
+	b.WriteRune(rune(0xE000) + rune(value))
 }
 
 func isASCIIBytes(value string) bool {
