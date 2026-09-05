@@ -267,6 +267,22 @@ insert into t_odku_fk_child values (1, 1, 100);
 set foreign_key_checks=0;
 insert into t_odku_fk_child values (2, 99, 200);
 set foreign_key_checks=1;
+-- A conflicting no-op must not revalidate the unchanged orphan reference. The
+-- row remains in the stream for CLIENT_FOUND_ROWS accounting only.
+insert into t_odku_fk_child values (2, 99, 0) on duplicate key update val = val;
+select row_count(), cid, pid, val from t_odku_fk_child where cid = 2;
+-- Mentioning an FK column in the assignment is not enough to make it eligible:
+-- the final FK tuple is compared with the stored tuple using null-safe equality.
+insert into t_odku_fk_child values (2, 99, 0) on duplicate key update pid = pid;
+select row_count(), cid, pid, val from t_odku_fk_child where cid = 2;
+-- A real update to a non-FK column also leaves the FK tuple outside the check's
+-- mutation domain and must succeed.
+insert into t_odku_fk_child values (2, 99, 0) on duplicate key update val = val + 1;
+select row_count(), cid, pid, val from t_odku_fk_child where cid = 2;
+-- Eligibility is row-scoped: retain the orphan no-op while validating and
+-- inserting the valid new row in the same batch.
+insert into t_odku_fk_child values (2, 99, 0), (4, 2, 400) on duplicate key update val = val;
+select row_count(), cid, pid, val from t_odku_fk_child order by cid;
 -- ODKU on the valid row (cid=1) must succeed: it validates only this statement's
 -- final row image, not the whole table, so the pre-existing orphan is ignored.
 insert into t_odku_fk_child values (1, 1, 5) on duplicate key update val = val + 1;
@@ -276,8 +292,35 @@ insert into t_odku_fk_child values (1, 1, 5) on duplicate key update pid = 999;
 -- a genuine insert referencing a missing parent must still fail.
 insert into t_odku_fk_child values (3, 888, 1) on duplicate key update val = val + 1;
 select cid, pid, val from t_odku_fk_child order by cid;
+-- Correcting a historical orphan changes the FK tuple, so the new valid parent
+-- must be checked and the update must be accepted.
+insert into t_odku_fk_child values (2, 99, 0) on duplicate key update pid = 2;
+select row_count(), cid, pid, val from t_odku_fk_child where cid = 2;
+-- Constraint checks are action-ordered, not final-image-only. Both statements
+-- must roll back even though a later duplicate would repair the FK value.
+insert into t_odku_fk_child values (1, 999, 0), (1, 1, 0)
+  on duplicate key update pid = values(pid);
+select cid, pid, val from t_odku_fk_child where cid = 1;
+insert into t_odku_fk_child values (5, 999, 0), (5, 1, 0)
+  on duplicate key update pid = values(pid);
+select count(*) from t_odku_fk_child where cid = 5;
 drop table if exists t_odku_fk_child;
 drop table if exists t_odku_fk_parent;
+
+drop table if exists t_odku_action_check;
+create table t_odku_action_check(id int primary key, v int, constraint ck_action check(v >= 0));
+insert into t_odku_action_check values (1, 1);
+insert into t_odku_action_check values (1, -1), (1, 2)
+  on duplicate key update v = values(v);
+select * from t_odku_action_check;
+insert into t_odku_action_check values (2, -1), (2, 2)
+  on duplicate key update v = values(v);
+select count(*) from t_odku_action_check where id = 2;
+-- Nearest positive control: every action is valid and the final image survives.
+insert into t_odku_action_check values (1, 3), (1, 4)
+  on duplicate key update v = values(v);
+select * from t_odku_action_check;
+drop table t_odku_action_check;
 
 -- INSERT IGNORE on a child table drops the rows whose parent does not exist
 -- (MySQL row-skip semantics) instead of failing the whole statement.
@@ -333,6 +376,39 @@ select updated_at = @ts0 as ts_unchanged from t_odku_onupdate where id = 1;
 insert into t_odku_onupdate(id, v) values (1, 99) on duplicate key update v = values(v);
 select v, updated_at > @ts0 as ts_advanced from t_odku_onupdate where id = 1;
 drop table if exists t_odku_onupdate;
+
+-- CHAR assignments use PAD SPACE equality for both logical affected-row and
+-- physical-write decisions. VARCHAR is the nearest non-equivalent control.
+drop table if exists t_odku_char_pad;
+
+drop table if exists t_odku_json_equal;
+create table t_odku_json_equal (
+  id int primary key,
+  j json,
+  updated_at timestamp default '2000-01-01 00:00:00' on update current_timestamp
+);
+insert into t_odku_json_equal values (1, '1', '2000-01-01 00:00:00');
+insert into t_odku_json_equal(id, j) values (1, '1.0')
+  on duplicate key update j = values(j);
+select row_count(), json_type(j), updated_at = '2000-01-01 00:00:00' as auto_unchanged
+  from t_odku_json_equal;
+drop table t_odku_json_equal;
+create table t_odku_char_pad (
+  id int primary key,
+  c char(4),
+  v varchar(4),
+  updated_at timestamp default '2000-01-01 00:00:00' on update current_timestamp
+);
+insert into t_odku_char_pad values (1, 'a', 'a', '2000-01-01 00:00:00');
+insert into t_odku_char_pad(id, c, v) values (1, 'a   ', 'zzzz')
+  on duplicate key update c = values(c);
+select row_count(), hex(c), hex(v), updated_at = '2000-01-01 00:00:00' as auto_unchanged
+  from t_odku_char_pad;
+insert into t_odku_char_pad(id, c, v) values (1, 'zzzz', 'a ')
+  on duplicate key update v = values(v);
+select row_count(), hex(c), hex(v), updated_at > '2000-01-01 00:00:00' as auto_updated
+  from t_odku_char_pad;
+drop table if exists t_odku_char_pad;
 
 -- A synthesized ON UPDATE value must not reach CHECK evaluation for a pure
 -- no-op. The mixed batch also proves that restoring the old image does not

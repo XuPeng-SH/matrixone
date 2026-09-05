@@ -7113,6 +7113,19 @@ func supportsRemoteODKUAffectedRows(service string) bool {
 	return ok && protocolVersion >= defines.MORPCVersion50
 }
 
+func supportsRemoteODKUActionRows(service string) bool {
+	rt := moruntime.ServiceRuntime(service)
+	if rt == nil {
+		return false
+	}
+	version, ok := rt.GetGlobalVariables(moruntime.MOProtocolVersion)
+	if !ok {
+		return false
+	}
+	protocolVersion, ok := version.(int64)
+	return ok && protocolVersion >= defines.MORPCVersion51
+}
+
 func supportsRemoteCrossDomainStringLiterals(service string) bool {
 	rt := moruntime.ServiceRuntime(service)
 	if rt == nil {

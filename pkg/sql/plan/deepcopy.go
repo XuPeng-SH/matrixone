@@ -242,6 +242,7 @@ func DeepCopyDedupJoinCtx(ctx *plan.DedupJoinCtx) *plan.DedupJoinCtx {
 		DedupBuildKeepLast:    ctx.DedupBuildKeepLast,
 		UpdateCheckColIdxList: slices.Clone(ctx.UpdateCheckColIdxList),
 		CountFoundRows:        ctx.CountFoundRows,
+		EmitActionRows:        ctx.EmitActionRows,
 	}
 	if ctx.AffectedRowsCol != nil {
 		col := *ctx.AffectedRowsCol
@@ -250,6 +251,18 @@ func DeepCopyDedupJoinCtx(ctx *plan.DedupJoinCtx) *plan.DedupJoinCtx {
 	if ctx.PhysicalChangedRowsCol != nil {
 		col := *ctx.PhysicalChangedRowsCol
 		newCtx.PhysicalChangedRowsCol = &col
+	}
+	if ctx.ActionFinalCol != nil {
+		col := *ctx.ActionFinalCol
+		newCtx.ActionFinalCol = &col
+	}
+	newCtx.ForeignKeyChecks = make([]plan.ODKUForeignKeyCheck, len(ctx.ForeignKeyChecks))
+	for i, check := range ctx.ForeignKeyChecks {
+		newCtx.ForeignKeyChecks[i].ColIdxList = slices.Clone(check.ColIdxList)
+		if check.EligibilityCol != nil {
+			col := *check.EligibilityCol
+			newCtx.ForeignKeyChecks[i].EligibilityCol = &col
+		}
 	}
 
 	return newCtx

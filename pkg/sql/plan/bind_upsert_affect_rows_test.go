@@ -17,6 +17,7 @@ package plan
 import (
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	planpb "github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/stretchr/testify/require"
 )
@@ -50,11 +51,49 @@ func odkuDedupCtx(t *testing.T, p *Plan) *planpb.DedupJoinCtx {
 	return nil
 }
 
+func hasGuardedConstraintAssert(p *Plan, assertName string) bool {
+	for _, node := range p.GetQuery().Nodes {
+		for _, filter := range node.FilterList {
+			assertFn := filter.GetF()
+			if assertFn == nil || assertFn.Func == nil || assertFn.Func.ObjName != assertName || len(assertFn.Args) == 0 {
+				continue
+			}
+			guard := assertFn.Args[0].GetF()
+			if guard == nil || guard.Func == nil || guard.Func.ObjName != "or" || len(guard.Args) != 2 {
+				continue
+			}
+			notEligible := guard.Args[0].GetF()
+			if notEligible != nil && notEligible.Func != nil && notEligible.Func.ObjName == "not" &&
+				len(notEligible.Args) == 1 && notEligible.Args[0].GetCol() != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestDeepCopyUpdateCtxPreservesChangedRowsCol(t *testing.T) {
 	original := []*planpb.UpdateCtx{{ChangedRowsCol: &planpb.ColRef{RelPos: 3, ColPos: 7}}}
 	copied := DeepCopyUpdateCtxList(original)
 	require.Equal(t, original[0].ChangedRowsCol, copied[0].ChangedRowsCol)
 	require.NotSame(t, original[0].ChangedRowsCol, copied[0].ChangedRowsCol)
+}
+
+func TestDeepCopyDedupJoinCtxPreservesActionMetadata(t *testing.T) {
+	original := &planpb.DedupJoinCtx{
+		EmitActionRows: true,
+		ActionFinalCol: &planpb.ColRef{RelPos: 3, ColPos: 7},
+		ForeignKeyChecks: []planpb.ODKUForeignKeyCheck{{
+			ColIdxList: []int32{1, 2}, EligibilityCol: &planpb.ColRef{RelPos: 3, ColPos: 8},
+		}},
+	}
+	copied := DeepCopyDedupJoinCtx(original)
+	require.Equal(t, original, copied)
+	require.NotSame(t, original.ActionFinalCol, copied.ActionFinalCol)
+	require.NotSame(t, original.ForeignKeyChecks[0].EligibilityCol,
+		copied.ForeignKeyChecks[0].EligibilityCol)
+	copied.ForeignKeyChecks[0].ColIdxList[0] = 99
+	require.Equal(t, int32(1), original.ForeignKeyChecks[0].ColIdxList[0])
 }
 
 // hasNoopFilter reports whether the plan contains a FILTER node whose predicate
@@ -124,6 +163,33 @@ func TestUpsertAffectRowsPlan(t *testing.T) {
 		dedup := odkuDedupCtx(t, p)
 		require.NotNil(t, dedup.AffectedRowsCol)
 		require.NotNil(t, dedup.PhysicalChangedRowsCol)
+		require.False(t, dedup.EmitActionRows,
+			"tables without CHECK or child FKs must retain the one-row-per-group fast path")
+	})
+
+	t.Run("ODKU FK assertion is guarded by tuple eligibility", func(t *testing.T) {
+		p, err := runOneStmt(mock, t,
+			"insert into constraint_test.emp(empno, ename, job, deptno) values (1, 'A', 'B', 1) on duplicate key update sal = sal")
+		require.NoError(t, err)
+		require.True(t, hasGuardedConstraintAssert(p, "assert"),
+			"the FK assert must bypass retained rows whose FK tuple did not change")
+		ctx := odkuDedupCtx(t, p)
+		require.True(t, ctx.EmitActionRows)
+		require.NotNil(t, ctx.ActionFinalCol)
+		require.Len(t, ctx.ForeignKeyChecks, 1)
+		require.NotEmpty(t, ctx.ForeignKeyChecks[0].ColIdxList)
+		require.NotNil(t, ctx.ForeignKeyChecks[0].EligibilityCol)
+		hasFinalBarrier := false
+		for _, node := range p.GetQuery().Nodes {
+			if node.NodeType != planpb.Node_FILTER || !node.FilterIsBarrier || len(node.FilterList) != 1 {
+				continue
+			}
+			if col := node.FilterList[0].GetCol(); col != nil && node.FilterList[0].Typ.Id == int32(types.T_bool) {
+				hasFinalBarrier = true
+			}
+		}
+		require.True(t, hasFinalBarrier,
+			"the synthetic final-action predicate must never be pushed below DEDUP UPDATE")
 	})
 
 	t.Run("REPLACE flags main ctx", func(t *testing.T) {

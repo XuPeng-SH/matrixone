@@ -733,6 +733,12 @@ message DedupJoinCtx {
   ColRef physical_changed_rows_col = 7;
   repeated int32 update_check_col_idx_list = 8;
   bool count_found_rows = 9;
+  // emit_action_rows keeps every ordered ODKU action visible until immediate
+  // CHECK/FK validation has completed.  action_final_col marks the one row per
+  // conflict group that may continue to unique-index and physical-write paths.
+  bool emit_action_rows = 10;
+  ColRef action_final_col = 11;
+  repeated ODKUForeignKeyCheck foreign_key_checks = 12 [(gogoproto.nullable) = false];
 }
 
 message UpdateCtx {
@@ -2282,4 +2288,12 @@ message RankOption {
 
 message AlterTableAutoIncrement {
   uint64 new_offset = 1;
+}
+
+message ODKUForeignKeyCheck {
+  // Target-table column positions forming one child FK tuple.
+  repeated int32 col_idx_list = 1;
+  // Boolean output column set by DEDUP JOIN for each logical action. It is
+  // true for a new INSERT action or when this action changed the FK tuple.
+  ColRef eligibility_col = 2;
 }

@@ -1665,6 +1665,21 @@ func Test_DMLOperatorSerializationRoundtrip(t *testing.T) {
 		_, err = decodeScope(data, proc, true, nil)
 		require.ErrorContains(t, err, "MORPC protocol version 50")
 		rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCLatestVersion)
+
+		actionOp := &dedupjoin.DedupJoin{
+			Conditions: [][]*plan.Expr{nil, nil}, EmitActionRows: true,
+		}
+		rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCLatestVersion)
+		_, actionInstruction, err := convertToPipelineInstruction(actionOp, proc, ctx, 1)
+		require.NoError(t, err)
+		actionData, err := (&pipeline.Pipeline{InstructionList: []*pipeline.Instruction{actionInstruction}}).Marshal()
+		require.NoError(t, err)
+		rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCVersion50)
+		_, _, err = convertToPipelineInstruction(actionOp, proc, ctx, 1)
+		require.ErrorContains(t, err, "MORPC protocol version 51")
+		_, err = decodeScope(actionData, proc, true, nil)
+		require.ErrorContains(t, err, "MORPC protocol version 51")
+		rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCLatestVersion)
 	})
 
 	t.Run("FuzzyFilter_RuntimeFilterPairContract", func(t *testing.T) {
@@ -2118,6 +2133,11 @@ func Test_DMLOperatorSerializationRoundtrip(t *testing.T) {
 			PhysicalChangedResultPos: 5,
 			UpdateCheckColIdxList:    []int32{1, 3},
 			CountFoundRows:           true,
+			EmitActionRows:           true,
+			ActionFinalResultPos:     6,
+			ForeignKeyChecks: []dedupjoin.ODKUForeignKeyCheck{{
+				ColIdxList: []int32{1, 2}, EligibilityResultPos: 7,
+			}},
 		}
 		_, pipeInstr, err := convertToPipelineInstruction(op, proc, ctx, 1)
 		require.NoError(t, err)
@@ -2127,6 +2147,10 @@ func Test_DMLOperatorSerializationRoundtrip(t *testing.T) {
 		require.Equal(t, int32(5), pipeInstr.DedupJoin.PhysicalChangedRowsResultPos)
 		require.Equal(t, []int32{1, 3}, pipeInstr.DedupJoin.UpdateCheckColIdxList)
 		require.True(t, pipeInstr.DedupJoin.CountFoundRows)
+		require.True(t, pipeInstr.DedupJoin.EmitActionRows)
+		require.Equal(t, int32(6), pipeInstr.DedupJoin.ActionFinalResultPos)
+		require.Equal(t, []int32{1, 2}, pipeInstr.DedupJoin.ForeignKeyChecks[0].ColIdxList)
+		require.Equal(t, int32(7), pipeInstr.DedupJoin.ForeignKeyChecks[0].EligibilityResultPos)
 
 		wire, err := pipeInstr.Marshal()
 		require.NoError(t, err)
@@ -2142,6 +2166,10 @@ func Test_DMLOperatorSerializationRoundtrip(t *testing.T) {
 		require.Equal(t, int32(5), restoredDedup.PhysicalChangedResultPos)
 		require.Equal(t, []int32{1, 3}, restoredDedup.UpdateCheckColIdxList)
 		require.True(t, restoredDedup.CountFoundRows)
+		require.True(t, restoredDedup.EmitActionRows)
+		require.Equal(t, int32(6), restoredDedup.ActionFinalResultPos)
+		require.Equal(t, []int32{1, 2}, restoredDedup.ForeignKeyChecks[0].ColIdxList)
+		require.Equal(t, int32(7), restoredDedup.ForeignKeyChecks[0].EligibilityResultPos)
 	})
 
 	t.Run("MergeOrder_SpillThreshold", func(t *testing.T) {

@@ -242,13 +242,16 @@ type container struct {
 	joinBat2 *batch.Batch
 	cfs2     []func(*vector.Vector, *vector.Vector, int64, int) error
 
-	savedVecs        []*vector.Vector
-	actionBeforeVecs []*vector.Vector
-	groupBeforeVecs  []*vector.Vector
-	stableUpdateVecs [][]*vector.Vector
-	stableCols       []int32
-	stableSources    []*vector.Vector
-	stableDests      []*vector.Vector
+	savedVecs             []*vector.Vector
+	actionBeforeVecs      []*vector.Vector
+	actionImageBeforeVecs []*vector.Vector
+	groupBeforeVecs       []*vector.Vector
+	foreignKeyBeforeVecs  [][]*vector.Vector
+	foreignKeyEligibility []bool
+	stableUpdateVecs      [][]*vector.Vector
+	stableCols            []int32
+	stableSources         []*vector.Vector
+	stableDests           []*vector.Vector
 
 	evecs []evalVector
 	vecs  []*vector.Vector
@@ -315,6 +318,9 @@ type DedupJoin struct {
 	PhysicalChangedResultPos  int32
 	UpdateCheckColIdxList     []int32
 	CountFoundRows            bool
+	EmitActionRows            bool
+	ActionFinalResultPos      int32
+	ForeignKeyChecks          []ODKUForeignKeyCheck
 
 	// OldColCapturePlaceholderIdxList / OldColCaptureProbeIdxList are parallel
 	// arrays. For each i, when probe hits a build bucket the probe-side column
@@ -329,6 +335,11 @@ type DedupJoin struct {
 	resultAllocation                *vector.AllocationAccountSelection
 
 	vm.OperatorBase
+}
+
+type ODKUForeignKeyCheck struct {
+	ColIdxList           []int32
+	EligibilityResultPos int32
 }
 
 func (dedupJoin *DedupJoin) SetAllocationAccount(
@@ -519,7 +530,10 @@ func (ctr *container) cleanStableUpdateVecs(proc *process.Process) {
 	ctr.stableSources = nil
 	ctr.stableDests = nil
 	ctr.actionBeforeVecs = nil
+	ctr.actionImageBeforeVecs = nil
 	ctr.groupBeforeVecs = nil
+	ctr.foreignKeyBeforeVecs = nil
+	ctr.foreignKeyEligibility = nil
 }
 
 func (ctr *container) cleanBuf(proc *process.Process) {

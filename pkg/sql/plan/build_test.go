@@ -5921,19 +5921,21 @@ func TestCheckConstraintWithChildForeignKey(t *testing.T) {
 			return false
 		}
 		require.Len(t, query.Nodes[assertNodeID].Children, 1)
-		require.Equal(t, plan.Node_PROJECT, query.Nodes[query.Nodes[assertNodeID].Children[0]].NodeType,
-			"ODKU CHECK must be attached directly to the final merged projection")
+		require.Equal(t, plan.Node_JOIN, query.Nodes[query.Nodes[assertNodeID].Children[0]].NodeType,
+			"ODKU CHECK must consume the per-action DEDUP UPDATE stream")
 		hasDedupUpdateBelowAssert := false
 		for nodeID, node := range query.Nodes {
 			if node.NodeType == plan.Node_JOIN && node.JoinType == plan.Node_DEDUP &&
 				node.OnDuplicateAction == plan.Node_UPDATE &&
 				containsNode(query.Nodes[assertNodeID].Children[0], int32(nodeID)) {
+				require.NotNil(t, node.DedupJoinCtx)
+				require.True(t, node.DedupJoinCtx.EmitActionRows)
 				hasDedupUpdateBelowAssert = true
 				break
 			}
 		}
 		require.True(t, hasDedupUpdateBelowAssert,
-			"CHECK assertion must remain above the DEDUP UPDATE final-row mutation")
+			"CHECK assertion must remain above every ordered DEDUP UPDATE action")
 	})
 }
 

@@ -86,7 +86,8 @@ const (
 	MORPCVersion48     int64 = 48 // generation-aware CDC watermark catalog
 	MORPCVersion49     int64 = 49 // vector-level grouping-set projection expansion
 	MORPCVersion50     int64 = 50 // ordered ODKU evaluation and logical affected-row metadata
-	MORPCLatestVersion       = MORPCVersion50
+	MORPCVersion51     int64 = 51 // per-action ODKU constraint-validation metadata
+	MORPCLatestVersion       = MORPCVersion51
 )
 
 // DefaultLockWaitTimeoutSeconds is shared by the frontend default and by

@@ -23,6 +23,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/hashbuild"
+	"github.com/matrixorigin/matrixone/pkg/testutil"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,102 @@ func runFinalizeFixture(
 		}
 	}
 	return out
+}
+
+func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		buildPayload      []int32
+		probeKey          int32
+		wantPayload       []int32
+		wantAffected      []uint64
+		wantPhysical      []bool
+		wantFinal         []bool
+		wantFKEligibility []bool
+	}{
+		{
+			name: "compact existing row emits one final update action", buildPayload: []int32{100}, probeKey: 10,
+			wantPayload: []int32{777}, wantAffected: []uint64{2},
+			wantPhysical: []bool{true}, wantFinal: []bool{true}, wantFKEligibility: []bool{true},
+		},
+		{
+			name: "existing row validates each update action", buildPayload: []int32{100, 200}, probeKey: 10,
+			wantPayload: []int32{777, 777}, wantAffected: []uint64{0, 2},
+			wantPhysical: []bool{false, true}, wantFinal: []bool{false, true}, wantFKEligibility: []bool{true, false},
+		},
+		{
+			name: "new duplicate group validates insert then update", buildPayload: []int32{100, 200}, probeKey: 99,
+			wantPayload: []int32{100, 777}, wantAffected: []uint64{0, 3},
+			wantPhysical: []bool{false, true}, wantFinal: []bool{false, true}, wantFKEligibility: []bool{true, true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proc, ctrl := newCaptureTestProc(t)
+			defer ctrl.Finish()
+			int32Typ := types.T_int32.ToType()
+			uint64Typ := types.T_uint64.ToType()
+			boolTyp := types.T_bool.ToType()
+			tag++
+
+			buildBat := batch.NewWithSize(6)
+			rowCount := len(tc.buildPayload)
+			keys, weights, markers := make([]int32, rowCount), make([]uint64, rowCount), make([]bool, rowCount)
+			for i := range rowCount {
+				keys[i], weights[i], markers[i] = 10, 1, true
+			}
+			buildBat.Vecs[0] = testutil.MakeInt32Vector(keys, nil, proc.Mp())
+			buildBat.Vecs[1] = testutil.MakeInt32Vector(tc.buildPayload, nil, proc.Mp())
+			buildBat.Vecs[2] = testutil.MakeUint64Vector(weights, nil, proc.Mp())
+			buildBat.Vecs[3] = testutil.MakeBoolVector(markers, nil, proc.Mp())
+			buildBat.Vecs[4] = testutil.MakeBoolVector(markers, nil, proc.Mp())
+			buildBat.Vecs[5] = testutil.MakeBoolVector(markers, nil, proc.Mp())
+			buildBat.SetRowCount(rowCount)
+			probeBat := makeInt32Batch(proc.Mp(), [][]int32{{tc.probeKey}, {5}}, nil)
+			conditions := [][]*plan.Expr{{newExpr(0, int32Typ)}, {newExpr(0, int32Typ)}}
+			updateExpr := &plan.Expr{Typ: plan.Type{Id: int32(types.T_int32)}, Expr: &plan.Expr_Lit{Lit: &plan.Literal{
+				Value: &plan.Literal_I32Val{I32Val: 777},
+			}}}
+			dedupArg := &DedupJoin{
+				LeftTypes:  []types.Type{int32Typ, int32Typ},
+				RightTypes: []types.Type{int32Typ, int32Typ, uint64Typ, boolTyp, boolTyp, boolTyp},
+				Conditions: conditions,
+				Result: []colexec.ResultPos{
+					colexec.NewResultPos(1, 1), colexec.NewResultPos(1, 2),
+					colexec.NewResultPos(1, 3), colexec.NewResultPos(1, 4),
+					colexec.NewResultPos(1, 5),
+				},
+				OnDuplicateAction: plan.Node_UPDATE,
+				UpdateColIdxList:  []int32{1}, UpdateColExprList: []*plan.Expr{updateExpr},
+				UpdateCheckColIdxList: []int32{1}, HasODKUAffectedRows: true,
+				AffectedRowsResultPos: 1, PhysicalChangedResultPos: 2,
+				EmitActionRows: true, ActionFinalResultPos: 3,
+				ForeignKeyChecks: []ODKUForeignKeyCheck{{ColIdxList: []int32{1}, EligibilityResultPos: 4}},
+				DelColIdx:        -1, DedupDeleteMarkerColIdx: -1, JoinMapTag: tag,
+				OperatorBase: vm.OperatorBase{OperatorInfo: vm.OperatorInfo{Idx: 0}},
+			}
+			buildArg := &hashbuild.HashBuild{
+				NeedHashMap: true, NeedBatches: true, NeedAllocateSels: true,
+				Conditions: conditions[1], IsDedup: true, OnDuplicateAction: plan.Node_UPDATE,
+				DelColIdx: -1, DedupDeleteMarkerColIdx: -1, JoinMapTag: tag, JoinMapRefCnt: 1,
+				OperatorBase: vm.OperatorBase{OperatorInfo: vm.OperatorInfo{Idx: 0}},
+			}
+			t.Cleanup(func() {
+				dedupArg.Reset(proc, false, nil)
+				buildArg.Reset(proc, false, nil)
+				dedupArg.Free(proc, false, nil)
+				buildArg.Free(proc, false, nil)
+				proc.Free()
+			})
+
+			out := runFinalizeFixture(t, dedupArg, buildArg, proc, buildBat, probeBat)
+			require.Len(t, out, 1)
+			require.Equal(t, tc.wantPayload, vector.MustFixedColNoTypeCheck[int32](out[0].Vecs[0]))
+			require.Equal(t, tc.wantAffected, vector.MustFixedColNoTypeCheck[uint64](out[0].Vecs[1]))
+			require.Equal(t, tc.wantPhysical, vector.MustFixedColNoTypeCheck[bool](out[0].Vecs[2]))
+			require.Equal(t, tc.wantFinal, vector.MustFixedColNoTypeCheck[bool](out[0].Vecs[3]))
+			require.Equal(t, tc.wantFKEligibility, vector.MustFixedColNoTypeCheck[bool](out[0].Vecs[4]))
+		})
+	}
 }
 
 // TestDedupJoinUpdateRestoresProbeVectors exercises the real UPDATE probe

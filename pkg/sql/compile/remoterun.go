@@ -937,6 +937,9 @@ func convertToPipelineInstruction(op vm.Operator, proc *process.Process, ctx *sc
 		if err := validateRemoteODKUAffectedRowsProtocol(proc, t.HasODKUAffectedRows); err != nil {
 			return ctxId, nil, err
 		}
+		if err := validateRemoteODKUActionRowsProtocol(proc, t.EmitActionRows); err != nil {
+			return ctxId, nil, err
+		}
 		relList, colList := getRelColList(t.Result)
 		in.DedupJoin = &pipeline.DedupJoin{
 			RelList:                         relList,
@@ -965,6 +968,15 @@ func convertToPipelineInstruction(op vm.Operator, proc *process.Process, ctx *sc
 			PhysicalChangedRowsResultPos:    t.PhysicalChangedResultPos,
 			UpdateCheckColIdxList:           t.UpdateCheckColIdxList,
 			CountFoundRows:                  t.CountFoundRows,
+			EmitActionRows:                  t.EmitActionRows,
+			ActionFinalResultPos:            t.ActionFinalResultPos,
+		}
+		in.DedupJoin.ForeignKeyChecks = make([]pipeline.ODKUForeignKeyCheck, len(t.ForeignKeyChecks))
+		for i, check := range t.ForeignKeyChecks {
+			in.DedupJoin.ForeignKeyChecks[i] = pipeline.ODKUForeignKeyCheck{
+				ColIdxList:           append([]int32(nil), check.ColIdxList...),
+				EligibilityResultPos: check.EligibilityResultPos,
+			}
 		}
 		in.SpillMem = t.SpillThreshold
 	case *rightdedupjoin.RightDedupJoin:
@@ -1589,6 +1601,15 @@ func convertToVmOperator(opr *pipeline.Instruction, ctx *scopeContext, eng engin
 		arg.PhysicalChangedResultPos = t.PhysicalChangedRowsResultPos
 		arg.UpdateCheckColIdxList = t.UpdateCheckColIdxList
 		arg.CountFoundRows = t.CountFoundRows
+		arg.EmitActionRows = t.EmitActionRows
+		arg.ActionFinalResultPos = t.ActionFinalResultPos
+		arg.ForeignKeyChecks = make([]dedupjoin.ODKUForeignKeyCheck, len(t.ForeignKeyChecks))
+		for i, check := range t.ForeignKeyChecks {
+			arg.ForeignKeyChecks[i] = dedupjoin.ODKUForeignKeyCheck{
+				ColIdxList:           append([]int32(nil), check.ColIdxList...),
+				EligibilityResultPos: check.EligibilityResultPos,
+			}
+		}
 		arg.OldColCapturePlaceholderIdxList = t.OldColCapturePlaceholderIdxList
 		arg.OldColCaptureProbeIdxList = t.OldColCaptureProbeIdxList
 		arg.SpillThreshold = opr.SpillMem
@@ -2030,6 +2051,18 @@ func validateRemoteODKUAffectedRowsProtocol(proc *process.Process, required bool
 	return nil
 }
 
+func validateRemoteODKUActionRowsProtocol(proc *process.Process, required bool) error {
+	if !required {
+		return nil
+	}
+	if proc == nil || !supportsRemoteODKUActionRows(proc.GetService()) {
+		return moerr.NewNotSupportedNoCtx(
+			"ODKU per-action constraint metadata requires MORPC protocol version 51",
+		)
+	}
+	return nil
+}
+
 func validateRemoteODKUAffectedRowsPipelineProtocol(
 	proc *process.Process,
 	p *pipeline.Pipeline,
@@ -2038,8 +2071,11 @@ func validateRemoteODKUAffectedRowsPipelineProtocol(
 		return nil
 	}
 	for _, instruction := range p.InstructionList {
-		if dedup := instruction.GetDedupJoin(); dedup != nil && dedup.HasOdkuAffectedRows {
-			if err := validateRemoteODKUAffectedRowsProtocol(proc, true); err != nil {
+		if dedup := instruction.GetDedupJoin(); dedup != nil && (dedup.HasOdkuAffectedRows || dedup.EmitActionRows) {
+			if err := validateRemoteODKUAffectedRowsProtocol(proc, dedup.HasOdkuAffectedRows); err != nil {
+				return err
+			}
+			if err := validateRemoteODKUActionRowsProtocol(proc, dedup.EmitActionRows); err != nil {
 				return err
 			}
 		}

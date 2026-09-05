@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/bytejson"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -33,6 +34,103 @@ func TestODKUAffectedRowsRules(t *testing.T) {
 	require.EqualValues(t, 1, odkuAffectedRows(false, true))
 }
 
+func TestODKUMetadataContractRejectsMalformedPlans(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+	keyType := types.T_int32.ToType()
+	boolType := types.T_bool.ToType()
+	condition := newExpr(0, keyType)
+
+	t.Run("shared result position", func(t *testing.T) {
+		arg := &DedupJoin{
+			LeftTypes: []types.Type{keyType}, RightTypes: []types.Type{types.T_uint64.ToType()},
+			Conditions:          [][]*plan.Expr{{condition}, {condition}},
+			Result:              []colexec.ResultPos{colexec.NewResultPos(1, 0)},
+			HasODKUAffectedRows: true, AffectedRowsResultPos: 0, PhysicalChangedResultPos: 0,
+		}
+		installTestAllocation(t, arg)
+		require.ErrorContains(t, arg.Prepare(proc), "result column is shared")
+		arg.Free(proc, false, nil)
+	})
+
+	t.Run("wrong action marker type", func(t *testing.T) {
+		arg := &DedupJoin{
+			LeftTypes: []types.Type{keyType}, RightTypes: []types.Type{keyType, boolType},
+			Conditions:     [][]*plan.Expr{{condition}, {condition}},
+			Result:         []colexec.ResultPos{colexec.NewResultPos(1, 0)},
+			EmitActionRows: true, ActionFinalResultPos: 0,
+		}
+		installTestAllocation(t, arg)
+		require.ErrorContains(t, arg.Prepare(proc), "expected")
+		arg.Free(proc, false, nil)
+	})
+}
+
+func TestODKUValueEqualityUsesSQLJSONAndScaledFloatSemantics(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+
+	jsonLeft := vector.NewVec(types.T_json.ToType())
+	jsonRight := vector.NewVec(types.T_json.ToType())
+	defer jsonLeft.Free(proc.Mp())
+	defer jsonRight.Free(proc.Mp())
+	one, err := bytejson.ParseJsonByteFromString("1")
+	require.NoError(t, err)
+	onePointZero, err := bytejson.ParseJsonByteFromString("1.0")
+	require.NoError(t, err)
+	require.NoError(t, vector.AppendBytes(jsonLeft, one, false, proc.Mp()))
+	require.NoError(t, vector.AppendBytes(jsonRight, onePointZero, false, proc.Mp()))
+	require.True(t, odkuValuesEqual(jsonLeft, jsonRight),
+		"JSON numeric encodings that compare equal must remain a no-op")
+
+	floatType := types.T_float32.ToType()
+	floatType.Scale = 2
+	floatLeft := vector.NewVec(floatType)
+	floatRight := vector.NewVec(floatType)
+	defer floatLeft.Free(proc.Mp())
+	defer floatRight.Free(proc.Mp())
+	require.NoError(t, vector.AppendFixed(floatLeft, float32(1.234), false, proc.Mp()))
+	require.NoError(t, vector.AppendFixed(floatRight, float32(1.231), false, proc.Mp()))
+	require.True(t, odkuValuesEqual(floatLeft, floatRight),
+		"FLOAT32 comparisons normalize values to the declared scale")
+}
+
+func TestODKUNoOpActionRestoresImplicitColumnsImmediately(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+	storedValue := testutil.MakeInt64Vector([]int64{10}, nil, proc.Mp())
+	storedTimestamp := testutil.MakeInt64Vector([]int64{100}, nil, proc.Mp())
+	incomingValue := testutil.MakeInt64Vector([]int64{10}, nil, proc.Mp())
+	incomingTimestamp := testutil.MakeInt64Vector([]int64{101}, nil, proc.Mp())
+	for _, vec := range []*vector.Vector{storedValue, storedTimestamp, incomingValue, incomingTimestamp} {
+		defer vec.Free(proc.Mp())
+	}
+	left := &batch.Batch{Vecs: []*vector.Vector{storedValue, storedTimestamp}}
+	right := &batch.Batch{Vecs: []*vector.Vector{incomingValue, incomingTimestamp}}
+	left.SetRowCount(1)
+	right.SetRowCount(1)
+	execs := make([]colexec.ExpressionExecutor, 2)
+	for i := range execs {
+		var err error
+		execs[i], err = colexec.NewExpressionExecutor(proc, &plan.Expr{
+			Typ:  plan.Type{Id: int32(types.T_int64)},
+			Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: 1, ColPos: int32(i)}},
+		})
+		require.NoError(t, err)
+		defer execs[i].Free()
+	}
+	ctr := &container{
+		joinBat1: left, joinBat2: right, exprExecs: execs, stableCols: []int32{0, 1},
+	}
+	defer ctr.cleanStableUpdateVecs(proc)
+	changed, err := ctr.applyUpdateExpressions(proc, []int32{0, 1}, []int32{0})
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Same(t, storedValue, ctr.joinBat1.Vecs[0])
+	require.Same(t, storedTimestamp, ctr.joinBat1.Vecs[1],
+		"a no-op action must not leak an implicit value into validation or the next action")
+}
+
 func TestODKUValueEqualityUsesSQLFloatSemantics(t *testing.T) {
 	proc := testutil.NewProcess(t)
 	defer proc.Free()
@@ -43,6 +141,34 @@ func TestODKUValueEqualityUsesSQLFloatSemantics(t *testing.T) {
 	require.NoError(t, vector.AppendFixed(left, math.Copysign(0, -1), false, proc.Mp()))
 	require.NoError(t, vector.AppendFixed(right, float64(0), false, proc.Mp()))
 	require.True(t, odkuValuesEqual(left, right), "-0 and +0 are SQL-equal and must remain a no-op")
+}
+
+func TestODKUValueEqualityUsesSQLStringSemantics(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+	charType := types.T_char.ToType()
+	charType.Width = 4
+	varcharType := types.T_varchar.ToType()
+	varcharType.Width = 4
+
+	for _, tc := range []struct {
+		name  string
+		typ   types.Type
+		equal bool
+	}{
+		{name: "CHAR ignores trailing spaces", typ: charType, equal: true},
+		{name: "VARCHAR preserves trailing spaces", typ: varcharType, equal: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			left := vector.NewVec(tc.typ)
+			right := vector.NewVec(tc.typ)
+			defer left.Free(proc.Mp())
+			defer right.Free(proc.Mp())
+			require.NoError(t, vector.AppendBytes(left, []byte("a"), false, proc.Mp()))
+			require.NoError(t, vector.AppendBytes(right, []byte("a   "), false, proc.Mp()))
+			require.Equal(t, tc.equal, odkuValuesEqual(left, right))
+		})
+	}
 }
 
 func TestODKUSequentialValuesSurviveProbeAdvance(t *testing.T) {

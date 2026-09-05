@@ -1446,10 +1446,7 @@ func (builder *QueryBuilder) remapAllColRefsForConsumer(
 			for _, expr := range node.DedupJoinCtx.UpdateColExprList {
 				increaseRefCnt(expr, 1, colRefCnt)
 			}
-			for _, col := range []*plan.ColRef{
-				node.DedupJoinCtx.AffectedRowsCol,
-				node.DedupJoinCtx.PhysicalChangedRowsCol,
-			} {
+			for _, col := range dedupJoinMetadataCols(node.DedupJoinCtx) {
 				if col != nil {
 					colRefCnt[[2]int32{col.RelPos, col.ColPos}]++
 				}
@@ -1538,10 +1535,7 @@ func (builder *QueryBuilder) remapAllColRefsForConsumer(
 					return nil, err
 				}
 			}
-			for _, col := range []*plan.ColRef{
-				node.DedupJoinCtx.AffectedRowsCol,
-				node.DedupJoinCtx.PhysicalChangedRowsCol,
-			} {
+			for _, col := range dedupJoinMetadataCols(node.DedupJoinCtx) {
 				if col == nil {
 					continue
 				}

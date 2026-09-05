@@ -347,6 +347,9 @@ message DedupJoin {
   int32 physical_changed_rows_result_pos = 24;
   repeated int32 update_check_col_idx_list = 25;
   bool count_found_rows = 26;
+  bool emit_action_rows = 27;
+  int32 action_final_result_pos = 28;
+  repeated ODKUForeignKeyCheck foreign_key_checks = 29 [(gogoproto.nullable) = false];
 }
 
 message RightDedupJoin {
@@ -808,4 +811,9 @@ message Apply {
   plan.VectorIndexScan vector_index_scan = 5;
   repeated string vector_attrs = 6;
   int64 txn_offset = 7;
+}
+
+message ODKUForeignKeyCheck {
+  repeated int32 col_idx_list = 1;
+  int32 eligibility_result_pos = 2;
 }

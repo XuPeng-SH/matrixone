@@ -45,7 +45,7 @@ func (builder *QueryBuilder) countColRefs(nodeID int32, colRefCnt map[[2]int32]i
 	if node.DedupJoinCtx != nil {
 		increaseRefCntForColRefList(node.DedupJoinCtx.OldColList, 2, colRefCnt)
 		increaseRefCntForExprList(node.DedupJoinCtx.UpdateColExprList, 2, colRefCnt)
-		for _, col := range []*plan.ColRef{node.DedupJoinCtx.AffectedRowsCol, node.DedupJoinCtx.PhysicalChangedRowsCol} {
+		for _, col := range dedupJoinMetadataCols(node.DedupJoinCtx) {
 			if col != nil {
 				colRefCnt[[2]int32{col.RelPos, col.ColPos}] += 2
 			}
@@ -335,7 +335,7 @@ func replaceColumnsForNode(node *plan.Node, projMap map[[2]int32]*plan.Expr) {
 	if node.DedupJoinCtx != nil {
 		replaceColumnsForColRefList(node.DedupJoinCtx.OldColList, projMap)
 		replaceColumnsForExprList(node.DedupJoinCtx.UpdateColExprList, projMap)
-		for _, col := range []*plan.ColRef{node.DedupJoinCtx.AffectedRowsCol, node.DedupJoinCtx.PhysicalChangedRowsCol} {
+		for _, col := range dedupJoinMetadataCols(node.DedupJoinCtx) {
 			if col != nil {
 				cols := []plan.ColRef{*col}
 				replaceColumnsForColRefList(cols, projMap)
@@ -689,7 +689,7 @@ func (builder *QueryBuilder) removeEffectlessLeftJoins(nodeID int32, tagCnt map[
 	if node.DedupJoinCtx != nil {
 		increaseTagCntForColRefList(node.DedupJoinCtx.OldColList, 2, tagCnt)
 		increaseTagCntForExprList(node.DedupJoinCtx.UpdateColExprList, 2, tagCnt)
-		for _, col := range []*plan.ColRef{node.DedupJoinCtx.AffectedRowsCol, node.DedupJoinCtx.PhysicalChangedRowsCol} {
+		for _, col := range dedupJoinMetadataCols(node.DedupJoinCtx) {
 			if col != nil {
 				tagCnt[col.RelPos] += 2
 			}
@@ -748,7 +748,7 @@ END:
 	if node.DedupJoinCtx != nil {
 		increaseTagCntForColRefList(node.DedupJoinCtx.OldColList, -2, tagCnt)
 		increaseTagCntForExprList(node.DedupJoinCtx.UpdateColExprList, -2, tagCnt)
-		for _, col := range []*plan.ColRef{node.DedupJoinCtx.AffectedRowsCol, node.DedupJoinCtx.PhysicalChangedRowsCol} {
+		for _, col := range dedupJoinMetadataCols(node.DedupJoinCtx) {
 			if col != nil {
 				tagCnt[col.RelPos] -= 2
 			}
@@ -771,6 +771,14 @@ END:
 	}
 
 	return nodeID
+}
+
+func dedupJoinMetadataCols(ctx *plan.DedupJoinCtx) []*plan.ColRef {
+	cols := []*plan.ColRef{ctx.AffectedRowsCol, ctx.PhysicalChangedRowsCol, ctx.ActionFinalCol}
+	for i := range ctx.ForeignKeyChecks {
+		cols = append(cols, ctx.ForeignKeyChecks[i].EligibilityCol)
+	}
+	return cols
 }
 
 func increaseTagCntForExprList(exprs []*plan.Expr, inc int, tagCnt map[int32]int) {
