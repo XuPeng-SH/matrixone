@@ -129,7 +129,9 @@ func Test_BuiltIn_RegexpReplaceStartsAtRequestedPosition(t *testing.T) {
 		{name: "anchor_alternative_does_not_steal_overlap", pattern: "aaa|^|aa", subject: "aaa", replacement: "X", position: 2, occurrence: 1, want: "aX"},
 		{name: "multiline_anchor_keeps_previous_newline", pattern: "(?m)^b", subject: "a\nb", replacement: "X", position: 3, occurrence: 1, want: "a\nX"},
 		{name: "zero_width_match_abutting_discarded_match", pattern: "(?m)a|$", subject: "a\nb", replacement: "X", position: 2, occurrence: 1, want: "aX\nb"},
-		{name: "zero_width_keeps_non_overlapping_iteration", pattern: "b*", subject: "ab", replacement: "X", position: 2, occurrence: 0, want: "aX"},
+		{name: "zero_width_after_nonempty_match", pattern: "b*", subject: "ab", replacement: "X", position: 2, occurrence: 0, want: "aXX"},
+		{name: "zero_width_all_from_start", pattern: "a*", subject: "abc", replacement: "X", position: 1, occurrence: 0, want: "XXbXcX"},
+		{name: "zero_width_all_after_position", pattern: "a*", subject: "abc", replacement: "X", position: 2, occurrence: 0, want: "aXbXcX"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := op.regMap.regularReplace(tc.pattern, tc.subject, tc.replacement, tc.position, tc.occurrence)
@@ -137,6 +139,10 @@ func Test_BuiltIn_RegexpReplaceStartsAtRequestedPosition(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+
+	got, err := op.regMap.regularReplace("^$", "", "X", 1, 0)
+	require.NoError(t, err)
+	require.Empty(t, got, "MySQL leaves an empty REGEXP_REPLACE subject unchanged")
 }
 
 func Test_BuiltIn_RegexpPositiveOccurrenceReturnsOnlyRequestedMatch(t *testing.T) {
@@ -161,7 +167,7 @@ func Test_BuiltIn_RegexpPositiveOccurrenceReturnsOnlyRequestedMatch(t *testing.T
 func Test_BuiltIn_RegexpStartAwareIteratorMatchesFreshSearchForContextFreePatterns(t *testing.T) {
 	op := newOpBuiltInRegexp()
 	const subject = "aba中a"
-	for _, pattern := range []string{"a", "a+", "a*", ".", "中|b", "[ab]+"} {
+	for _, pattern := range []string{"a", "a+", ".", "中|b", "[ab]+"} {
 		reg, err := op.regMap.getRegularMatcher(pattern)
 		require.NoError(t, err)
 		for _, start := range []int{0, 1, 2, 3, 6} {
@@ -191,6 +197,48 @@ func Test_BuiltIn_RegexpStartAwareIteratorMatchesFreshSearchForContextFreePatter
 			}
 		}
 	}
+}
+
+func Test_BuiltIn_RegexpZeroWidthIterationUsesMySQLSequence(t *testing.T) {
+	op := newOpBuiltInRegexp()
+	for _, tc := range []struct {
+		pattern    string
+		subject    string
+		position   int64
+		occurrence int64
+		want       int64
+	}{
+		{pattern: "a*", subject: "abc", position: 1, occurrence: 2, want: 2},
+		{pattern: "b*", subject: "abc", position: 2, occurrence: 2, want: 3},
+	} {
+		got, err := op.regMap.regularInstr(tc.pattern, tc.subject, tc.position, tc.occurrence, 0)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, got, "%+v", tc)
+	}
+}
+
+func Test_BuiltIn_RegexpEmptyMatchMetadataIsBoundedWithMatcherCache(t *testing.T) {
+	op := newOpBuiltInRegexp()
+	for _, tc := range []struct {
+		pattern string
+		want    bool
+	}{
+		{pattern: "a+", want: false},
+		{pattern: "a*", want: true},
+		{pattern: "^a", want: false},
+		{pattern: `\b`, want: true},
+		{pattern: "a|$", want: true},
+	} {
+		_, got, err := op.regMap.getRegularMatcherInfoWithMode(tc.pattern, false)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, got, tc.pattern)
+	}
+	for i := 0; i < mapSizeForRegexp*2; i++ {
+		_, _, err := op.regMap.getRegularMatcherInfoWithMode(fmt.Sprintf("x%d", i), false)
+		require.NoError(t, err)
+	}
+	require.LessOrEqual(t, len(op.regMap.mp), mapSizeForRegexp)
+	require.Equal(t, len(op.regMap.mp), len(op.regMap.mayMatchEmpty))
 }
 
 func Test_BuiltIn_RegexpBinaryPositions(t *testing.T) {
@@ -738,19 +786,21 @@ func BenchmarkRegexpReplaceModes(b *testing.B) {
 	text := strings.Repeat("abc中", 1024)
 	ascii := strings.Repeat("abcx", 1024)
 	for _, tc := range []struct {
-		name   string
-		value  string
-		binary bool
+		name    string
+		pattern string
+		value   string
+		binary  bool
 	}{
-		{name: "text_utf8", value: text},
-		{name: "binary_ascii", value: ascii, binary: true},
-		{name: "binary_utf8_bytes", value: text, binary: true},
+		{name: "text_utf8", pattern: ".", value: text},
+		{name: "binary_ascii", pattern: ".", value: ascii, binary: true},
+		{name: "binary_utf8_bytes", pattern: ".", value: text, binary: true},
+		{name: "zero_width_text", pattern: "a*", value: strings.Repeat("abc", 1024)},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			op := newOpBuiltInRegexp()
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				if _, err := op.regMap.regularReplaceWithMode(".", tc.value, "X", 1, 0, tc.binary); err != nil {
+				if _, err := op.regMap.regularReplaceWithMode(tc.pattern, tc.value, "X", 1, 0, tc.binary); err != nil {
 					b.Fatal(err)
 				}
 			}

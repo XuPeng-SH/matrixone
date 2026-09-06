@@ -3455,6 +3455,17 @@ func (b *baseBinder) bindFuncExprImplByAstExpr(name string, astArgs []tree.Expr,
 			if err != nil {
 				return nil, err
 			}
+			if b.builder != nil && b.builder.isPrepareStatement && name == "bit_count" &&
+				len(astArgs) == 1 {
+				if _, directParam := unwrapParenExpr(arg).(*tree.ParamExpr); directParam {
+					binaryType := types.T_varbinary.ToType()
+					expr, err = appendCastBeforeExpr(b.GetContext(), expr, makePlan2Type(&binaryType))
+					if err != nil {
+						return nil, err
+					}
+					b.markPreparedNumericFallback(expr)
+				}
+			}
 
 			args[idx] = expr
 		}

@@ -150,3 +150,18 @@ CREATE TABLE t_bit_count_coercion(id INT PRIMARY KEY, v VARCHAR(20));
 INSERT INTO t_bit_count_coercion VALUES (1, 'abc'), (2, '12x'), (3, ''), (4, NULL);
 SELECT id, BIT_COUNT(v) AS bits FROM t_bit_count_coercion ORDER BY id;
 DROP TABLE t_bit_count_coercion;
+
+# An unresolved marker defaults to a binary string. Reusing the statement with
+# a numeric SQL value must rebind the overload, then return to byte semantics.
+PREPARE bit_count_marker FROM 'SELECT BIT_COUNT(?)';
+SET @bit_count_value = '64';
+EXECUTE bit_count_marker USING @bit_count_value;
+SET @bit_count_value = 64;
+EXECUTE bit_count_marker USING @bit_count_value;
+SET @bit_count_value = 64.5;
+EXECUTE bit_count_marker USING @bit_count_value;
+SET @bit_count_value = CAST('64' AS BINARY);
+EXECUTE bit_count_marker USING @bit_count_value;
+SET @bit_count_value = NULL;
+EXECUTE bit_count_marker USING @bit_count_value;
+DEALLOCATE PREPARE bit_count_marker;

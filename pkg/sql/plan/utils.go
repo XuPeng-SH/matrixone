@@ -1086,13 +1086,24 @@ func PreparedPlanHasDeferredNumericFunction(preparePlan *Plan) bool {
 // decoded.  In particular, this avoids scanning/deep-copying the entire plan
 // on every ordinary execution.
 func PreparedPlanNumericFallbackParamPositions(preparePlan *Plan) []int32 {
+	return preparedPlanFunctionFallbackParamPositions(preparePlan, "abs")
+}
+
+// PreparedPlanBitCountFallbackParamPositions returns unresolved BIT_COUNT
+// marker positions whose prepare-time binary-string default must be rebound
+// only when execution supplies a numeric domain.
+func PreparedPlanBitCountFallbackParamPositions(preparePlan *Plan) []int32 {
+	return preparedPlanFunctionFallbackParamPositions(preparePlan, "bit_count")
+}
+
+func preparedPlanFunctionFallbackParamPositions(preparePlan *Plan, functionName string) []int32 {
 	if preparePlan == nil || preparePlan.GetQuery() == nil {
 		return nil
 	}
 	positions := make(map[int32]struct{})
 	_ = plan.VisitExpressionsInOwner(preparePlan, func(expr *plan.Expr) error {
 		fn := expr.GetF()
-		if fn == nil || fn.Func == nil || !strings.EqualFold(fn.Func.GetObjName(), "abs") || len(fn.Args) != 1 {
+		if fn == nil || fn.Func == nil || !strings.EqualFold(fn.Func.GetObjName(), functionName) || len(fn.Args) != 1 {
 			return nil
 		}
 		if !isPreparedNumericFallbackExpr(fn.Args[0]) {
@@ -4000,6 +4011,14 @@ func (rule *preparedRuntimeSpecializationScanRule) scanExpr(expr *plan.Expr, roo
 			return
 		}
 		name := strings.ToLower(exprImpl.F.Func.GetObjName())
+		if name == "bit_count" && len(exprImpl.F.Args) == 1 &&
+			isPreparedNumericFallbackExpr(exprImpl.F.Args[0]) {
+			// BIT_COUNT has its own value-aware trigger: unresolved markers keep
+			// the binary-string plan for text/BLOB packets and specialize only
+			// numeric executions. Do not put every execution on the generic
+			// deep-copy path.
+			return
+		}
 		if name == "cast" && isExplicitPreparedCast(expr) {
 			// The user-selected cast owns the parameter domain. Its direct marker
 			// does not require runtime specialization, but a nested expression can
@@ -4788,6 +4807,45 @@ type ParamValue struct {
 	// capability on each value so execute-time plan specialization does not need
 	// to guess a service identity from context.Context.
 	EnableNumericPrefix bool
+}
+
+// PreparedParamValueHasNumericRuntime reports whether a prepared marker's
+// current SQL/protocol value owns a numeric domain. It deliberately does not
+// infer numbers from text: consumers such as BIT_COUNT distinguish the binary
+// bytes "64" from the integer 64.
+func PreparedParamValueHasNumericRuntime(value any) bool {
+	if param, ok := value.(ParamValue); ok {
+		if param.Value == nil {
+			return false
+		}
+		if param.HasRuntimeType && preparedRuntimeTypeIsNumeric(param.RuntimeType) {
+			return true
+		}
+		if param.HasSourceType && preparedRuntimeTypeIsNumeric(param.SourceType) {
+			return true
+		}
+		if param.PrepareParamKind == vector.PrepareParamInteger ||
+			param.PrepareParamKind == vector.PrepareParamFloat ||
+			param.PrepareParamKind == vector.PrepareParamDecimal ||
+			param.PrepareParamKind == vector.PrepareParamBoolean {
+			return true
+		}
+		return PreparedParamValueHasNumericRuntime(param.Value)
+	}
+	switch value.(type) {
+	case bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, types.MoYear,
+		types.Decimal64, types.Decimal128, types.Decimal256:
+		return true
+	default:
+		return false
+	}
+}
+
+func preparedRuntimeTypeIsNumeric(typ types.Type) bool {
+	return typ.IsNumeric() || typ.Oid == types.T_bool || typ.Oid == types.T_bit || typ.Oid == types.T_year
 }
 
 // PreparedRuntimeTypeFromString infers the narrowest numeric type needed by a

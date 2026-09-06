@@ -58,6 +58,13 @@ SELECT REGEXP_REPLACE('aaa', 'aa', 'X', 2, 1) AS overlap_one,
        REGEXP_REPLACE('abc', '^', 'X', 2, 0) AS anchored,
        HEX(REGEXP_REPLACE('a\nb', '(?m)a|$', 'X', 2, 1)) AS zero_width_at_pos;
 
+# ICU retains a zero-width match immediately after a nonempty match. Empty
+# subjects remain unchanged by REGEXP_REPLACE.
+SELECT REGEXP_INSTR('abc', 'a*', 1, 2, 0) AS after_nonempty,
+       REGEXP_INSTR('abc', 'b*', 2, 2, 0) AS after_nonempty_at_pos,
+       HEX(REGEXP_REPLACE('abc', 'a*', 'X', 1, 0)) AS replace_zero_width,
+       HEX(REGEXP_REPLACE('', '^$', 'X')) AS empty_subject;
+
 # Binary subjects interpret pos as a byte offset.
 SELECT HEX(REGEXP_REPLACE(CAST(_binary'中中' AS BINARY(6)), CAST(_binary'中' AS BINARY(3)), _binary'X', 2, 1)) AS binary_replace,
        HEX(REGEXP_REPLACE(CAST(_binary'中中' AS VARBINARY(6)), CAST(_binary'中' AS VARBINARY(3)), _binary'X', 2, 1)) AS varbinary_replace;

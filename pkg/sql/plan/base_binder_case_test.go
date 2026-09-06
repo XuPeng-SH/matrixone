@@ -27,6 +27,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
+	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,6 +56,54 @@ func TestPreparedNumericFallbackMetadataSurvivesProtoRoundTrip(t *testing.T) {
 	require.Equal(t, int32(2), metadata.GetFallbackSourceColPos())
 	require.Zero(t, restored.AuxId,
 		"prepared numeric provenance must not be encoded as an executor memo id")
+}
+
+func TestPreparedBitCountDefaultsToBinaryAndSpecializesNumericValues(t *testing.T) {
+	ctx := context.Background()
+	prepared, err := runOneStmt(NewMockOptimizer(false), t,
+		"prepare stmt_bit_count from 'select bit_count(?)'")
+	require.NoError(t, err)
+	preparePlan := prepared.GetDcl().GetPrepare().Plan
+	require.Equal(t, []int32{0}, PreparedPlanBitCountFallbackParamPositions(preparePlan))
+	require.False(t, PreparedPlanNeedsRuntimeSpecialization(preparePlan),
+		"BIT_COUNT uses its cached marker-position trigger instead of a per-execute plan scan")
+	fn := findPlanFunctionExpr(preparePlan, "bit_count")
+	require.NotNil(t, fn)
+	_, overload := function.DecodeOverloadID(fn.GetF().GetFunc().GetObj())
+	require.Equal(t, int32(14), overload)
+	require.Equal(t, int32(types.T_varbinary), fn.GetF().Args[0].Typ.Id)
+
+	numericPlan, specialized, err := FillValuesOfParamsInPlanWithSpecialization(ctx, preparePlan, []any{
+		ParamValue{Value: "64", PrepareParamKind: vector.PrepareParamInteger},
+	})
+	require.NoError(t, err)
+	require.True(t, specialized)
+	fn = findPlanFunctionExpr(numericPlan, "bit_count")
+	require.NotNil(t, fn)
+	_, overload = function.DecodeOverloadID(fn.GetF().GetFunc().GetObj())
+	require.Equal(t, int32(7), overload)
+	require.Equal(t, int32(types.T_int64), fn.GetF().Args[0].Typ.Id)
+
+	stringPlan, specialized, err := FillValuesOfParamsInPlanWithSpecialization(ctx, preparePlan, []any{
+		ParamValue{Value: "64", IsBinaryProtocol: true, PrepareParamKind: vector.PrepareParamNone},
+	})
+	require.NoError(t, err)
+	fn = findPlanFunctionExpr(stringPlan, "bit_count")
+	require.NotNil(t, fn)
+	_, overload = function.DecodeOverloadID(fn.GetF().GetFunc().GetObj())
+	require.Equal(t, int32(14), overload)
+	require.False(t, specialized)
+
+	explicitCast, err := runOneStmt(NewMockOptimizer(false), t,
+		"prepare stmt_bit_count_cast from 'select bit_count(cast(? as char))'")
+	require.NoError(t, err)
+	explicitCastPlan := explicitCast.GetDcl().GetPrepare().Plan
+	require.Empty(t, PreparedPlanBitCountFallbackParamPositions(explicitCastPlan),
+		"an explicit user cast owns the marker domain and must not be rebound")
+	fn = findPlanFunctionExpr(explicitCastPlan, "bit_count")
+	require.NotNil(t, fn)
+	_, overload = function.DecodeOverloadID(fn.GetF().GetFunc().GetObj())
+	require.Equal(t, int32(13), overload)
 }
 
 func TestPreparedNumericMetadataIsSparse(t *testing.T) {

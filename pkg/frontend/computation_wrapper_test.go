@@ -325,8 +325,10 @@ func newPreparedExecuteEnvForSQLWithCompilerContext(
 		protocolVersion:            currentProtocolVersion(proc),
 		directResultParamPositions: plan2.PreparedPlanDirectResultParamPositions(preparePlan.GetDcl().GetPrepare().Plan),
 		fixedIntegerParamPositions: fixedIntegerParamPositions,
-		hasPaginationParams:        hasPaginationParams,
-		hasLagLeadParams:           hasLagLeadParams,
+		bitCountOverloadParamPositions: plan2.PreparedPlanBitCountFallbackParamPositions(
+			preparePlan.GetDcl().GetPrepare().Plan),
+		hasPaginationParams: hasPaginationParams,
+		hasLagLeadParams:    hasLagLeadParams,
 	}
 	prepareStmt.refreshNumericPrefixConsumer(
 		preparePlan.GetDcl().GetPrepare().Plan,
@@ -1845,6 +1847,63 @@ func TestPreparedNumericOverloadSpecializationReusesRuntimeCategory(t *testing.T
 		"changing the runtime numeric category must build a new bounded variant")
 	cw.proc.SetPrepareParams(nil)
 	floatParams.Free(cw.proc.Mp())
+}
+
+func TestPreparedBitCountSpecializesOnlyNumericProtocolValues(t *testing.T) {
+	ses, prepareStmt, cw, execCtx := newPreparedExecuteEnvForSQL(t, 217, "select bit_count(?)")
+	defer func() {
+		cw.proc.SetPrepareParams(nil)
+		prepareStmt.Close()
+	}()
+	preparePlan := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan
+	require.False(t, plan2.PreparedPlanNeedsRuntimeSpecialization(preparePlan))
+	require.Equal(t, []int32{0}, prepareStmt.bitCountOverloadParamPositions)
+	findBitCount := func(queryPlan *plan.Plan) *plan.Expr {
+		var found *plan.Expr
+		require.NoError(t, plan.VisitExpressionsInOwner(queryPlan, func(expr *plan.Expr) error {
+			if fn := expr.GetF(); found == nil && fn != nil && fn.Func.GetObjName() == "bit_count" {
+				found = expr
+			}
+			return nil
+		}))
+		return found
+	}
+
+	install := func(value string, mysqlType defines.MysqlType, kind vector.PrepareParamKind) *vector.Vector {
+		params := vector.NewVec(types.T_text.ToType())
+		require.NoError(t, vector.AppendBytes(params, []byte(value), false, cw.proc.Mp()))
+		params.SetPrepareParamKinds([]vector.PrepareParamKind{kind})
+		prepareStmt.params = params
+		prepareStmt.ParamTypes = []byte{byte(mysqlType), 0}
+		return params
+	}
+
+	stringParams := install("64", defines.MYSQL_TYPE_VAR_STRING, vector.PrepareParamNone)
+	_, stringPlan, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
+	require.NoError(t, err)
+	require.Same(t, preparePlan, stringPlan)
+	fn := findBitCount(stringPlan)
+	require.NotNil(t, fn)
+	require.Equal(t, int32(types.T_varbinary), fn.GetF().Args[0].Typ.Id)
+
+	cw.proc.SetPrepareParams(nil)
+	integerParams := install("64", defines.MYSQL_TYPE_LONGLONG, vector.PrepareParamInteger)
+	stringParams.Free(cw.proc.Mp())
+	_, integerPlan, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
+	require.NoError(t, err)
+	require.NotSame(t, preparePlan, integerPlan)
+	fn = findBitCount(integerPlan)
+	require.NotNil(t, fn)
+	require.Equal(t, int32(types.T_int64), fn.GetF().Args[0].Typ.Id)
+
+	cw.proc.SetPrepareParams(nil)
+	blobParams := install("64", defines.MYSQL_TYPE_BLOB, vector.PrepareParamNone)
+	integerParams.Free(cw.proc.Mp())
+	_, blobPlan, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
+	require.NoError(t, err)
+	require.Same(t, preparePlan, blobPlan)
+	cw.proc.SetPrepareParams(nil)
+	blobParams.Free(cw.proc.Mp())
 }
 
 func TestPreparedExplicitDoubleAbsReusesOriginalCachedCompile(t *testing.T) {

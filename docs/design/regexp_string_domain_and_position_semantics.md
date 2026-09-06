@@ -82,9 +82,12 @@ This follows MySQL 8.4's `Regexp_facade`: `Find`, used by INSTR, resets the
 matcher with the suffix, whereas SUBSTR and REPLACE reset with the complete
 subject and pass a start position to the matcher.
 
-Occurrences after the first remain relative to the same matcher subject. A
-zero-width match must either be emitted once or advance by exactly one text code
-point / binary byte, so every loop terminates.
+Occurrences after the first remain relative to the same matcher subject. ICU
+retains an empty match at the end of a preceding nonempty match; Go's `FindAll`
+suppresses it. The iterator therefore emits every selected empty match and then
+advances by exactly one text code point / binary byte. This preserves the ICU
+sequence while guaranteeing termination. `REGEXP_REPLACE` keeps MySQL's
+function-level exception that an empty subject is returned unchanged.
 
 ## Data flow and ownership
 
@@ -112,8 +115,10 @@ escapes above `0xff` are rejected in binary mode so callers cannot address the
 internal alphabet.
 
 The regexp cache is operator-owned, limited to 100 entries, and clones pattern
-keys whose source vector may be reused. Per-row encoded subjects and results are
-lexically scoped and become unreachable after evaluation.
+keys whose source vector may be reused. Its syntax-derived zero-width metadata
+uses the same keys and is evicted atomically with each matcher, so it cannot grow
+independently. Per-row encoded subjects and results are lexically scoped and
+become unreachable after evaluation.
 
 Cost model:
 
@@ -122,6 +127,9 @@ Cost model:
   bytes per source byte;
 - positional matching streams occurrences and retains constant match-index
   memory rather than materializing `FindAll` results;
+- replace-all patterns that cannot consume zero input units retain RE2's native
+  optimized path; only nullable/empty-width syntax uses the ICU-compatible
+  iterator;
 - INSTR encodes only the suffix starting at `pos`; SUBSTR and REPLACE retain the
   complete subject because their anchor contract requires it;
 - the uniform-domain predicate path stays vectorized and allocation-free.
@@ -162,7 +170,7 @@ RE2 encoding is retained.
 | nested dynamic result domain | binder accepts correlated runtime domains and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse |
 | static mismatch | function resolver returns 3995 for known mixed operands | existing BVT matrix |
 | byte positions/results | binary vectors without legacy `SetIsBin` | BINARY/VARBINARY/BLOB BVT |
-| zero-width progress | bounded occurrence/replacement unit tests | existing SQL cases |
+| zero-width sequence/progress | adjacent nonempty/empty, anchor, boundary, empty-subject, and cache-bound unit tests | SQL results compared with MySQL 8.4 |
 | hot-path cost | allocation benchmarks for ASCII, high-byte, and near-end positions | performance evidence, not BVT timing assertions |
 
 The regression tests use minimum strings and no sleeps, retries, ambient state,

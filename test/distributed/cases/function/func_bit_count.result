@@ -202,3 +202,25 @@ id    bits
 3    0
 4    null
 DROP TABLE t_bit_count_coercion;
+PREPARE bit_count_marker FROM 'SELECT BIT_COUNT(?)';
+SET @bit_count_value = '64';
+EXECUTE bit_count_marker USING @bit_count_value;
+bit_count(?)
+7
+SET @bit_count_value = 64;
+EXECUTE bit_count_marker USING @bit_count_value;
+bit_count(?)
+1
+SET @bit_count_value = 64.5;
+EXECUTE bit_count_marker USING @bit_count_value;
+bit_count(?)
+2
+SET @bit_count_value = CAST('64' AS BINARY);
+EXECUTE bit_count_marker USING @bit_count_value;
+bit_count(?)
+7
+SET @bit_count_value = NULL;
+EXECUTE bit_count_marker USING @bit_count_value;
+bit_count(?)
+null
+DEALLOCATE PREPARE bit_count_marker;

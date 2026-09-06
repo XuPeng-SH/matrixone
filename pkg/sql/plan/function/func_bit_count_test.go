@@ -228,6 +228,27 @@ func TestBitCountVarcharWithIsBin(t *testing.T) {
 	require.Equal(t, []uint64{7, 1, 0, 8}, vector.MustFixedColNoTypeCheck[uint64](result.GetResultVector()))
 }
 
+func TestBitCountVarcharUsesRowStringDomain(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	mp := proc.Mp()
+	input := testutil.MakeVarlenaVector(
+		[][]byte{[]byte("64"), []byte("64"), []byte("64")},
+		nil,
+		types.T_varchar.ToType(),
+		mp,
+	)
+	defer input.Free(mp)
+	require.NoError(t, input.SetRuntimeStringDomainAtWithMP(0, types.RuntimeStringBinary, mp))
+	require.NoError(t, input.SetRuntimeStringDomainAtWithMP(1, types.RuntimeStringText, mp))
+
+	result := vector.NewFunctionResultWrapper(types.T_uint64.ToType(), mp)
+	defer result.Free()
+	require.NoError(t, result.PreExtendAndReset(input.Length()))
+
+	require.NoError(t, BitCountNonBinaryString([]*vector.Vector{input}, result, proc, input.Length(), nil))
+	require.Equal(t, []uint64{7, 1, 1}, vector.MustFixedColNoTypeCheck[uint64](result.GetResultVector()))
+}
+
 func TestBitCountTypeCheck(t *testing.T) {
 	ctx := context.Background()
 
@@ -235,6 +256,12 @@ func TestBitCountTypeCheck(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int32(BIT_COUNT), get.fid)
 	require.Equal(t, int32(13), get.overloadId)
+
+	get, err = GetFunctionByName(ctx, "bit_count", []types.Type{types.T_any.ToType()})
+	require.NoError(t, err)
+	require.Equal(t, int32(14), get.overloadId)
+	require.True(t, get.needCast)
+	require.Equal(t, types.T_varbinary, get.targetTypes[0].Oid)
 
 	get, err = GetFunctionByName(ctx, "bit_count", []types.Type{types.T_binary.ToType()})
 	require.NoError(t, err)

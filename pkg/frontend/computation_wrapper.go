@@ -1291,6 +1291,8 @@ func initExecuteStmtParamWithResolverInSession(
 			newPreparePlan.Plan, len(newPreparePlan.ParamTypes))
 		prepareStmt.numericOverloadParamPositions = plan2.PreparedPlanNumericFallbackParamPositions(
 			newPreparePlan.Plan)
+		prepareStmt.bitCountOverloadParamPositions = plan2.PreparedPlanBitCountFallbackParamPositions(
+			newPreparePlan.Plan)
 		prepareStmt.refreshFixedIntegerParamPositions(newPreparePlan.Plan)
 		prepareStmt.ColDefData = newColDefData
 		if execCtx.input != nil && execCtx.input.isBinaryProtExecute {
@@ -1377,10 +1379,13 @@ func initExecuteStmtParamWithResolverInSession(
 		preparedExplain = true
 	}
 	runtimeNumericPrefixCandidate := false
-	// The planner records deferred ABS overloads explicitly on the prepared
-	// plan.  Carry this bounded metadata into execution instead of walking every
-	// expression tree for each EXECUTE.
-	runtimeNumericOverloadCandidate := len(prepareStmt.numericOverloadParamPositions) > 0 &&
+	// The planner records deferred overloads explicitly on the prepared plan.
+	// Carry this bounded metadata into execution instead of walking every
+	// expression tree for each EXECUTE. ABS always rebinds; BIT_COUNT keeps its
+	// binary-string default unless the current runtime domain is numeric.
+	deferredNumericOverloadCandidate := len(prepareStmt.numericOverloadParamPositions) > 0
+	deferredBitCountOverloadCandidate := len(prepareStmt.bitCountOverloadParamPositions) > 0
+	runtimeNumericOverloadCandidate := deferredNumericOverloadCandidate &&
 		executionPlan.GetQuery() != nil
 	runtimeDirectResultCandidate := false
 	runtimeTextComparisonSpecialization := false
@@ -1388,7 +1393,7 @@ func initExecuteStmtParamWithResolverInSession(
 	runtimeDirectResultPositions := make([]int32, 0, len(directResultPositions))
 	needsRuntimeParamVals := !binaryExecute || binaryLiteralPlan ||
 		prepareStmt.hasPaginationParams || prepareStmt.hasLagLeadParams || preparedExplain ||
-		runtimeNumericOverloadCandidate
+		runtimeNumericOverloadCandidate || deferredBitCountOverloadCandidate
 	cwft.paramVals = nil
 	cwft.runtimeDirectResultSpecialization = false
 	if prepareStmt.params != nil && prepareStmt.params.Length() > 0 { // use binary protocol
@@ -1483,6 +1488,9 @@ func initExecuteStmtParamWithResolverInSession(
 			if err != nil {
 				return nil, nil, nil, originSQL, false, err
 			}
+			runtimeNumericOverloadCandidate = runtimeNumericOverloadCandidate ||
+				preparedParamValuesHaveNumericRuntimeAtPositions(
+					cwft.paramVals, prepareStmt.bitCountOverloadParamPositions)
 			if runtimeDirectResultCandidate {
 				if err = applyBinaryDirectResultDecimalTypes(
 					reqCtx, cwft.paramVals, prepareStmt.ParamTypes, runtimeDirectResultPositions); err != nil {
@@ -1529,6 +1537,9 @@ func initExecuteStmtParamWithResolverInSession(
 			cwft.proc.SetOwnedPrepareParamsWithMeta(params, paramIsBin, paramKinds, paramBinaryString)
 		}
 		cwft.paramVals = paramVals
+		runtimeNumericOverloadCandidate = runtimeNumericOverloadCandidate ||
+			preparedParamValuesHaveNumericRuntimeAtPositions(
+				cwft.paramVals, prepareStmt.bitCountOverloadParamPositions)
 	} else {
 		if numParams > 0 {
 			return nil, nil, nil, originSQL, false, moerr.NewInvalidInput(reqCtx, "Incorrect arguments to EXECUTE")
@@ -2255,6 +2266,18 @@ func preparedParamValues(proc *process.Process, paramTypes []byte) ([]any, error
 		values[i] = paramValue
 	}
 	return values, nil
+}
+
+func preparedParamValuesHaveNumericRuntimeAtPositions(values []any, positions []int32) bool {
+	for _, position := range positions {
+		if position < 0 || int(position) >= len(values) {
+			continue
+		}
+		if plan2.PreparedParamValueHasNumericRuntime(values[position]) {
+			return true
+		}
+	}
+	return false
 }
 
 func binaryProtocolRuntimeParamTypes(paramTypes []byte, params *vector.Vector) []types.Type {

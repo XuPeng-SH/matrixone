@@ -3139,6 +3139,68 @@ func TestParseExecuteDataDecimalRebindsPreparedAbsExactly(t *testing.T) {
 	require.Equal(t, int32(types.T_decimal256), abs.GetF().Args[0].Typ.Id)
 }
 
+func TestParseExecuteDataBitCountMarkerUsesPacketDomain(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		packet     func(*MysqlProtocolImpl) []byte
+		paramKind  vector.PrepareParamKind
+		want       uint64
+		specialize bool
+	}{
+		{
+			name: "var string keeps binary marker default",
+			packet: func(proto *MysqlProtocolImpl) []byte {
+				return buildStringExecutePacket(proto, defines.MYSQL_TYPE_VAR_STRING, "64")
+			},
+			want: 7,
+		},
+		{
+			name: "blob keeps binary marker default",
+			packet: func(proto *MysqlProtocolImpl) []byte {
+				return buildStringExecutePacket(proto, defines.MYSQL_TYPE_BLOB, "64")
+			},
+			want: 7,
+		},
+		{
+			name:       "integer rebinds numeric overload",
+			packet:     func(*MysqlProtocolImpl) []byte { return buildLongLongExecutePacket(64, false) },
+			paramKind:  vector.PrepareParamInteger,
+			want:       1,
+			specialize: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			proto, proc, prepareStmt := newBinaryPrepareProtocolTestCase(t, "select bit_count(?)")
+			defer func() {
+				proc.SetPrepareParams(nil)
+				prepareStmt.Close()
+			}()
+			require.NoError(t, proto.ParseExecuteData(ctx, proc, prepareStmt, tc.packet(proto), 0))
+			prepareStmt.params.SetPrepareParamKinds([]vector.PrepareParamKind{tc.paramKind})
+			proc.SetPrepareParamsWithMeta(
+				prepareStmt.params, []bool{false}, []vector.PrepareParamKind{tc.paramKind})
+			values, err := preparedParamValues(proc, prepareStmt.ParamTypes)
+			require.NoError(t, err)
+			runtimePlan, specialized, err := plan.FillValuesOfParamsInPlanWithSpecialization(
+				ctx, prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan, values)
+			require.NoError(t, err)
+			require.Equal(t, tc.specialize, specialized)
+
+			query := runtimePlan.GetQuery()
+			require.NotEmpty(t, query.Steps)
+			project := query.Nodes[query.Steps[len(query.Steps)-1]]
+			require.Len(t, project.ProjectList, 1)
+			executor, err := colexec.NewExpressionExecutor(proc, project.ProjectList[0])
+			require.NoError(t, err)
+			defer executor.Free()
+			result, err := executor.Eval(proc, []*batch.Batch{batch.EmptyForConstFoldBatch}, nil)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, vector.GetFixedAtNoTypeCheck[uint64](result, 0))
+		})
+	}
+}
+
 func TestParseExecuteDataPreservesYearWireType(t *testing.T) {
 	data := make([]byte, 11)
 	copy(data, []byte{0, 0, 0, 0, 0, 0, 1, byte(defines.MYSQL_TYPE_YEAR), 0})

@@ -805,10 +805,42 @@ func BitCountDecimal256(ivecs []*vector.Vector, result vector.FunctionResultWrap
 }
 
 func BitCountNonBinaryString(ivecs []*vector.Vector, result vector.FunctionResultWrapper, proc *process.Process, length int, selectList *FunctionSelectList) error {
-	if ivecs[0].GetIsBin() {
-		return opUnaryBytesToFixed[uint64](ivecs, result, proc, length, bitCountFromBinaryString, selectList)
+	if !ivecs[0].HasBinaryStringRows() {
+		binary := types.StaticStringDomain(*ivecs[0].GetType()) == types.StringDomainBinary ||
+			ivecs[0].GetIsBin() || ivecs[0].GetIsBinaryString()
+		if binary {
+			return opUnaryBytesToFixed[uint64](ivecs, result, proc, length, bitCountFromBinaryString, selectList)
+		}
+		return opUnaryBytesToFixedWithErrorCheck[uint64](ivecs, result, proc, length, bitCountFromNonBinaryString, selectList)
 	}
-	return opUnaryBytesToFixedWithErrorCheck[uint64](ivecs, result, proc, length, bitCountFromNonBinaryString, selectList)
+
+	result.UseOptFunctionParamFrame(1)
+	rs := vector.MustFunctionResult[uint64](result)
+	p := vector.OptGetBytesParamFromWrapper(rs, 0, ivecs[0])
+	values := vector.MustFixedColNoTypeCheck[uint64](rs.GetResultVector())
+	nsp := rs.GetResultVector().GetNulls()
+
+	for i := uint64(0); i < uint64(length); i++ {
+		if selectList != nil && selectList.Contains(i) {
+			nsp.Add(i)
+			continue
+		}
+		value, isNull := p.GetStrValue(i)
+		if isNull {
+			nsp.Add(i)
+			continue
+		}
+		if ivecs[0].GetIsBinaryStringAt(int(i)) {
+			values[i] = bitCountFromBinaryString(value)
+		} else {
+			var err error
+			values[i], err = bitCountFromNonBinaryString(value)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func BitCountBinaryString(ivecs []*vector.Vector, result vector.FunctionResultWrapper, proc *process.Process, length int, selectList *FunctionSelectList) error {

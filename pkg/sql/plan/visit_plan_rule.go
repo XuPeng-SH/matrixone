@@ -888,6 +888,17 @@ func (rule *ResetParamRefRule) runtimeParamValue(pos int) (any, vector.PreparePa
 	return nil, kind, false
 }
 
+func (rule *ResetParamRefRule) preparedBitCountUsesNumericRuntime(expr *plan.Expr) bool {
+	for pos := range preparedNumericValueParamPositions(expr) {
+		if pos >= 0 && int(pos) < len(rule.paramValues) {
+			if PreparedParamValueHasNumericRuntime(rule.paramValues[pos]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (rule *ResetParamRefRule) runtimeParamType(pos int) (types.Type, bool) {
 	value, kind, ok := rule.runtimeParamValue(pos)
 	if !ok || value == nil {
@@ -1581,6 +1592,15 @@ func (rule *ResetParamRefRule) applyExpr(e *plan.Expr) (*plan.Expr, error) {
 		functionName := ""
 		if exprImpl.F.Func != nil {
 			functionName = exprImpl.F.Func.GetObjName()
+		}
+		if strings.EqualFold(functionName, "bit_count") && len(exprImpl.F.Args) == 1 &&
+			isPreparedNumericFallbackExpr(exprImpl.F.Args[0]) &&
+			!rule.preparedBitCountUsesNumericRuntime(exprImpl.F.Args[0]) {
+			// An unresolved BIT_COUNT marker has a binary-string default in
+			// MySQL. Text/BLOB protocol values therefore keep the prepared
+			// VARBINARY cast; only an actual numeric runtime domain reparses the
+			// function and selects a numeric overload.
+			return e, nil
 		}
 		isAbs := strings.EqualFold(functionName, "abs") && len(exprImpl.F.Args) == 1
 		var originalAbsArg *plan.Expr

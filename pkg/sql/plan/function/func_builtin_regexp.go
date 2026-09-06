@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"unicode"
@@ -47,7 +48,8 @@ type opBuiltInRegexp struct {
 func newOpBuiltInRegexp() *opBuiltInRegexp {
 	return &opBuiltInRegexp{
 		regMap: regexpSet{
-			mp: make(map[regexpCacheKey]*regexp.Regexp, mapSizeForRegexp),
+			mp:            make(map[regexpCacheKey]*regexp.Regexp, mapSizeForRegexp),
+			mayMatchEmpty: make(map[regexpCacheKey]bool, mapSizeForRegexp),
 		},
 	}
 }
@@ -862,7 +864,8 @@ func regexpRowMasked(selectList *FunctionSelectList, row uint64) bool {
 }
 
 type regexpSet struct {
-	mp map[regexpCacheKey]*regexp.Regexp
+	mp            map[regexpCacheKey]*regexp.Regexp
+	mayMatchEmpty map[regexpCacheKey]bool
 }
 
 func (rs *regexpSet) getRegularMatcher(pat string) (*regexp.Regexp, error) {
@@ -875,6 +878,11 @@ type regexpCacheKey struct {
 }
 
 func (rs *regexpSet) getRegularMatcherWithMode(pat string, binary bool) (*regexp.Regexp, error) {
+	reg, _, err := rs.getRegularMatcherInfoWithMode(pat, binary)
+	return reg, err
+}
+
+func (rs *regexpSet) getRegularMatcherInfoWithMode(pat string, binary bool) (*regexp.Regexp, bool, error) {
 	var err error
 
 	key := regexpCacheKey{pattern: pat, binary: binary}
@@ -883,6 +891,7 @@ func (rs *regexpSet) getRegularMatcherWithMode(pat string, binary bool) (*regexp
 		if len(rs.mp) == mapSizeForRegexp {
 			for key := range rs.mp {
 				delete(rs.mp, key)
+				delete(rs.mayMatchEmpty, key)
 				break
 			}
 		}
@@ -895,16 +904,61 @@ func (rs *regexpSet) getRegularMatcherWithMode(pat string, binary bool) (*regexp
 		if binary {
 			expression, err = encodeBinaryRegexpPattern(pat)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
 		reg, err = regexp.Compile(expression)
 		if err != nil {
-			return nil, err
+			return nil, false, err
+		}
+		parsed, parseErr := syntax.Parse(expression, syntax.Perl)
+		if parseErr != nil {
+			return nil, false, parseErr
+		}
+		if rs.mayMatchEmpty == nil {
+			rs.mayMatchEmpty = make(map[regexpCacheKey]bool, mapSizeForRegexp)
 		}
 		rs.mp[key] = reg
+		rs.mayMatchEmpty[key] = regexpSyntaxMayMatchEmpty(parsed)
 	}
-	return reg, nil
+	return reg, rs.mayMatchEmpty[key], nil
+}
+
+// regexpSyntaxMayMatchEmpty is a conservative, syntax-level property: true
+// means some successful path can consume zero input units. It lets ordinary
+// replace-all calls keep regexp.ReplaceAllLiteralString's optimized path while
+// routing anchors, boundaries, and nullable repetitions through the iterator
+// whose empty-match sequence follows MySQL/ICU semantics.
+func regexpSyntaxMayMatchEmpty(expr *syntax.Regexp) bool {
+	if expr == nil {
+		return false
+	}
+	switch expr.Op {
+	case syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine,
+		syntax.OpBeginText, syntax.OpEndText, syntax.OpWordBoundary,
+		syntax.OpNoWordBoundary:
+		return true
+	case syntax.OpCapture, syntax.OpPlus:
+		return len(expr.Sub) == 1 && regexpSyntaxMayMatchEmpty(expr.Sub[0])
+	case syntax.OpStar, syntax.OpQuest:
+		return true
+	case syntax.OpRepeat:
+		return expr.Min == 0 || (len(expr.Sub) == 1 && regexpSyntaxMayMatchEmpty(expr.Sub[0]))
+	case syntax.OpConcat:
+		for _, sub := range expr.Sub {
+			if !regexpSyntaxMayMatchEmpty(sub) {
+				return false
+			}
+		}
+		return true
+	case syntax.OpAlternate:
+		for _, sub := range expr.Sub {
+			if regexpSyntaxMayMatchEmpty(sub) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (rs *regexpSet) getRegularMatcherForMatchWithMode(pat string, binary bool) (*regexp.Regexp, error) {
@@ -1044,12 +1098,18 @@ func (rs *regexpSet) regularReplaceWithMode(pat string, str string, repl string,
 		return "", moerr.NewInvalidInputNoCtxf("regexp_replace have Index out of bounds in regular expression search, return occurrence %d", occurrence)
 	}
 
-	reg, err := rs.getRegularMatcherWithMode(pat, subjectIsBinary)
+	reg, mayMatchEmpty, err := rs.getRegularMatcherInfoWithMode(pat, subjectIsBinary)
 	if err != nil {
 		pat = "[" + pat + "]"
 		return "", moerr.NewInvalidArgNoCtx("regexp_replace have invalid regexp pattern arg", pat)
 	}
-	if startByte == 0 && occurrence == 0 {
+	// MySQL returns an empty subject unchanged, even for a regexp such as ^$
+	// that can match an empty string. Compile first so malformed patterns still
+	// report their error instead of being hidden by this result shortcut.
+	if len(str) == 0 {
+		return str, nil
+	}
+	if startByte == 0 && occurrence == 0 && !mayMatchEmpty {
 		if !subjectIsBinary {
 			return reg.ReplaceAllLiteralString(str, repl), nil
 		}
@@ -1222,7 +1282,6 @@ func (rs *regexpSet) regexpVisitAtOrAfter(
 ) error {
 	visited := int64(0)
 	nextStart := startByte
-	previousEnd := -1
 	for nextStart <= len(str) {
 		start, end, found, err := rs.regexpFindAtOrAfter(reg, pat, str, nextStart, subjectIsBinary)
 		if err != nil {
@@ -1231,18 +1290,11 @@ func (rs *regexpSet) regexpVisitAtOrAfter(
 		if !found {
 			break
 		}
-		if start == end && start == previousEnd {
-			// Match Go's FindAll convention: ignore an empty match directly
-			// abutting the preceding match, then make one unit of progress.
-			nextStart = regexpAdvancePosition(str, start)
-			continue
-		}
 		visit(start, end)
 		visited++
 		if limit > 0 && visited >= limit {
 			break
 		}
-		previousEnd = end
 		if start == end {
 			nextStart = regexpAdvancePosition(str, end)
 		} else {

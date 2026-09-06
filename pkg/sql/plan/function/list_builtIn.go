@@ -7770,7 +7770,11 @@ var supportedMathBuiltIns = []FuncNew{
 			}
 			switch inputs[0].Oid {
 			case types.T_any:
-				return newCheckResultWithCast(0, []types.Type{types.T_int64.ToType()})
+				// MySQL resolves an untyped BIT_COUNT parameter as a binary
+				// string and reparses the expression only when execution supplies
+				// a numeric type. Choosing BIGINT here silently changes "64" from
+				// seven set input bits to one numeric set bit.
+				return newCheckResultWithCast(14, []types.Type{types.T_varbinary.ToType()})
 			case types.T_binary, types.T_varbinary, types.T_blob:
 				return newCheckResultWithSuccess(14)
 			case types.T_char, types.T_varchar, types.T_text:

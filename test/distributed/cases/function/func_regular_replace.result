@@ -98,6 +98,12 @@ REGEXP_REPLACE('abc', '^', 'X', 2, 0) AS anchored,
 HEX(REGEXP_REPLACE('a\nb', '(?m)a|$', 'X', 2, 1)) AS zero_width_at_pos;
 overlap_one    overlap_all    anchored    zero_width_at_pos
 aX    aX    abc    61580A62
+SELECT REGEXP_INSTR('abc', 'a*', 1, 2, 0) AS after_nonempty,
+REGEXP_INSTR('abc', 'b*', 2, 2, 0) AS after_nonempty_at_pos,
+HEX(REGEXP_REPLACE('abc', 'a*', 'X', 1, 0)) AS replace_zero_width,
+HEX(REGEXP_REPLACE('', '^$', 'X')) AS empty_subject;
+after_nonempty    after_nonempty_at_pos    replace_zero_width    empty_subject
+2    3    585862586358
 SELECT HEX(REGEXP_REPLACE(CAST(_binary'中中' AS BINARY(6)), CAST(_binary'中' AS BINARY(3)), _binary'X', 2, 1)) AS binary_replace,
 HEX(REGEXP_REPLACE(CAST(_binary'中中' AS VARBINARY(6)), CAST(_binary'中' AS VARBINARY(3)), _binary'X', 2, 1)) AS varbinary_replace;
 binary_replace    varbinary_replace
