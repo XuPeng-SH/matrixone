@@ -274,7 +274,7 @@ ord(?)    regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)    ord(regexp_s
 SET @regexp_subject = '中中';
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
 ord(?)    regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)    ord(regexp_substr(?, cast(_binary'中' as varbinary(3)), 2))
-14989485    2    14989485
+14989485    4    228
 SET @regexp_subject = CAST(_binary'中中' AS BLOB);
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
 ord(?)    regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)    ord(regexp_substr(?, cast(_binary'中' as varbinary(3)), 2))

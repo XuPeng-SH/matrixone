@@ -3621,7 +3621,7 @@ func (b *baseBinder) bindFuncExprImplByAstExpr(name string, astArgs []tree.Expr,
 	} else {
 		// return bindFuncExprImplByPlanExpr(b.GetContext(), name, args)
 		// first look for builtin func
-		builtinExpr, err := bindFuncExprImplByPlanExpr(b.GetContext(), name, args, false)
+		builtinExpr, err := bindFuncExprImplByPlanExpr(b.GetContext(), name, args, false, nil)
 		if err == nil {
 			if isIfNull {
 				builtinExpr.Typ.NotNullable = args[1].Typ.NotNullable || args[2].Typ.NotNullable
@@ -4114,7 +4114,7 @@ func bindFuncExprAndConstFoldInternal(
 	if err := foldDecimalStringComparisonConstants(ctx, proc, name, args); err != nil {
 		return nil, err
 	}
-	retExpr, err := bindFuncExprImplByPlanExpr(ctx, name, args, descendFunctions)
+	retExpr, err := bindFuncExprImplByPlanExpr(ctx, name, args, descendFunctions, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -4422,8 +4422,108 @@ func bindMixedInListComparison(
 	return BindFuncExprImplByPlanExpr(ctx, operator, operands)
 }
 
+// preparedRegexpDynamicStringDomains identifies operands whose string domain
+// is owned by the current EXECUTE rather than by the prepared plan. Keep this
+// expression-aware: parameter markers are represented as TEXT while cached,
+// so their Type alone cannot distinguish them from a statically text value.
+func preparedRegexpDynamicStringDomains(name string, args []*Expr) []bool {
+	stringOperands := 0
+	switch name {
+	case "reg_match", "not_reg_match", "regexp_instr", "regexp_like", "regexp_substr":
+		stringOperands = 2
+	case "regexp_replace":
+		stringOperands = 3
+	default:
+		return nil
+	}
+	if stringOperands > len(args) {
+		stringOperands = len(args)
+	}
+
+	var dynamic []bool
+	for i := 0; i < stringOperands; i++ {
+		arg := args[i]
+		if arg == nil || !preparedExprContainsParam(arg) || isExplicitPreparedCast(arg) {
+			continue
+		}
+		dependsOnRuntimeDomain := arg.GetP() != nil || arg.GetV() != nil ||
+			preparedFunctionStringDomainDependsOnRuntimeParam(arg)
+		if !dependsOnRuntimeDomain {
+			continue
+		}
+		if dynamic == nil {
+			dynamic = make([]bool, len(args))
+		}
+		dynamic[i] = true
+	}
+	return dynamic
+}
+
+// preparedFunctionStringDomainDependsOnRuntimeParam reports whether rebinding
+// a nested function's parameter can change that function's text/binary result
+// domain. An overload change alone is insufficient: HEX(?) selects different
+// executors for numbers and strings, but every overload still returns text.
+func preparedFunctionStringDomainDependsOnRuntimeParam(expr *plan.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	fn := expr.GetF()
+	if fn == nil || fn.Func == nil || len(fn.Args) == 0 {
+		return false
+	}
+
+	argTypes := make([]types.Type, len(fn.Args))
+	dynamicArgs := make([]int, 0, len(fn.Args))
+	for i, arg := range fn.Args {
+		if arg == nil {
+			return false
+		}
+		argTypes[i] = makeTypeByPlan2Expr(arg)
+		if isExplicitPreparedCast(arg) {
+			continue
+		}
+		if arg.GetP() != nil || arg.GetV() != nil ||
+			preparedFunctionStringDomainDependsOnRuntimeParam(arg) {
+			dynamicArgs = append(dynamicArgs, i)
+		}
+	}
+	if len(dynamicArgs) == 0 {
+		return false
+	}
+
+	preparedDomain := types.StaticStringDomain(makeTypeByPlan2Expr(expr))
+	for _, dynamicArg := range dynamicArgs {
+		candidates := preparedRuntimeParamTypeCandidates()
+		if fn.Args[dynamicArg].GetP() == nil && fn.Args[dynamicArg].GetV() == nil {
+			// A nested child has already established that only its result string
+			// domain is dynamic. Do not substitute the child's raw parameter
+			// types here: HEX(?) may change overload, but still always yields text.
+			candidates = []types.Type{types.T_text.ToType(), types.T_varbinary.ToType()}
+		}
+		for _, candidate := range candidates {
+			candidateArgs := append([]types.Type(nil), argTypes...)
+			candidateArgs[dynamicArg] = candidate
+			resolved, ok := function.GetFunctionByNameWithoutError(fn.Func.GetObjName(), candidateArgs)
+			if ok && types.StaticStringDomain(resolved.GetReturnType()) != preparedDomain {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) (*plan.Expr, error) {
-	return bindFuncExprImplByPlanExpr(ctx, name, args, true)
+	return bindFuncExprImplByPlanExpr(ctx, name, args, true, nil)
+}
+
+func bindPreparedFuncExprImplByPlanExpr(
+	ctx context.Context,
+	name string,
+	args []*Expr,
+	originalArgs []*Expr,
+) (*plan.Expr, error) {
+	return bindFuncExprImplByPlanExpr(
+		ctx, name, args, true, preparedRegexpDynamicStringDomains(name, originalArgs))
 }
 
 func bindFuncExprImplByPlanExpr(
@@ -4431,6 +4531,7 @@ func bindFuncExprImplByPlanExpr(
 	name string,
 	args []*Expr,
 	descendFunctions bool,
+	dynamicStringDomains []bool,
 ) (*plan.Expr, error) {
 	var err error
 	rejectIntervalArgs := rejectBoundIntervalFunctionArgs
@@ -4958,7 +5059,16 @@ func bindFuncExprImplByPlanExpr(
 	var argsCastType []types.Type
 
 	// get function definition
-	fGet, err := function.GetFunctionByName(ctx, name, argsType)
+	var fGet function.FuncGetResult
+	if dynamicStringDomains == nil {
+		dynamicStringDomains = preparedRegexpDynamicStringDomains(name, args)
+	}
+	if dynamicStringDomains != nil {
+		fGet, err = function.GetFunctionByNameWithDynamicStringDomains(
+			ctx, name, argsType, dynamicStringDomains)
+	} else {
+		fGet, err = function.GetFunctionByName(ctx, name, argsType)
+	}
 	if err != nil {
 		if name == "between" {
 			leftFn, err := BindFuncExprImplByPlanExpr(ctx, ">=", []*plan.Expr{DeepCopyExpr(args[0]), args[1]})

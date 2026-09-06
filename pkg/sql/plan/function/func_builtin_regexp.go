@@ -907,10 +907,6 @@ func (rs *regexpSet) getRegularMatcherWithMode(pat string, binary bool) (*regexp
 	return reg, nil
 }
 
-func (rs *regexpSet) getRegularMatcherForMatch(pat string) (*regexp.Regexp, error) {
-	return rs.getRegularMatcherForMatchWithMode(pat, false)
-}
-
 func (rs *regexpSet) getRegularMatcherForMatchWithMode(pat string, binary bool) (*regexp.Regexp, error) {
 	if pat == "" {
 		return nil, moerr.NewRegexpIllegalArgumentNoCtx()

@@ -2879,10 +2879,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `not_reg_match`
 	{
-		functionId: NOT_REG_MATCH,
-		class:      plan.Function_STRICT,
-		layout:     COMPARISON_OPERATOR,
-		checkFn:    regexpStringDomainFixedTypeMatch,
+		functionId:                 NOT_REG_MATCH,
+		class:                      plan.Function_STRICT,
+		layout:                     COMPARISON_OPERATOR,
+		checkFn:                    regexpStringDomainFixedTypeMatch,
+		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -2952,10 +2953,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `reg_match`
 	{
-		functionId: REG_MATCH,
-		class:      plan.Function_STRICT,
-		layout:     COMPARISON_OPERATOR,
-		checkFn:    regexpStringDomainFixedTypeMatch,
+		functionId:                 REG_MATCH,
+		class:                      plan.Function_STRICT,
+		layout:                     COMPARISON_OPERATOR,
+		checkFn:                    regexpStringDomainFixedTypeMatch,
+		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -2973,10 +2975,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `regexp_instr`
 	{
-		functionId: REGEXP_INSTR,
-		class:      plan.Function_STRICT,
-		layout:     STANDARD_FUNCTION,
-		checkFn:    regexpStringDomainFixedTypeMatch,
+		functionId:                 REGEXP_INSTR,
+		class:                      plan.Function_STRICT,
+		layout:                     STANDARD_FUNCTION,
+		checkFn:                    regexpStringDomainFixedTypeMatch,
+		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -3024,10 +3027,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `regexp_like`
 	{
-		functionId: REGEXP_LIKE,
-		class:      plan.Function_STRICT,
-		layout:     STANDARD_FUNCTION,
-		checkFn:    regexpStringDomainFixedTypeMatch,
+		functionId:                 REGEXP_LIKE,
+		class:                      plan.Function_STRICT,
+		layout:                     STANDARD_FUNCTION,
+		checkFn:                    regexpStringDomainFixedTypeMatch,
+		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -3055,10 +3059,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `regexp_replace`
 	{
-		functionId: REGEXP_REPLACE,
-		class:      plan.Function_STRICT,
-		layout:     STANDARD_FUNCTION,
-		checkFn:    regexpReplaceStringDomainFixedTypeMatch,
+		functionId:                 REGEXP_REPLACE,
+		class:                      plan.Function_STRICT,
+		layout:                     STANDARD_FUNCTION,
+		checkFn:                    regexpReplaceStringDomainFixedTypeMatch,
+		dynamicStringDomainCheckFn: regexpReplaceStringDomainDynamicTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -3096,10 +3101,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `regexp_substr`
 	{
-		functionId: REGEXP_SUBSTR,
-		class:      plan.Function_STRICT,
-		layout:     STANDARD_FUNCTION,
-		checkFn:    regexpStringDomainFixedTypeMatch,
+		functionId:                 REGEXP_SUBSTR,
+		class:                      plan.Function_STRICT,
+		layout:                     STANDARD_FUNCTION,
+		checkFn:                    regexpStringDomainFixedTypeMatch,
+		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
 
 		Overloads: []overload{
 			{

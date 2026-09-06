@@ -230,16 +230,30 @@ func stringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) check
 // unresolved until execution. The normal string-domain matcher then preserves
 // every accepted operand instead of erasing its domain through VARCHAR casts.
 func regexpStringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 2)
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 2, nil)
+}
+
+func regexpStringDomainDynamicTypeMatch(
+	overloads []overload, inputs []types.Type, dynamicDomains []bool,
+) checkResult {
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 2, dynamicDomains)
 }
 
 // regexpReplaceStringDomainFixedTypeMatch includes the replacement string in
 // the same compatibility domain as the subject and pattern.
 func regexpReplaceStringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 3)
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 3, nil)
 }
 
-func regexpStringDomainFixedTypeMatchN(overloads []overload, inputs []types.Type, stringOperands int) checkResult {
+func regexpReplaceStringDomainDynamicTypeMatch(
+	overloads []overload, inputs []types.Type, dynamicDomains []bool,
+) checkResult {
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 3, dynamicDomains)
+}
+
+func regexpStringDomainFixedTypeMatchN(
+	overloads []overload, inputs []types.Type, stringOperands int, dynamicDomains []bool,
+) checkResult {
 	matched := stringDomainFixedTypeMatch(overloads, inputs)
 	if matched.status != succeedMatched && matched.status != succeedWithCast {
 		return matched
@@ -251,6 +265,9 @@ func regexpStringDomainFixedTypeMatchN(overloads []overload, inputs []types.Type
 		stringOperands = len(inputs)
 	}
 	for i := 0; i < stringOperands; i++ {
+		if i < len(dynamicDomains) && dynamicDomains[i] {
+			continue
+		}
 		domain := types.StaticStringDomain(inputs[i])
 		if domain == types.StringDomainNone {
 			// T_any is the binder-visible representation of both an ordinary

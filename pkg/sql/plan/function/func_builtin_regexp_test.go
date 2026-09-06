@@ -659,6 +659,33 @@ func TestRegexpFunctionsRejectStaticMixedStringDomains(t *testing.T) {
 	}
 }
 
+func TestRegexpFunctionsDeferOnlyDynamicStringDomains(t *testing.T) {
+	ctx := context.Background()
+	text := types.T_text.ToType()
+	binary := types.T_varbinary.ToType()
+
+	resolved, err := GetFunctionByNameWithDynamicStringDomains(
+		ctx, "regexp_substr", []types.Type{text, binary}, []bool{true, false})
+	require.NoError(t, err)
+	_, needsCast := resolved.ShouldDoImplicitTypeCast()
+	require.False(t, needsCast)
+	require.True(t, resolved.GetReturnType().Eq(text),
+		"deferred validation must not change prepared result metadata")
+
+	_, err = GetFunctionByNameWithDynamicStringDomains(
+		ctx, "regexp_replace", []types.Type{text, text, binary}, []bool{true, false, false})
+	require.Error(t, err, "known pattern and replacement domains must remain compatible")
+	require.True(t, moerr.IsMoErrCode(err, moerr.ErrCharacterSetMismatch))
+
+	_, err = GetFunctionByNameWithDynamicStringDomains(
+		ctx, "regexp_replace", []types.Type{text, binary, text}, []bool{true, true, true})
+	require.NoError(t, err)
+
+	_, err = GetFunctionByNameWithDynamicStringDomains(
+		ctx, "regexp_instr", []types.Type{text, binary}, []bool{true})
+	require.Error(t, err, "a partial mask would silently assign ownership to the wrong argument")
+}
+
 func BenchmarkRegexpReplaceModes(b *testing.B) {
 	text := strings.Repeat("abc中", 1024)
 	ascii := strings.Repeat("abcx", 1024)

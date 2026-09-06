@@ -618,6 +618,72 @@ func TestBuildPlanRegexpStaticStringDomainMatrix(t *testing.T) {
 	}
 }
 
+func TestBuildPlanRegexpDefersOnlyRuntimeStringDomains(t *testing.T) {
+	ctx := defines.AttachAccount(context.Background(), sysAccountID, rootID, moAdminRoleID)
+	for _, sql := range []string{
+		"select regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)",
+		"select regexp_replace(?, cast(_binary'中' as varbinary(3)), cast(_binary'X' as varbinary(1)))",
+		"select regexp_instr(concat(?, ''), cast(_binary'中' as varbinary(3)), 2)",
+		"select regexp_instr(concat(concat(?, ''), ''), cast(_binary'中' as varbinary(3)), 2)",
+	} {
+		t.Run("accepted_"+sql, func(t *testing.T) {
+			prepare := tree.NewPrepareString(tree.Identifier("regexp_dynamic"), sql)
+			_, err := buildPlan(ctx, nil, plan2.NewEmptyCompilerContext(), prepare)
+			require.NoError(t, err)
+		})
+	}
+
+	for _, sql := range []string{
+		"select regexp_instr(cast(? as char), cast(_binary'中' as varbinary(3)), 2)",
+		"select regexp_instr(hex(?), cast(_binary'中' as varbinary(3)), 2)",
+		"select regexp_instr(concat(hex(?), ''), cast(_binary'中' as varbinary(3)), 2)",
+		"select regexp_replace(?, '中', cast(_binary'X' as varbinary(1)))",
+	} {
+		t.Run("rejected_"+sql, func(t *testing.T) {
+			prepare := tree.NewPrepareString(tree.Identifier("regexp_static"), sql)
+			_, err := buildPlan(ctx, nil, plan2.NewEmptyCompilerContext(), prepare)
+			require.Error(t, err)
+			var moErr *moerr.Error
+			require.ErrorAs(t, err, &moErr)
+			require.Equal(t, uint16(moerr.ER_CHARACTER_SET_MISMATCH), moErr.MySQLCode())
+		})
+	}
+}
+
+func TestPreparedRegexpDynamicStringDomainSurvivesExecuteRebind(t *testing.T) {
+	const query = "select regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)"
+	_, prepareStmt, _, _ := newPreparedExecuteEnvForSQL(t, 118, query)
+	defer prepareStmt.Close()
+	preparedPlan := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan
+	cached, err := preparedPlan.Marshal()
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name  string
+		value plan2.ParamValue
+	}{
+		{
+			name: "binary protocol binary string",
+			value: plan2.ParamValue{Value: "中中", IsBin: true, IsBinaryProtocol: true,
+				RuntimeType: types.T_varbinary.ToType(), HasRuntimeType: true},
+		},
+		{
+			name: "sql execute text variable",
+			value: plan2.ParamValue{Value: "中中", SourceType: types.T_text.ToType(),
+				HasSourceType: true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := plan2.FillValuesOfParamsInPlanWithSpecialization(
+				context.Background(), preparedPlan, []any{tc.value})
+			require.NoError(t, err)
+			after, err := preparedPlan.Marshal()
+			require.NoError(t, err)
+			require.Equal(t, cached, after, "execute-time rebinding must not mutate the cached plan")
+		})
+	}
+}
+
 func TestPreparedParamValuesPreservesNullProtocolProvenance(t *testing.T) {
 	_, prepareStmt, cw, _ := newPreparedExecuteEnvForSQL(t, 112, "select ?")
 	defer prepareStmt.Close()

@@ -157,6 +157,28 @@ func GetFunctionByIdWithoutError(overloadID int64) (f overload, exists bool) {
 }
 
 func GetFunctionByName(ctx context.Context, name string, args []types.Type) (r FuncGetResult, err error) {
+	return getFunctionByName(ctx, name, args, nil)
+}
+
+// GetFunctionByNameWithDynamicStringDomains resolves a function while treating
+// the selected argument string domains as execution-time properties. The
+// ordinary argument types remain authoritative for overload selection, casts,
+// and result metadata; only compatibility checks that explicitly support
+// deferred string domains consume the mask.
+func GetFunctionByNameWithDynamicStringDomains(
+	ctx context.Context, name string, args []types.Type, dynamicDomains []bool,
+) (r FuncGetResult, err error) {
+	if len(dynamicDomains) != len(args) {
+		return r, moerr.NewInternalErrorf(
+			ctx, "dynamic string domain count %d does not match argument count %d",
+			len(dynamicDomains), len(args))
+	}
+	return getFunctionByName(ctx, name, args, dynamicDomains)
+}
+
+func getFunctionByName(
+	ctx context.Context, name string, args []types.Type, dynamicDomains []bool,
+) (r FuncGetResult, err error) {
 	r.fid, err = getFunctionIdByName(ctx, name)
 	if err != nil {
 		return r, err
@@ -167,6 +189,9 @@ func GetFunctionByName(ctx context.Context, name string, args []types.Type) (r F
 	}
 
 	check := f.checkFn(f.Overloads, args)
+	if f.dynamicStringDomainCheckFn != nil && len(dynamicDomains) > 0 {
+		check = f.dynamicStringDomainCheckFn(f.Overloads, args, dynamicDomains)
+	}
 	switch check.status {
 	case succeedMatched:
 		r.overloadId = int32(check.idx)
@@ -532,6 +557,11 @@ type FuncNew struct {
 	// if matched, return the corresponding id of overload. If type conversion was required,
 	// the required type should be returned at the same time.
 	checkFn func(overloads []overload, inputs []types.Type) checkResult
+
+	// dynamicStringDomainCheckFn is the optional second-stage checker for
+	// functions whose string compatibility can be deferred for parameterized
+	// arguments without changing overload or result-type ownership.
+	dynamicStringDomainCheckFn func(overloads []overload, inputs []types.Type, dynamicDomains []bool) checkResult
 
 	// layout was used for `explain SQL`.
 	layout FuncExplainLayout

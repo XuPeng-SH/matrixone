@@ -2003,10 +2003,11 @@ func (rule *ResetParamRefRule) applyExpr(e *plan.Expr) (*plan.Expr, error) {
 
 		// reset function
 		if needResetFunction {
-			rewritten, err := BindFuncExprImplByPlanExpr(
+			rewritten, err := bindPreparedFuncExprImplByPlanExpr(
 				rule.ctx,
 				exprImpl.F.Func.GetObjName(),
 				boundArgs,
+				originalArgs,
 			)
 			if err != nil {
 				return nil, err
