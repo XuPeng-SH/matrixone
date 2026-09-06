@@ -241,6 +241,15 @@ REGEXP_REPLACE('甲😀乙😀丙', '😀', 'X', 3, 1) AS replace_one,
 REGEXP_REPLACE('甲😀乙😀丙', '😀', 'X', 3, 0) AS replace_all_from_pos;
 second_emoji    replace_one    replace_all_from_pos
 😀    甲😀乙X丙    甲😀乙X丙
+SELECT REGEXP_INSTR('abc', '^', 2) AS instr_beginning,
+REGEXP_INSTR('abc', '(?m)^b', 2) AS instr_multiline_beginning,
+REGEXP_INSTR(CAST(_binary'中' AS VARBINARY(3)), CAST(_binary'^.' AS VARBINARY(2)), 2) AS binary_beginning;
+instr_beginning    instr_multiline_beginning    binary_beginning
+2    2    2
+SELECT REGEXP_SUBSTR('abc', '^', 2) IS NULL AS substr_original_anchor,
+REGEXP_REPLACE('abc', '^', 'X', 2) AS replace_original_anchor;
+substr_original_anchor    replace_original_anchor
+1    abc
 DROP DATABASE IF EXISTS regexp_utf8_test;
 CREATE DATABASE regexp_utf8_test;
 USE regexp_utf8_test;
@@ -280,6 +289,24 @@ EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_sub
 ord(?)    regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)    ord(regexp_substr(?, cast(_binary'中' as varbinary(3)), 2))
 228    4    228
 DEALLOCATE PREPARE regexp_domain_rebind;
+PREPARE regexp_nested_domain_rebind FROM
+'SELECT ORD(REGEXP_SUBSTR(?, ?)), REGEXP_INSTR(REGEXP_SUBSTR(?, ?), CAST(_binary''.'' AS VARBINARY(1)), 1)';
+SET @regexp_nested_subject = CAST(_binary'中中' AS VARBINARY(6));
+SET @regexp_nested_pattern = CAST(_binary'中' AS VARBINARY(3));
+EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
+ord(regexp_substr(?, ?))    regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)
+228    1
+SET @regexp_nested_subject = '中中';
+SET @regexp_nested_pattern = '中';
+EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
+ord(regexp_substr(?, ?))    regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)
+14989485    1
+SET @regexp_nested_subject = CAST(_binary'中中' AS BLOB);
+SET @regexp_nested_pattern = CAST(_binary'中' AS BLOB);
+EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
+ord(regexp_substr(?, ?))    regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)
+228    1
+DEALLOCATE PREPARE regexp_nested_domain_rebind;
 DROP TABLE t_regexp_utf8;
 DROP DATABASE regexp_utf8_test;
 SELECT REGEXP_INSTR(CAST(_binary'中中' AS BINARY(6)), CAST(_binary'中' AS BINARY(3)), 2) AS binary_pos,

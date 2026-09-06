@@ -477,7 +477,8 @@ func TestBinaryProtocolPreparedParamRebindsStringDomain(t *testing.T) {
 }
 
 func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
-	const query = "select regexp_instr(?, ?, 2), regexp_replace('中', '.', ?, 1, 0)"
+	const query = "select regexp_instr(?, ?, 2), regexp_replace('中', '.', ?, 1, 0), " +
+		"regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)"
 	ses, prepareStmt, cw, execCtx := newPreparedExecuteEnvForSQL(t, 104, query)
 	proto, _, scratchPrepare := newBinaryPrepareProtocolTestCase(t, query)
 	defer func() {
@@ -518,32 +519,36 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 		{
 			name: "binary subject",
 			mysqlTypes: []defines.MysqlType{
-				defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
-			wantBinary: []bool{true, false, false}, wantInstr: 4, wantReplace: "X",
+				defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING,
+				defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_BLOB},
+			wantBinary: []bool{true, false, false, true, true}, wantInstr: 4, wantReplace: "X",
 		},
 		{
 			name: "binary pattern and replacement",
 			mysqlTypes: []defines.MysqlType{
-				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_BLOB},
-			wantBinary: []bool{false, true, true}, wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
+				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_BLOB,
+				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
+			wantBinary: []bool{false, true, true, false, false}, wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
 		},
 		{
 			name: "all text",
 			mysqlTypes: []defines.MysqlType{
-				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
-			wantBinary: []bool{false, false, false}, wantInstr: 2, wantReplace: "X",
+				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING,
+				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
+			wantBinary: []bool{false, false, false, false, false}, wantInstr: 2, wantReplace: "X",
 		},
 		{
 			name: "all binary rebind",
 			mysqlTypes: []defines.MysqlType{
-				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB},
-			wantBinary: []bool{true, true, true}, wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
+				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB,
+				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB},
+			wantBinary: []bool{true, true, true, true, true}, wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NoError(t, proto.ParseExecuteData(
 				execCtx.reqCtx, cw.proc, prepareStmt,
-				buildPacket(tc.mysqlTypes, []string{"中中", "中", "X"}), 0))
+				buildPacket(tc.mysqlTypes, []string{"中中", "中", "X", "中中", "中"}), 0))
 
 			_, runtimePlan, executionStmt, _, owned, err := initExecuteStmtParam(
 				execCtx, ses, cw, nil, prepareStmt.Name)
@@ -559,7 +564,7 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 
 			queryPlan := runtimePlan.GetQuery()
 			projects := queryPlan.Nodes[queryPlan.Steps[len(queryPlan.Steps)-1]].ProjectList
-			require.Len(t, projects, 2)
+			require.Len(t, projects, 3)
 			instrExecutor, err := colexec.NewExpressionExecutor(cw.proc, projects[0])
 			require.NoError(t, err)
 			defer instrExecutor.Free()
@@ -576,6 +581,13 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.wantReplace, replaceResult.GetStringAt(0))
 			require.Equal(t, tc.wantReplaceBinary, replaceResult.GetIsBinaryStringAt(0))
+
+			nestedExecutor, err := colexec.NewExpressionExecutor(cw.proc, projects[2])
+			require.NoError(t, err)
+			defer nestedExecutor.Free()
+			nestedResult, err := nestedExecutor.Eval(cw.proc, []*batch.Batch{input}, nil)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), vector.GetFixedAtNoTypeCheck[int64](nestedResult, 0))
 		})
 	}
 }
@@ -625,6 +637,7 @@ func TestBuildPlanRegexpDefersOnlyRuntimeStringDomains(t *testing.T) {
 		"select regexp_replace(?, cast(_binary'中' as varbinary(3)), cast(_binary'X' as varbinary(1)))",
 		"select regexp_instr(concat(?, ''), cast(_binary'中' as varbinary(3)), 2)",
 		"select regexp_instr(concat(concat(?, ''), ''), cast(_binary'中' as varbinary(3)), 2)",
+		"select regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)",
 	} {
 		t.Run("accepted_"+sql, func(t *testing.T) {
 			prepare := tree.NewPrepareString(tree.Identifier("regexp_dynamic"), sql)
@@ -638,6 +651,7 @@ func TestBuildPlanRegexpDefersOnlyRuntimeStringDomains(t *testing.T) {
 		"select regexp_instr(hex(?), cast(_binary'中' as varbinary(3)), 2)",
 		"select regexp_instr(concat(hex(?), ''), cast(_binary'中' as varbinary(3)), 2)",
 		"select regexp_replace(?, '中', cast(_binary'X' as varbinary(1)))",
+		"select regexp_instr(regexp_substr(cast(_binary'abc' as varbinary(3)), ?), 'a', 1)",
 	} {
 		t.Run("rejected_"+sql, func(t *testing.T) {
 			prepare := tree.NewPrepareString(tree.Identifier("regexp_static"), sql)

@@ -128,6 +128,14 @@ SELECT REGEXP_SUBSTR('甲😀乙😀丙', '😀', 3, 1) AS second_emoji,
        REGEXP_REPLACE('甲😀乙😀丙', '😀', 'X', 3, 1) AS replace_one,
        REGEXP_REPLACE('甲😀乙😀丙', '😀', 'X', 3, 0) AS replace_all_from_pos;
 
+# INSTR rebases its matcher subject at pos; SUBSTR and REPLACE retain the
+# original subject for anchors and boundaries.
+SELECT REGEXP_INSTR('abc', '^', 2) AS instr_beginning,
+       REGEXP_INSTR('abc', '(?m)^b', 2) AS instr_multiline_beginning,
+       REGEXP_INSTR(CAST(_binary'中' AS VARBINARY(3)), CAST(_binary'^.' AS VARBINARY(2)), 2) AS binary_beginning;
+SELECT REGEXP_SUBSTR('abc', '^', 2) IS NULL AS substr_original_anchor,
+       REGEXP_REPLACE('abc', '^', 'X', 2) AS replace_original_anchor;
+
 DROP DATABASE IF EXISTS regexp_utf8_test;
 CREATE DATABASE regexp_utf8_test;
 USE regexp_utf8_test;
@@ -156,6 +164,22 @@ EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_sub
 SET @regexp_subject = CAST(_binary'中中' AS BLOB);
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
 DEALLOCATE PREPARE regexp_domain_rebind;
+
+# A nested domain-preserving REGEXP expression can depend on several prepared
+# parameters jointly. PREPARE must not reject the legal binary/binary state or
+# retain it across a later text execution.
+PREPARE regexp_nested_domain_rebind FROM
+    'SELECT ORD(REGEXP_SUBSTR(?, ?)), REGEXP_INSTR(REGEXP_SUBSTR(?, ?), CAST(_binary''.'' AS VARBINARY(1)), 1)';
+SET @regexp_nested_subject = CAST(_binary'中中' AS VARBINARY(6));
+SET @regexp_nested_pattern = CAST(_binary'中' AS VARBINARY(3));
+EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
+SET @regexp_nested_subject = '中中';
+SET @regexp_nested_pattern = '中';
+EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
+SET @regexp_nested_subject = CAST(_binary'中中' AS BLOB);
+SET @regexp_nested_pattern = CAST(_binary'中' AS BLOB);
+EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
+DEALLOCATE PREPARE regexp_nested_domain_rebind;
 DROP TABLE t_regexp_utf8;
 DROP DATABASE regexp_utf8_test;
 

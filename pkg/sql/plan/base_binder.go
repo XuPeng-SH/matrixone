@@ -4492,6 +4492,10 @@ func preparedFunctionStringDomainDependsOnRuntimeParam(expr *plan.Expr) bool {
 	}
 
 	preparedDomain := types.StaticStringDomain(makeTypeByPlan2Expr(expr))
+	if preparedRegexpResultDomainDependsOnDynamicOperands(
+		fn.Func.GetObjName(), fn.Args, dynamicArgs, preparedDomain) {
+		return true
+	}
 	for _, dynamicArg := range dynamicArgs {
 		candidates := preparedRuntimeParamTypeCandidates()
 		if fn.Args[dynamicArg].GetP() == nil && fn.Args[dynamicArg].GetV() == nil {
@@ -4510,6 +4514,57 @@ func preparedFunctionStringDomainDependsOnRuntimeParam(expr *plan.Expr) bool {
 		}
 	}
 	return false
+}
+
+// preparedRegexpResultDomainDependsOnDynamicOperands models the result-domain
+// transfer performed by the REGEXP execution kernels. SUBSTR and REPLACE select
+// binary mode when any semantic string operand is binary; their output carries
+// that effective domain. Model that two-element lattice directly instead of
+// trying one parameter type at a time. The latter cannot discover a legal
+// binary/binary state when each intermediate binary/text combination is
+// rejected by static regexp compatibility checks.
+func preparedRegexpResultDomainDependsOnDynamicOperands(
+	name string,
+	args []*plan.Expr,
+	dynamicArgs []int,
+	preparedDomain types.StringDomain,
+) bool {
+	stringOperands := 0
+	switch name {
+	case "regexp_substr":
+		stringOperands = 2
+	case "regexp_replace":
+		stringOperands = 3
+	default:
+		return false
+	}
+	if stringOperands > len(args) {
+		stringOperands = len(args)
+	}
+
+	dynamic := make([]bool, stringOperands)
+	for _, position := range dynamicArgs {
+		if position >= 0 && position < stringOperands {
+			dynamic[position] = true
+		}
+	}
+
+	hasDynamicDomain := false
+	hasKnownBinary := false
+	for position := 0; position < stringOperands; position++ {
+		if dynamic[position] {
+			hasDynamicDomain = true
+			continue
+		}
+		if types.StaticStringDomain(makeTypeByPlan2Expr(args[position])) == types.StringDomainBinary {
+			hasKnownBinary = true
+		}
+	}
+
+	canReturnText := !hasKnownBinary
+	canReturnBinary := hasKnownBinary || hasDynamicDomain
+	return (preparedDomain == types.StringDomainText && canReturnBinary) ||
+		(preparedDomain == types.StringDomainBinary && canReturnText)
 }
 
 func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) (*plan.Expr, error) {

@@ -256,10 +256,26 @@ func Test_BuiltIn_RegexpBinaryMatcherStartsAtEveryByte(t *testing.T) {
 	subject := string([]byte{0xe4, 0xb8, 0xad, 0xff})
 
 	for pos, want := range [][]byte{{0xe4}, {0xb8}, {0xad}, {0xff}} {
+		start, err := op.regMap.regularInstrWithMode(".", subject, int64(pos+1), 1, 0, true)
+		require.NoError(t, err)
+		require.Equal(t, int64(pos+1), start, "position %d", pos+1)
+		end, err := op.regMap.regularInstrWithMode(".", subject, int64(pos+1), 1, 1, true)
+		require.NoError(t, err)
+		require.Equal(t, int64(pos+2), end, "position %d", pos+1)
+
 		matched, got, err := op.regMap.regularSubstrWithMode(".", subject, int64(pos+1), 1, true)
 		require.NoError(t, err)
 		require.True(t, matched)
 		require.Equal(t, want, []byte(got), "position %d", pos+1)
+	}
+
+	for pos := int64(1); pos <= int64(len("中")); pos++ {
+		start, err := op.regMap.regularInstrWithMode("^", "中", pos, 1, 0, true)
+		require.NoError(t, err)
+		require.Equal(t, pos, start, "zero-width position %d", pos)
+		end, err := op.regMap.regularInstrWithMode(".*", "中", pos, 1, 1, true)
+		require.NoError(t, err)
+		require.Equal(t, int64(len("中")+1), end, "match-all position %d", pos)
 	}
 
 	got, err := op.regMap.regularReplaceWithMode(".*", "中中", "X", 2, 1, true)
@@ -279,6 +295,10 @@ func Test_BuiltIn_RegexpBinaryMatcherStartsAtEveryByte(t *testing.T) {
 
 	invalid := string([]byte{0xff, 0xfe})
 	for pos, want := range [][]byte{{0xff}, {0xfe}} {
+		start, err := op.regMap.regularInstrWithMode(".", invalid, int64(pos+1), 1, 0, true)
+		require.NoError(t, err)
+		require.Equal(t, int64(pos+1), start)
+
 		matched, got, err := op.regMap.regularSubstrWithMode(".", invalid, int64(pos+1), 1, true)
 		require.NoError(t, err)
 		require.True(t, matched)
@@ -359,16 +379,14 @@ func Test_BuiltIn_RegexpBinaryPatternCannotAddressInternalAlphabet(t *testing.T)
 	require.Equal(t, int64(1), position)
 }
 
-func Test_BuiltIn_RegexpAnchorsRemainRelativeToOriginalSubject(t *testing.T) {
+func Test_BuiltIn_RegexpPositionAnchorPolicies(t *testing.T) {
 	op := newOpBuiltInRegexp()
 
+	// SUBSTR and REPLACE retain the complete matcher subject, so a nonzero
+	// search position must not create a new beginning-of-subject anchor.
 	matched, _, err := op.regMap.regularSubstrWithMode("^", "abc", 2, 1, false)
 	require.NoError(t, err)
 	require.False(t, matched)
-
-	position, err := op.regMap.regularInstrWithMode("^", "abc", 2, 1, 0, false)
-	require.NoError(t, err)
-	require.Zero(t, position)
 
 	for _, tc := range []struct {
 		pattern string
@@ -385,6 +403,36 @@ func Test_BuiltIn_RegexpAnchorsRemainRelativeToOriginalSubject(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, tc.matched, matched, tc.pattern)
 		require.Equal(t, tc.want, got, tc.pattern)
+	}
+
+	// INSTR follows MySQL's distinct suffix-subject contract. Anchors and word
+	// boundaries at pos > 1 are relative to that suffix, and the reported
+	// position is translated back to the original subject.
+	for _, tc := range []struct {
+		name      string
+		pattern   string
+		value     string
+		pos       int64
+		binary    bool
+		wantStart int64
+		wantEnd   int64
+	}{
+		{name: "text beginning", pattern: "^", value: "abc", pos: 2, wantStart: 2, wantEnd: 2},
+		{name: "multiline beginning", pattern: "(?m)^b", value: "abc", pos: 2, wantStart: 2, wantEnd: 3},
+		{name: "word boundary", pattern: `\bb`, value: "ab", pos: 2, wantStart: 2, wantEnd: 3},
+		{name: "end", pattern: "$", value: "abc", pos: 2, wantStart: 4, wantEnd: 4},
+		{name: "binary byte beginning", pattern: "^.", value: "中", pos: 2, binary: true, wantStart: 2, wantEnd: 3},
+	} {
+		t.Run("instr_"+tc.name, func(t *testing.T) {
+			start, err := op.regMap.regularInstrWithMode(
+				tc.pattern, tc.value, tc.pos, 1, 0, tc.binary)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantStart, start)
+			end, err := op.regMap.regularInstrWithMode(
+				tc.pattern, tc.value, tc.pos, 1, 1, tc.binary)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantEnd, end)
+		})
 	}
 }
 
@@ -712,16 +760,20 @@ func BenchmarkRegexpReplaceModes(b *testing.B) {
 
 func BenchmarkRegexpPositionNearEndDenseMatches(b *testing.B) {
 	const size = 1 << 20
-	subject := strings.Repeat("a", size)
+	asciiSubject := strings.Repeat("a", size)
+	highByteSubject := strings.Repeat("\xff", size)
 	position := int64(size - 7)
 	for _, tc := range []struct {
 		name       string
+		pattern    string
+		subject    string
 		binary     bool
 		replaceAll bool
 	}{
-		{name: "instr_text"},
-		{name: "instr_binary_ascii", binary: true},
-		{name: "replace_all_text", replaceAll: true},
+		{name: "instr_text", pattern: "a", subject: asciiSubject},
+		{name: "instr_binary_ascii", pattern: "a", subject: asciiSubject, binary: true},
+		{name: "instr_binary_high_byte", pattern: "\xff", subject: highByteSubject, binary: true},
+		{name: "replace_all_text", pattern: "a", subject: asciiSubject, replaceAll: true},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			op := newOpBuiltInRegexp()
@@ -729,13 +781,13 @@ func BenchmarkRegexpPositionNearEndDenseMatches(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				if tc.replaceAll {
 					if _, err := op.regMap.regularReplaceWithMode(
-						"a", subject, "X", position, 0, tc.binary); err != nil {
+						tc.pattern, tc.subject, "X", position, 0, tc.binary); err != nil {
 						b.Fatal(err)
 					}
 					continue
 				}
 				if _, err := op.regMap.regularInstrWithMode(
-					"a", subject, position, 1, 0, tc.binary); err != nil {
+					tc.pattern, tc.subject, position, 1, 0, tc.binary); err != nil {
 					b.Fatal(err)
 				}
 			}

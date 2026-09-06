@@ -1100,8 +1100,14 @@ func (rs *regexpSet) regularInstrWithMode(pat string, str string, pos, occurrenc
 		return 0, moerr.NewInvalidArgNoCtx("regexp_instr have invalid regexp pattern arg", pat)
 	}
 
+	// MySQL REGEXP_INSTR rebases its matcher subject at pos. This is
+	// deliberately different from SUBSTR and REPLACE: ^, multiline ^, and word
+	// boundaries at pos > 1 are relative to this suffix, not to the original
+	// subject. Searching only the suffix also avoids encoding or scanning a
+	// discarded binary/text prefix.
+	searchSubject := str[startByte:]
 	match, found, err := rs.regexpNthMatchAtOrAfter(
-		reg, pat, str, startByte, subjectIsBinary, occurrence)
+		reg, pat, searchSubject, 0, subjectIsBinary, occurrence)
 	if err != nil {
 		return 0, err
 	}
@@ -1109,7 +1115,8 @@ func (rs *regexpSet) regularInstrWithMode(pat string, str string, pos, occurrenc
 		return 0, nil
 	}
 	matchOffset := match[retOption]
-	return regexpByteOffsetToPosition(str, matchOffset, subjectIsBinary), nil
+	return regexpSuffixByteOffsetToPosition(
+		searchSubject, pos, matchOffset, subjectIsBinary), nil
 }
 
 // regexpSearchStartByte converts a one-based SQL position to the byte offset
@@ -1141,20 +1148,22 @@ func regexpSearchStartByte(str string, pos int64, subjectIsBinary bool) (int, bo
 	return 0, false
 }
 
-// regexpByteOffsetToPosition converts a regexp byte offset to the one-based SQL
-// position in the subject's unit. Text match boundaries are rune boundaries,
-// so counting runes in the prefix preserves the end-position convention.
-func regexpByteOffsetToPosition(str string, offset int, subjectIsBinary bool) int64 {
+// regexpSuffixByteOffsetToPosition translates a matcher offset relative to the
+// INSTR suffix back to a one-based SQL position. pos already accounts for the
+// discarded prefix, so text mode only counts runes inside the matched suffix;
+// rescanning the original prefix would make a near-end search unnecessarily
+// linear twice.
+func regexpSuffixByteOffsetToPosition(suffix string, pos int64, offset int, subjectIsBinary bool) int64 {
 	if offset <= 0 {
-		return 1
+		return pos
 	}
-	if offset > len(str) {
-		offset = len(str)
+	if offset > len(suffix) {
+		offset = len(suffix)
 	}
 	if subjectIsBinary {
-		return int64(offset) + 1
+		return pos + int64(offset)
 	}
-	return int64(utf8.RuneCountInString(str[:offset])) + 1
+	return pos + int64(utf8.RuneCountInString(suffix[:offset]))
 }
 
 func regexpSubjectLength(str string, subjectIsBinary bool) int64 {
