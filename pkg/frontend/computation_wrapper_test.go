@@ -476,6 +476,148 @@ func TestBinaryProtocolPreparedParamRebindsStringDomain(t *testing.T) {
 	prepareStmt.params = nil
 }
 
+func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
+	const query = "select regexp_instr(?, ?, 2), regexp_replace('中', '.', ?, 1, 0)"
+	ses, prepareStmt, cw, execCtx := newPreparedExecuteEnvForSQL(t, 104, query)
+	proto, _, scratchPrepare := newBinaryPrepareProtocolTestCase(t, query)
+	defer func() {
+		cw.proc.SetPrepareParams(nil)
+		prepareStmt.Close()
+		scratchPrepare.Close()
+	}()
+
+	buildPacket := func(mysqlTypes []defines.MysqlType, values []string) []byte {
+		require.Len(t, values, len(mysqlTypes))
+		headerSize := 5 + (len(values)+7)/8 + 1 + 2*len(values)
+		totalSize := headerSize
+		for _, value := range values {
+			totalSize += 9 + len(value)
+		}
+		data := make([]byte, totalSize)
+		pos := 5 + (len(values)+7)/8
+		data[pos] = 1 // new-params-bound flag
+		pos++
+		for _, mysqlType := range mysqlTypes {
+			data[pos] = byte(mysqlType)
+			pos += 2 // leave the unsigned flag clear
+		}
+		for _, value := range values {
+			pos = proto.writeStringLenEnc(data, pos, value)
+		}
+		return data[:pos]
+	}
+
+	for _, tc := range []struct {
+		name              string
+		mysqlTypes        []defines.MysqlType
+		wantBinary        []bool
+		wantInstr         int64
+		wantReplace       string
+		wantReplaceBinary bool
+	}{
+		{
+			name: "binary subject",
+			mysqlTypes: []defines.MysqlType{
+				defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
+			wantBinary: []bool{true, false, false}, wantInstr: 4, wantReplace: "X",
+		},
+		{
+			name: "binary pattern and replacement",
+			mysqlTypes: []defines.MysqlType{
+				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_BLOB},
+			wantBinary: []bool{false, true, true}, wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
+		},
+		{
+			name: "all text",
+			mysqlTypes: []defines.MysqlType{
+				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
+			wantBinary: []bool{false, false, false}, wantInstr: 2, wantReplace: "X",
+		},
+		{
+			name: "all binary rebind",
+			mysqlTypes: []defines.MysqlType{
+				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB},
+			wantBinary: []bool{true, true, true}, wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, proto.ParseExecuteData(
+				execCtx.reqCtx, cw.proc, prepareStmt,
+				buildPacket(tc.mysqlTypes, []string{"中中", "中", "X"}), 0))
+
+			_, runtimePlan, executionStmt, _, owned, err := initExecuteStmtParam(
+				execCtx, ses, cw, nil, prepareStmt.Name)
+			require.NoError(t, err)
+			if owned {
+				defer executionStmt.Free()
+			}
+			for parameter, wantBinary := range tc.wantBinary {
+				require.Equal(t, wantBinary, cw.proc.GetPrepareParamIsBinaryString(parameter))
+				require.Equal(t, types.StringSourceCOMStmt,
+					cw.proc.GetPrepareParams().GetStringSourceAt(parameter))
+			}
+
+			queryPlan := runtimePlan.GetQuery()
+			projects := queryPlan.Nodes[queryPlan.Steps[len(queryPlan.Steps)-1]].ProjectList
+			require.Len(t, projects, 2)
+			instrExecutor, err := colexec.NewExpressionExecutor(cw.proc, projects[0])
+			require.NoError(t, err)
+			defer instrExecutor.Free()
+			input := batch.New(nil)
+			input.SetRowCount(1)
+			instrResult, err := instrExecutor.Eval(cw.proc, []*batch.Batch{input}, nil)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantInstr, vector.GetFixedAtNoTypeCheck[int64](instrResult, 0))
+
+			replaceExecutor, err := colexec.NewExpressionExecutor(cw.proc, projects[1])
+			require.NoError(t, err)
+			defer replaceExecutor.Free()
+			replaceResult, err := replaceExecutor.Eval(cw.proc, []*batch.Batch{input}, nil)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantReplace, replaceResult.GetStringAt(0))
+			require.Equal(t, tc.wantReplaceBinary, replaceResult.GetIsBinaryStringAt(0))
+		})
+	}
+}
+
+func TestBuildPlanRegexpStaticStringDomainMatrix(t *testing.T) {
+	ctx := defines.AttachAccount(context.Background(), sysAccountID, rootID, moAdminRoleID)
+	for _, sql := range []string{
+		"select _binary'abc' regexp 'a'",
+		"select 'abc' not regexp _binary'a'",
+		"select regexp_like(_binary'abc', 'a')",
+		"select regexp_instr('abc', _binary'b')",
+		"select regexp_substr(_binary'abc123', '[0-9]+')",
+		"select regexp_replace(_binary'abc123', _binary'[0-9]+', 'X')",
+		"select regexp_replace('abc123', '[0-9]+', _binary'X')",
+		"select cast(null as binary) regexp 'a'",
+	} {
+		t.Run(sql, func(t *testing.T) {
+			statements, err := mysql.Parse(ctx, sql, 1)
+			require.NoError(t, err)
+			require.Len(t, statements, 1)
+			_, err = buildPlan(ctx, nil, plan2.NewEmptyCompilerContext(), statements[0])
+			require.Error(t, err)
+			var moErr *moerr.Error
+			require.ErrorAs(t, err, &moErr)
+			require.Equal(t, uint16(moerr.ER_CHARACTER_SET_MISMATCH), moErr.MySQLCode())
+		})
+	}
+
+	for _, sql := range []string{
+		"select _binary'abc' regexp _binary'a'",
+		"select regexp_like(null, 'a')",
+		"select regexp_instr(123, _binary'2')",
+	} {
+		t.Run("accepted_"+sql, func(t *testing.T) {
+			statements, err := mysql.Parse(ctx, sql, 1)
+			require.NoError(t, err)
+			_, err = buildPlan(ctx, nil, plan2.NewEmptyCompilerContext(), statements[0])
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestPreparedParamValuesPreservesNullProtocolProvenance(t *testing.T) {
 	_, prepareStmt, cw, _ := newPreparedExecuteEnvForSQL(t, 112, "select ?")
 	defer prepareStmt.Close()

@@ -2882,7 +2882,7 @@ var supportedStringBuiltIns = []FuncNew{
 		functionId: NOT_REG_MATCH,
 		class:      plan.Function_STRICT,
 		layout:     COMPARISON_OPERATOR,
-		checkFn:    fixedTypeMatch,
+		checkFn:    regexpStringDomainFixedTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -2955,7 +2955,7 @@ var supportedStringBuiltIns = []FuncNew{
 		functionId: REG_MATCH,
 		class:      plan.Function_STRICT,
 		layout:     COMPARISON_OPERATOR,
-		checkFn:    fixedTypeMatch,
+		checkFn:    regexpStringDomainFixedTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -2976,7 +2976,7 @@ var supportedStringBuiltIns = []FuncNew{
 		functionId: REGEXP_INSTR,
 		class:      plan.Function_STRICT,
 		layout:     STANDARD_FUNCTION,
-		checkFn:    stringDomainFixedTypeMatch,
+		checkFn:    regexpStringDomainFixedTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -3027,7 +3027,7 @@ var supportedStringBuiltIns = []FuncNew{
 		functionId: REGEXP_LIKE,
 		class:      plan.Function_STRICT,
 		layout:     STANDARD_FUNCTION,
-		checkFn:    fixedTypeMatch,
+		checkFn:    regexpStringDomainFixedTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -3058,7 +3058,7 @@ var supportedStringBuiltIns = []FuncNew{
 		functionId: REGEXP_REPLACE,
 		class:      plan.Function_STRICT,
 		layout:     STANDARD_FUNCTION,
-		checkFn:    stringDomainFixedTypeMatch,
+		checkFn:    regexpReplaceStringDomainFixedTypeMatch,
 
 		Overloads: []overload{
 			{
@@ -3099,7 +3099,7 @@ var supportedStringBuiltIns = []FuncNew{
 		functionId: REGEXP_SUBSTR,
 		class:      plan.Function_STRICT,
 		layout:     STANDARD_FUNCTION,
-		checkFn:    stringDomainFixedTypeMatch,
+		checkFn:    regexpStringDomainFixedTypeMatch,
 
 		Overloads: []overload{
 			{
