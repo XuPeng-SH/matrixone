@@ -2469,22 +2469,48 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 
 	//lock main table
 	lockTargets := make([]*plan.LockTarget, 0, len(tableDef.Indexes)+1)
+	pkInTableCols := false
 	for _, col := range tableDef.Cols {
-		if col.Name == pkName && pkName != catalog.FakePrimaryKeyColName {
-			lockTarget := &plan.LockTarget{
-				TableId:            tableDef.TblId,
-				ObjRef:             DeepCopyObjectRef(objRef),
-				PrimaryColIdxInBat: colName2Idx[tableDef.Name+"."+col.Name],
-				PrimaryColRelPos:   selectTag,
-				PrimaryColTyp:      col.Typ,
-				// LOAD owns the target table for the whole statement. Mark only
-				// the base-table target so compile can acquire it once before the
-				// pipeline; unique-index targets keep their row-level checks.
-				LockTable: builder.qry.LoadTag,
-			}
-			lockTargets = append(lockTargets, lockTarget)
+		if col.Name == pkName {
+			pkInTableCols = true
 			break
 		}
+	}
+	mainLockColPos := int32(-1)
+	if useTargetPk {
+		// The arbiter resolves a secondary-UNIQUE conflict to the existing
+		// base row's identity. Lock that resolved identity, not the incoming PK:
+		// the latter can name a different row and therefore cannot serialize the
+		// UPDATE. Synthetic-PK tables need the same base-row lock once the hidden
+		// identity has been resolved.
+		mainLockColPos = targetPkPos
+	} else if pkName != catalog.FakePrimaryKeyColName && pkInTableCols {
+		var ok bool
+		mainLockColPos, ok = colName2Idx[tableDef.Name+"."+pkName]
+		if !ok {
+			return 0, moerr.NewInternalErrorf(builder.GetContext(),
+				"bind insert err, can not find primary key projection %s", pkName)
+		}
+	}
+	if mainLockColPos >= 0 {
+		if int(mainLockColPos) >= len(selectNode.ProjectList) {
+			return 0, moerr.NewInternalErrorf(builder.GetContext(),
+				"bind insert err, invalid primary key projection %d", mainLockColPos)
+		}
+		lockTargets = append(lockTargets, &plan.LockTarget{
+			TableId:            tableDef.TblId,
+			ObjRef:             DeepCopyObjectRef(objRef),
+			PrimaryColIdxInBat: mainLockColPos,
+			PrimaryColRelPos:   selectTag,
+			// Type the lock from the actual pipeline column. This also covers
+			// composite PK encodings, whose synthetic storage column need not be
+			// present in TableDef.Cols.
+			PrimaryColTyp: selectNode.ProjectList[mainLockColPos].Typ,
+			// LOAD owns the target table for the whole statement. Mark only
+			// the base-table target so compile can acquire it once before the
+			// pipeline; unique-index targets keep their row-level checks.
+			LockTable: builder.qry.LoadTag,
+		})
 	}
 	// lock unique key table
 	for i, idxDef := range tableDef.Indexes {

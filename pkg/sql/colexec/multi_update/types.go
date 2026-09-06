@@ -89,6 +89,10 @@ const (
 	actionInsert actionType = iota
 	actionDelete
 	actionUpdate
+	// actionAffectedRows is an internal WriteS3 -> FlushS3Info control record.
+	// It carries no storage batch; rowCount is the statement-semantic affected
+	// count accumulated by one or more ODKU writers.
+	actionAffectedRows
 )
 
 func init() {
@@ -121,6 +125,7 @@ type MultiUpdate struct {
 	getS3WriterFunc          func(sid string, id uint64) (*s3WriterDelegate, error)
 	getFlushableS3WriterFunc func() *s3WriterDelegate
 	addAffectedRowsFunc      func(uint64)
+	takeS3AffectedRowsFunc   func() uint64
 
 	vm.OperatorBase
 }
@@ -136,7 +141,11 @@ type updateCtxInfo struct {
 type container struct {
 	state        vm.CtrState
 	affectedRows uint64
-	action       actionType
+	// s3AffectedRows is pending semantic metadata. UpdateWriteS3 owns it only
+	// until it is transferred exactly once through the internal output stream;
+	// UpdateFlushS3Info is the sole owner of the client-visible count.
+	s3AffectedRows uint64
+	action         actionType
 
 	flushed        bool
 	s3Writer       *s3WriterDelegate
@@ -230,6 +239,7 @@ func (update *MultiUpdate) Reset(proc *process.Process, pipelineFailed bool, err
 	if update.ctr.s3Writer != nil {
 		update.ctr.s3Writer.reset(proc)
 	}
+	update.ctr.s3AffectedRows = 0
 	update.freeSeenTargetRows()
 	update.ctr.state = vm.Build
 }
@@ -307,6 +317,15 @@ func physicalInsertAffectedRows(updateCtx *MultiUpdateCtx, rowCount uint64) uint
 	return rowCount
 }
 
+func hasODKUAffectedRows(updateCtxs []*MultiUpdateCtx) bool {
+	for _, updateCtx := range updateCtxs {
+		if updateCtx.AffectedRowsWeightCol != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (update *MultiUpdate) insertAffectedRows(updateCtx *MultiUpdateCtx, input *batch.Batch) uint64 {
 	return insertAffectedRows(updateCtx, input)
 }
@@ -353,4 +372,17 @@ func (update *MultiUpdate) doAddAffectedRows(affectedRows uint64) {
 		return
 	}
 	update.ctr.affectedRows += affectedRows
+}
+
+func (update *MultiUpdate) doAddS3AffectedRows(affectedRows uint64) {
+	if len(update.MultiUpdateCtx) > 0 && update.MultiUpdateCtx[0].IgnoreAffectedRows {
+		return
+	}
+	update.ctr.s3AffectedRows += affectedRows
+}
+
+func (update *MultiUpdate) takeS3AffectedRows() uint64 {
+	affectedRows := update.ctr.s3AffectedRows
+	update.ctr.s3AffectedRows = 0
+	return affectedRows
 }

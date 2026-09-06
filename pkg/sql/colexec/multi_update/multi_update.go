@@ -118,10 +118,19 @@ func (update *MultiUpdate) Prepare(proc *process.Process) error {
 	}
 
 	update.ctr.affectedRows = 0
+	update.ctr.s3AffectedRows = 0
 	update.ctr.flushed = false
 	update.getFlushableS3WriterFunc = update.getFlushableS3Writer
 	update.getS3WriterFunc = update.getS3Writer
 	update.addAffectedRowsFunc = update.doAddAffectedRows
+	update.takeS3AffectedRowsFunc = nil
+	if update.Action == UpdateWriteS3 && hasODKUAffectedRows(update.MultiUpdateCtx) {
+		// Writer operators can live below a merge PreScope, where Scope.affectedRows
+		// cannot see their counters. Transfer ODKU's logical count in-band and let
+		// the final FlushS3Info operator own the client-visible count.
+		update.addAffectedRowsFunc = update.doAddS3AffectedRows
+		update.takeS3AffectedRowsFunc = update.takeS3AffectedRows
+	}
 
 	switch update.Action {
 	case UpdateWriteS3:
@@ -304,6 +313,10 @@ func (update *MultiUpdate) updateFlushS3Info(proc *process.Process, analyzer pro
 	}()
 
 	for i, action := range actions {
+		if actionType(action) == actionAffectedRows {
+			update.addAffectedRowsFunc(rowCounts[i])
+			continue
+		}
 		source, err := update.getSourceByID(tables[i], proc)
 		if err != nil {
 			return input, err

@@ -42,6 +42,13 @@ Those consumers need one explicit contract rather than independently inferring
    then UNIQUE constraints are considered in definition order against both the
    pre-statement snapshot and earlier successful INSERT actions. The first
    conflict wins. An UPDATE action does not publish unused incoming keys.
+9. The resolved target identity is also the base-row lock identity. A secondary
+   UNIQUE conflict must not lock the unrelated incoming primary key, and a
+   synthetic-primary-key table must not omit the base-row lock after resolution.
+10. In WriteS3 plans, the final `UpdateFlushS3Info` operator is the sole owner of
+    client-visible ODKU affected rows. Every writer transfers its accumulated
+    logical count in-band exactly once, independent of physical blocks, scope
+    placement, partition routing, or whether the final action is a no-op.
 
 ## Plan and execution model
 
@@ -68,9 +75,21 @@ hash map per constraint, a single vector of identities for rows accepted as
 INSERTs, and compact map-group-to-identity ordinals. Rows with no conflict
 publish all non-NULL keys atomically; rows resolved as UPDATE publish none.
 The resolved identity becomes the DEDUP key for both explicit and synthetic
-primary-key tables. This prevents a static snapshot probe from turning two
-same-statement ODKU actions into a duplicate error or an insert of the wrong
-row.
+primary-key tables and the base-table lock key. This prevents a static snapshot
+probe from turning two same-statement ODKU actions into a duplicate error or an
+insert of the wrong row, and prevents a secondary-UNIQUE conflict from updating
+one row while locking an unrelated incoming primary key.
+
+WriteS3 writers cannot own client-visible ODKU counts because parallel and
+remote writers may live below merge `PreScopes`, outside the operator chain
+walked by statement affected-row collection. A writer therefore accumulates the
+logical weight separately from its physical block row counts and emits a small
+internal affected-row control record at terminal flush. Independent writer
+records are additive; partition-local writers sharing one partition wrapper
+drain that wrapper's count once. The coordinator consumes these records before
+table resolution or batch decoding, and storage records retain their existing
+physical row-count contract. A pure no-op can consequently report
+`CLIENT_FOUND_ROWS` without manufacturing a storage write.
 
 Self-referencing FKs retain their existing statement-level post-write check in
 this change. Their parent domain can include rows created by the same statement,
@@ -103,6 +122,10 @@ work must not claim row-scoped self-FK semantics until that source exists.
   ordinals are owned by the statement allocation account. Exact arbitration
   remains linear retained state, but exceeding the statement budget fails
   through resource admission instead of escaping accounting into the Go heap.
+- WriteS3 logical counts have one scalar pending owner per writer operator (or
+  partition wrapper). A successful terminal flush transfers and clears it once;
+  reset/error discards it with the failed attempt. The final flush operator is
+  the only component that publishes the transferred count to statement state.
 - No goroutine, retry loop, or unaccounted retained history is introduced.
 
 ## Performance model
@@ -126,6 +149,10 @@ UNIQUE-key map. All three components use the statement allocation account; the
 account capacity is the admission bound for a statement whose exact conflict
 set does not fit in memory.
 
+The WriteS3 count protocol adds at most one five-column control row per writer
+operator and no payload serialization, S3 I/O, or per-input-row allocation. It
+does not change ordinary INSERT/UPDATE plans or ODKU's per-row hot path.
+
 ## Validation matrix
 
 | Contract | White-box proof | SQL-visible proof |
@@ -139,6 +166,8 @@ set does not fit in memory.
 | statement-local target selection | ordered multi-key arbiter and reset tests | repeated new PK/UNIQUE, fake/composite PK, nullable key, conflicting-target priority |
 | bounded action replay | row/byte boundary, probe/finalize resume, reset tests | existing hot-key and wide-row coverage |
 | arbitration memory admission | allocation-account provenance, capacity failure, reset tests | large-data validation belongs to the performance harness |
+| resolved target locking | typed LOCK_OP input for explicit and synthetic PK tables | concurrent secondary-UNIQUE conflict versus direct target-row UPDATE |
+| WriteS3 affected-row ownership | no-op control record, multi-writer sum, partition drain-once, reset tests | large `INSERT ... SELECT ... ODKU` in single-/multi-scope execution |
 
 Every failure case also checks durable table/index state after rollback. Tests
 use barriers or direct typed state; sleeps and probabilistic retries are not

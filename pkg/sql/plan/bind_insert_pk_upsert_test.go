@@ -40,6 +40,36 @@ func requireOnDupUpdateColumns(t *testing.T, logicPlan *planpb.Plan, included, e
 	require.True(t, found, "expected an ON DUPLICATE KEY UPDATE dedup join")
 }
 
+func requireODKUBaseLockUsesResolvedTarget(
+	t *testing.T,
+	logicPlan *planpb.Plan,
+	tableDef *planpb.TableDef,
+) {
+	t.Helper()
+	query := logicPlan.GetQuery()
+	require.NotNil(t, query)
+
+	for _, node := range query.Nodes {
+		if node.NodeType != planpb.Node_LOCK_OP || len(node.Children) != 1 {
+			continue
+		}
+		for _, target := range node.LockTargets {
+			if target.TableId != tableDef.TblId {
+				continue
+			}
+			lockInput := query.Nodes[node.Children[0]]
+			require.Equal(t, planpb.Node_PRE_INSERT_UK, lockInput.NodeType)
+			require.True(t, lockInput.PreInsertUkCtx.GetOdkuTargetArbitration())
+			resolvedTargetPos := int32(len(lockInput.ProjectList) - 1)
+			require.Equal(t, resolvedTargetPos, target.PrimaryColIdxInBat,
+				"base-row lock must consume the arbiter's resolved target identity")
+			require.Equal(t, lockInput.ProjectList[resolvedTargetPos].Typ.Id, target.PrimaryColTyp.Id)
+			return
+		}
+	}
+	t.Fatal("expected an ODKU base-table lock on the resolved target identity")
+}
+
 func TestInsertOnDupIncomingPrimaryKeyNoop(t *testing.T) {
 	mock := NewMockOptimizer(true)
 	logicPlan, err := runOneStmt(mock, t,
@@ -136,6 +166,34 @@ func TestInsertOnDupPreservesAssignmentOrderAndDuplicates(t *testing.T) {
 		return
 	}
 	t.Fatal("expected ODKU dedup join")
+}
+
+func TestInsertOnDupLocksResolvedConflictTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		tableName string
+		sql       string
+	}{
+		{
+			name:      "real primary key with secondary unique conflict",
+			tableName: "dept",
+			sql: "insert into constraint_test.dept(deptno, dname, loc) " +
+				"values (999, 'Sales', 'NY') on duplicate key update loc = 'LA'",
+		},
+		{
+			name:      "synthetic primary key with unique conflict",
+			tableName: "fake_pk_t",
+			sql: "insert into constraint_test.fake_pk_t(a, b) " +
+				"values (1, 'x') on duplicate key update b = 'y'",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := NewMockOptimizer(true)
+			logicPlan, err := runOneStmt(mock, t, tc.sql)
+			require.NoError(t, err)
+			requireODKUBaseLockUsesResolvedTarget(t, logicPlan, mock.ctxt.tables[tc.tableName])
+		})
+	}
 }
 
 func TestInsertOnDupCarriesFoundRowsMode(t *testing.T) {
