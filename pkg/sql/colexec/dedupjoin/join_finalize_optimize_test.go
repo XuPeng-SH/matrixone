@@ -105,6 +105,11 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 		}
 		return values
 	}
+	firstAndFinalBool := func(firstCount int) []bool {
+		values := firstBool(firstCount)
+		values[len(values)-1] = true
+		return values
+	}
 
 	for _, tc := range []struct {
 		name              string
@@ -146,6 +151,13 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 			wantPhysical: []bool{false, true}, wantFinal: []bool{false, true}, wantFKEligibility: []bool{true, true},
 		},
 		{
+			name:         "new duplicate group retains insert eligibility for an unchanged final constraint",
+			buildPayload: []int32{100, 200}, probeKey: 99, fkTracksKey: true,
+			wantBatchCount: 1,
+			wantPayload:    []int32{100, 777}, wantAffected: []uint64{0, 3},
+			wantPhysical: []bool{false, true}, wantFinal: []bool{false, true}, wantFKEligibility: []bool{true, true},
+		},
+		{
 			name:         "nullable keys remain independent insert actions",
 			buildPayload: []int32{100, 200}, buildKeyNulls: []uint64{0, 1}, probeKey: 99,
 			wantBatchCount: 1,
@@ -181,7 +193,14 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 			name: "new hot group resumes finalize action replay", buildPayload: repeatInt32(100), probeKey: 99,
 			wantBatchCount: 2, wantPayload: append([]int32{100}, repeatInt32(777)[:hotRows-1]...),
 			wantAffected: finalUint64(3), wantPhysical: finalBool(), wantFinal: finalBool(),
-			wantFKEligibility: firstBool(2),
+			wantFKEligibility: firstAndFinalBool(2),
+		},
+		{
+			name:         "new hot group preserves unchanged final constraint eligibility across batches",
+			buildPayload: repeatInt32(100), probeKey: 99, fkTracksKey: true,
+			wantBatchCount: 2, wantPayload: append([]int32{100}, repeatInt32(777)[:hotRows-1]...),
+			wantAffected: finalUint64(3), wantPhysical: finalBool(), wantFinal: finalBool(),
+			wantFKEligibility: firstAndFinalBool(1),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

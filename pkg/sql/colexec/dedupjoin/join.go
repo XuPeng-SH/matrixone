@@ -709,7 +709,7 @@ func (ctr *container) finalizeODKUActionRows(
 				}
 				if err := ctr.appendFinalizeActionRow(
 					ap, ctr.rbat, affectedRows, isFinal, isFinal,
-					ctr.foreignKeyChanges(ap.ForeignKeyChecks), proc); err != nil {
+					ctr.finalizeInsertConstraintEligibility(ap.ForeignKeyChecks, isFinal), proc); err != nil {
 					return err
 				}
 				ctr.finalizeActionIdx++
@@ -1130,7 +1130,7 @@ func (ctr *container) finalize(ap *DedupJoin, proc *process.Process) error {
 						}
 						if err := ctr.appendFinalizeActionRow(
 							ap, ap.ctr.buf[batIdx], affectedRows, isFinal, isFinal,
-							ctr.foreignKeyChanges(ap.ForeignKeyChecks), proc); err != nil {
+							ctr.finalizeInsertConstraintEligibility(ap.ForeignKeyChecks, isFinal), proc); err != nil {
 							return err
 						}
 						rowIdx++
@@ -1584,6 +1584,21 @@ func (ctr *container) allForeignKeysEligible(checks []ODKUForeignKeyCheck) []boo
 		ctr.foreignKeyEligibility[i] = true
 	}
 	return ctr.foreignKeyEligibility
+}
+
+// finalizeInsertConstraintEligibility keeps two independent facts distinct:
+// whether this logical action changed a constraint tuple, and whether the
+// finalized group originated from an INSERT in this statement. The final row
+// of a new group must remain eligible for every final-image constraint even
+// when its last UPDATE action changed an unrelated column.
+func (ctr *container) finalizeInsertConstraintEligibility(
+	checks []ODKUForeignKeyCheck,
+	isFinal bool,
+) []bool {
+	if isFinal {
+		return ctr.allForeignKeysEligible(checks)
+	}
+	return ctr.foreignKeyChanges(checks)
 }
 
 func appendODKUActionMetadata(

@@ -353,6 +353,50 @@ select * from t_odku_action_check;
 ➤ id[4,32,0]  ¦  v[4,32,0]  𝄀
 1  ¦  4
 drop table t_odku_action_check;
+drop table if exists t_odku_final_insert_check;
+create table t_odku_final_insert_check(
+id int primary key,
+pid int,
+v int,
+constraint ck_final_insert_pid check(pid > 0),
+constraint ck_final_insert_v check(v >= 0)
+);
+insert into t_odku_final_insert_check values (1, -1, 0), (1, 10, 1)
+on duplicate key update v = values(v);
+constraint violation: Check constraint 'ck_final_insert_pid' is violated
+select count(*) from t_odku_final_insert_check;
+➤ count(*)[5,64,0]  𝄀
+0
+insert into t_odku_final_insert_check values (2, 1, 0), (2, 10, 1)
+on duplicate key update v = values(v);
+select id, pid, v from t_odku_final_insert_check;
+➤ id[4,32,0]  ¦  pid[4,32,0]  ¦  v[4,32,0]  𝄀
+2  ¦  1  ¦  1
+drop table t_odku_final_insert_check;
+drop table if exists t_odku_final_insert_fk_child;
+drop table if exists t_odku_final_insert_fk_parent;
+create table t_odku_final_insert_fk_parent(id int primary key);
+create table t_odku_final_insert_fk_child(
+id int primary key,
+pid int,
+v int,
+constraint ck_final_insert_fk_v check(v >= 0),
+foreign key(pid) references t_odku_final_insert_fk_parent(id)
+);
+insert into t_odku_final_insert_fk_parent values (1);
+insert into t_odku_final_insert_fk_child values (1, 999, 0), (1, 1, 1)
+on duplicate key update v = values(v);
+internal error: Cannot add or update a child row: a foreign key constraint fails
+select count(*) from t_odku_final_insert_fk_child;
+➤ count(*)[5,64,0]  𝄀
+0
+insert into t_odku_final_insert_fk_child values (2, 1, 0), (2, 999, 1)
+on duplicate key update v = values(v);
+select id, pid, v from t_odku_final_insert_fk_child;
+➤ id[4,32,0]  ¦  pid[4,32,0]  ¦  v[4,32,0]  𝄀
+2  ¦  1  ¦  1
+drop table t_odku_final_insert_fk_child;
+drop table t_odku_final_insert_fk_parent;
 drop table if exists t_ign_fk_child;
 drop table if exists t_ign_fk_parent;
 create table t_ign_fk_parent(pid int primary key, pname varchar(20));

@@ -340,6 +340,45 @@ insert into t_odku_action_check values (1, 3), (1, 4)
 select * from t_odku_action_check;
 drop table t_odku_action_check;
 
+-- A group created by this statement remains insert-originated at its final
+-- image. An unrelated CHECK or FK must not lose eligibility merely because
+-- the last duplicate action changed only another constrained column.
+drop table if exists t_odku_final_insert_check;
+create table t_odku_final_insert_check(
+  id int primary key,
+  pid int,
+  v int,
+  constraint ck_final_insert_pid check(pid > 0),
+  constraint ck_final_insert_v check(v >= 0)
+);
+insert into t_odku_final_insert_check values (1, -1, 0), (1, 10, 1)
+  on duplicate key update v = values(v);
+select count(*) from t_odku_final_insert_check;
+insert into t_odku_final_insert_check values (2, 1, 0), (2, 10, 1)
+  on duplicate key update v = values(v);
+select id, pid, v from t_odku_final_insert_check;
+drop table t_odku_final_insert_check;
+
+drop table if exists t_odku_final_insert_fk_child;
+drop table if exists t_odku_final_insert_fk_parent;
+create table t_odku_final_insert_fk_parent(id int primary key);
+create table t_odku_final_insert_fk_child(
+  id int primary key,
+  pid int,
+  v int,
+  constraint ck_final_insert_fk_v check(v >= 0),
+  foreign key(pid) references t_odku_final_insert_fk_parent(id)
+);
+insert into t_odku_final_insert_fk_parent values (1);
+insert into t_odku_final_insert_fk_child values (1, 999, 0), (1, 1, 1)
+  on duplicate key update v = values(v);
+select count(*) from t_odku_final_insert_fk_child;
+insert into t_odku_final_insert_fk_child values (2, 1, 0), (2, 999, 1)
+  on duplicate key update v = values(v);
+select id, pid, v from t_odku_final_insert_fk_child;
+drop table t_odku_final_insert_fk_child;
+drop table t_odku_final_insert_fk_parent;
+
 -- INSERT IGNORE on a child table drops the rows whose parent does not exist
 -- (MySQL row-skip semantics) instead of failing the whole statement.
 drop table if exists t_ign_fk_child;
