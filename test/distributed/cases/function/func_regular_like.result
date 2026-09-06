@@ -120,6 +120,11 @@ set @regexp_like_pattern = cast(_binary'a' as varbinary(1));
 execute regexp_like_domain_rebind using @regexp_like_subject, @regexp_like_pattern;
 regexp_like(?, ?, i)
 1
+set @regexp_like_subject = cast(X'C9' as varbinary(1));
+set @regexp_like_pattern = cast(X'E9' as varbinary(1));
+execute regexp_like_domain_rebind using @regexp_like_subject, @regexp_like_pattern;
+regexp_like(?, ?, i)
+1
 set @regexp_like_subject = 'A';
 set @regexp_like_pattern = 'a';
 execute regexp_like_domain_rebind using @regexp_like_subject, @regexp_like_pattern;

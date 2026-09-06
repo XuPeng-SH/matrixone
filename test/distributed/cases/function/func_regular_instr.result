@@ -340,6 +340,27 @@ EXECUTE regexp_scalar_domain_rebind USING @regexp_scalar_subject, @regexp_scalar
 scalar_pos
 4
 DEALLOCATE PREPARE regexp_scalar_domain_rebind;
+PREPARE regexp_derived_scalar_domain_rebind FROM
+'SELECT REGEXP_INSTR((SELECT d.subject FROM (SELECT ? AS subject) d), (SELECT d.pattern FROM (SELECT ? AS pattern) d), 2) AS derived_scalar_pos';
+SET @regexp_derived_subject = CAST(_binary'中中' AS VARBINARY(6));
+SET @regexp_derived_pattern = CAST(_binary'中' AS VARBINARY(3));
+EXECUTE regexp_derived_scalar_domain_rebind USING @regexp_derived_subject, @regexp_derived_pattern;
+derived_scalar_pos
+4
+SET @regexp_derived_subject = '中中';
+SET @regexp_derived_pattern = '中';
+EXECUTE regexp_derived_scalar_domain_rebind USING @regexp_derived_subject, @regexp_derived_pattern;
+derived_scalar_pos
+2
+SET @regexp_derived_subject = CAST(_binary'中中' AS VARBINARY(6));
+EXECUTE regexp_derived_scalar_domain_rebind USING @regexp_derived_subject, @regexp_derived_pattern;
+derived_scalar_pos
+4
+SET @regexp_derived_pattern = CAST(_binary'中' AS VARBINARY(3));
+EXECUTE regexp_derived_scalar_domain_rebind USING @regexp_derived_subject, @regexp_derived_pattern;
+derived_scalar_pos
+4
+DEALLOCATE PREPARE regexp_derived_scalar_domain_rebind;
 PREPARE regexp_nested_domain_rebind FROM
 'SELECT ORD(REGEXP_SUBSTR(?, ?)), REGEXP_INSTR(REGEXP_SUBSTR(?, ?), CAST(_binary''.'' AS VARBINARY(1)), 1)';
 SET @regexp_nested_subject = CAST(_binary'中中' AS VARBINARY(6));

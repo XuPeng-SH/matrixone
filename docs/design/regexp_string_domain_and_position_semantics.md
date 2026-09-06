@@ -147,9 +147,10 @@ first when `match_type` itself is NULL, matching MySQL's argument semantics.
 1. The binder records deferred regexp operands at PREPARE and reconstructs the
    known/direct-marker/domainless modes at every function boundary at EXECUTE.
    If flattening turns a scalar subquery into a ColRef, its domain-producing
-   expression is retained in the existing sparse prepared-expression metadata
-   so the outer consumer can recompute its execute-time type without replacing
-   scalar-subquery value semantics or walking the plan graph at EXECUTE.
+   expression is retained in the existing sparse prepared-expression metadata.
+   Binding-time lineage follows derived-table and CTE projection ColRefs to the
+   expression that owns the domain; execution therefore recomputes the type
+   without replacing scalar-subquery value semantics or walking the plan graph.
 2. Execute-time rebinding replaces parameters in a copied plan. Materialized
    parameters retain their execute-time binary type even when a different
    sibling expression triggered specialization, so `ORD(?)` and other string
@@ -268,7 +269,7 @@ RE2 encoding is retained.
 | INSTR suffix anchors | direct matcher tests for `^`, multiline `^`, `\\b`, `$` | BVT SQL at `pos > 1` |
 | SUBSTR/REPLACE original anchors | start-aware iterator tests | existing BVT positional cases |
 | nested dynamic result domain | binder accepts correlated runtime domains, propagates binary from subject/pattern, excludes replacement from result ownership, and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse, including replacement-only BLOB |
-| flattened scalar-subquery domain | sparse source-expression metadata recomputes the outer ColRef domain without removing scalar semantics | prepared VARBINARY/text rebind, explicit-cast boundary, and cached-plan immutability |
+| flattened scalar-subquery domain | sparse source-expression metadata follows direct, derived-table, and CTE projection lineage and recomputes the outer ColRef domain without removing scalar semantics | prepared VARBINARY/text rebind, mismatch recovery, explicit-cast boundary, and cached-plan immutability |
 | replacement-domain conversion | Windows-1252 edge bytes, UTF-8-looking binary bytes, text control, binary-result byte preservation, and every REGEXP_REPLACE arity | SQL PREPARE binary/text/binary reuse observed through `HEX` |
 | static mismatch | function resolver returns 3995 only for known VARBINARY/text mixes; BINARY/BLOB controls remain compatible | BVT matrix |
 | execute-time marker semantics | exhaustive known/deferred/direct-marker/domainless matrix | mixed direct markers, fixed-binary controls, nested-result controls, and cached-plan reuse |

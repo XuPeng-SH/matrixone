@@ -4465,7 +4465,7 @@ func preparedRegexpStringDomainCheckModes(
 func (b *baseBinder) markPreparedStringDomainSubquerySources(name string, args []*Expr) {
 	stringOperands := preparedRegexpCompatibilityStringOperandCount(name, len(args))
 	for i := 0; i < stringOperands; i++ {
-		b.markPreparedStringDomainSubquerySource(args[i], make(map[int32]struct{}))
+		b.markPreparedStringDomainSubquerySource(args[i], make(map[[2]int32]struct{}))
 	}
 }
 
@@ -4474,7 +4474,7 @@ func (b *baseBinder) markPreparedStringDomainSubquerySources(name string, args [
 // ColRef. Direct markers and ordinary nested functions retain their own
 // provenance and need no metadata.
 func (b *baseBinder) markPreparedStringDomainSubquerySource(
-	expr *plan.Expr, visited map[int32]struct{},
+	expr *plan.Expr, visited map[[2]int32]struct{},
 ) bool {
 	if expr == nil || isExplicitPreparedCast(expr) {
 		return false
@@ -4496,6 +4496,34 @@ func (b *baseBinder) markPreparedStringDomainSubquerySource(
 		}
 		return dynamic
 	}
+	if col := expr.GetCol(); col != nil {
+		if b.builder == nil || b.builder.qry == nil {
+			return false
+		}
+		nodeID, ok := b.builder.tag2NodeID[col.RelPos]
+		if !ok || nodeID < 0 || int(nodeID) >= len(b.builder.qry.Nodes) {
+			return false
+		}
+		node := b.builder.qry.Nodes[nodeID]
+		if node == nil || col.ColPos < 0 || int(col.ColPos) >= len(node.ProjectList) {
+			return false
+		}
+		key := [2]int32{nodeID, col.ColPos}
+		if _, seen := visited[key]; seen {
+			return false
+		}
+		visited[key] = struct{}{}
+		source := node.ProjectList[col.ColPos]
+		if !b.markPreparedStringDomainSubquerySource(source, visited) {
+			return false
+		}
+		// A derived-table or CTE projection is represented by a ColRef before
+		// scalar-subquery flattening. Retain its domain-producing expression on
+		// that reference; keeping only the ColRef would lose the source again
+		// when the query graph is copied and rebound at EXECUTE.
+		ensurePreparedNumericMetadata(expr).StringDomainSource = DeepCopyExpr(source)
+		return true
+	}
 	sub := expr.GetSub()
 	if sub == nil {
 		return false
@@ -4504,10 +4532,11 @@ func (b *baseBinder) markPreparedStringDomainSubquerySource(
 		sub.NodeId < 0 || int(sub.NodeId) >= len(b.builder.qry.Nodes) {
 		return b.markPreparedStringDomainSubquerySource(sub.Child, visited)
 	}
-	if _, seen := visited[sub.NodeId]; seen {
+	key := [2]int32{sub.NodeId, -1}
+	if _, seen := visited[key]; seen {
 		return false
 	}
-	visited[sub.NodeId] = struct{}{}
+	visited[key] = struct{}{}
 	node := b.builder.qry.Nodes[sub.NodeId]
 	if node == nil {
 		return false

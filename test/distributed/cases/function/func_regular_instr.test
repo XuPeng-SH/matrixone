@@ -209,6 +209,22 @@ SET @regexp_scalar_subject = CAST(_binary'中中' AS VARBINARY(6));
 EXECUTE regexp_scalar_domain_rebind USING @regexp_scalar_subject, @regexp_scalar_pattern;
 DEALLOCATE PREPARE regexp_scalar_domain_rebind;
 
+# Derived-table and CTE projections introduce ColRefs before scalar-subquery
+# flattening. Their parameter domain must survive that extra lineage hop too.
+PREPARE regexp_derived_scalar_domain_rebind FROM
+    'SELECT REGEXP_INSTR((SELECT d.subject FROM (SELECT ? AS subject) d), (SELECT d.pattern FROM (SELECT ? AS pattern) d), 2) AS derived_scalar_pos';
+SET @regexp_derived_subject = CAST(_binary'中中' AS VARBINARY(6));
+SET @regexp_derived_pattern = CAST(_binary'中' AS VARBINARY(3));
+EXECUTE regexp_derived_scalar_domain_rebind USING @regexp_derived_subject, @regexp_derived_pattern;
+SET @regexp_derived_subject = '中中';
+SET @regexp_derived_pattern = '中';
+EXECUTE regexp_derived_scalar_domain_rebind USING @regexp_derived_subject, @regexp_derived_pattern;
+SET @regexp_derived_subject = CAST(_binary'中中' AS VARBINARY(6));
+EXECUTE regexp_derived_scalar_domain_rebind USING @regexp_derived_subject, @regexp_derived_pattern;
+SET @regexp_derived_pattern = CAST(_binary'中' AS VARBINARY(3));
+EXECUTE regexp_derived_scalar_domain_rebind USING @regexp_derived_subject, @regexp_derived_pattern;
+DEALLOCATE PREPARE regexp_derived_scalar_domain_rebind;
+
 # A nested domain-preserving REGEXP expression can depend on several prepared
 # parameters jointly. PREPARE must not reject the legal binary/binary state or
 # retain it across a later text execution.
