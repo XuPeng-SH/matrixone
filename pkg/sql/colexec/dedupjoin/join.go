@@ -1148,24 +1148,6 @@ func odkuPhysicalChanged(
 	return anyActionChanged && snapshotChanged(before, after, cols)
 }
 
-// restorePureNoOpImage discards implicit ON UPDATE/generated values when none
-// of the user's ordered assignments changed the row. Besides avoiding a
-// physical write, restoring the real stored image ensures every downstream
-// consumer (CHECK/FK/index maintenance/RETURNING) observes the same no-op row.
-func restorePureNoOpImage(
-	anyActionChanged bool,
-	before []*vector.Vector,
-	after *batch.Batch,
-	cols []int32,
-) {
-	if anyActionChanged {
-		return
-	}
-	for i, pos := range cols {
-		after.Vecs[pos] = before[i]
-	}
-}
-
 func odkuValuesEqual(left, right *vector.Vector) bool {
 	if left == nil || right == nil {
 		return left == right
@@ -1195,6 +1177,55 @@ func odkuValuesEqual(left, right *vector.Vector) bool {
 			vector.GetFixedAtNoTypeCheck[float64](left, 0),
 			vector.GetFixedAtNoTypeCheck[float64](right, 0),
 		)
+	case types.T_bool:
+		return odkuFixedValuesEqual[bool](left, right)
+	case types.T_bit, types.T_uint64:
+		return odkuFixedValuesEqual[uint64](left, right)
+	case types.T_int8:
+		return odkuFixedValuesEqual[int8](left, right)
+	case types.T_int16:
+		return odkuFixedValuesEqual[int16](left, right)
+	case types.T_int32:
+		return odkuFixedValuesEqual[int32](left, right)
+	case types.T_int64, types.T_interval:
+		return odkuFixedValuesEqual[int64](left, right)
+	case types.T_uint8:
+		return odkuFixedValuesEqual[uint8](left, right)
+	case types.T_uint16:
+		return odkuFixedValuesEqual[uint16](left, right)
+	case types.T_uint32:
+		return odkuFixedValuesEqual[uint32](left, right)
+	case types.T_decimal64:
+		return vector.GetFixedAtNoTypeCheck[types.Decimal64](left, 0).Compare(
+			vector.GetFixedAtNoTypeCheck[types.Decimal64](right, 0)) == 0
+	case types.T_decimal128:
+		return vector.GetFixedAtNoTypeCheck[types.Decimal128](left, 0).Compare(
+			vector.GetFixedAtNoTypeCheck[types.Decimal128](right, 0)) == 0
+	case types.T_decimal256:
+		return vector.GetFixedAtNoTypeCheck[types.Decimal256](left, 0).Compare(
+			vector.GetFixedAtNoTypeCheck[types.Decimal256](right, 0)) == 0
+	case types.T_date:
+		return odkuFixedValuesEqual[types.Date](left, right)
+	case types.T_time:
+		return odkuFixedValuesEqual[types.Time](left, right)
+	case types.T_datetime:
+		return odkuFixedValuesEqual[types.Datetime](left, right)
+	case types.T_timestamp:
+		return odkuFixedValuesEqual[types.Timestamp](left, right)
+	case types.T_year:
+		return odkuFixedValuesEqual[types.MoYear](left, right)
+	case types.T_enum:
+		return odkuFixedValuesEqual[types.Enum](left, right)
+	case types.T_uuid:
+		return odkuFixedValuesEqual[types.Uuid](left, right)
+	case types.T_TS:
+		return odkuFixedValuesEqual[types.TS](left, right)
+	case types.T_Rowid:
+		return odkuFixedValuesEqual[types.Rowid](left, right)
+	case types.T_Blockid:
+		return odkuFixedValuesEqual[types.Blockid](left, right)
+	case types.T_Objectid:
+		return odkuFixedValuesEqual[types.Objectid](left, right)
 	case types.T_array_float32:
 		l, r := types.BytesToArray[float32](left.GetBytesAt(0)), types.BytesToArray[float32](right.GetBytesAt(0))
 		return odkuFloat32ArrayEqual(l, r)
@@ -1230,14 +1261,16 @@ func odkuValuesEqual(left, right *vector.Vector) bool {
 		types.T_varbinary, types.T_datalink, types.T_geometry, types.T_geometry32:
 		return bytes.Equal(left.GetBytesAt(0), right.GetBytesAt(0))
 	default:
-		// Decode fixed-width values before comparing them. Raw bytes are an
-		// implementation detail (and are not a SQL comparator for values such as
-		// FLOAT NaNs, decimals, timestamps, or UUIDs); CompareValue supplies the
-		// type-specific value semantics for the remaining scalar families.
-		return types.CompareValue(
-			vector.GetAny(left, 0, false), vector.GetAny(right, 0, false),
-		) == 0
+		// ODKU target columns cannot use pseudo/internal tuple types. Fail closed
+		// instead of falling back through interface{}: GetAny forces hot-path heap
+		// escapes and can silently give an unsupported type accidental semantics.
+		return false
 	}
+}
+
+func odkuFixedValuesEqual[T comparable](left, right *vector.Vector) bool {
+	return vector.GetFixedAtNoTypeCheck[T](left, 0) ==
+		vector.GetFixedAtNoTypeCheck[T](right, 0)
 }
 
 func odkuFloat32Equal(left, right float32) bool {

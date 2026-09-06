@@ -158,6 +158,64 @@ func TestODKUValueEqualityUsesSQLFloatSemantics(t *testing.T) {
 		"FLOAT32 NaN payloads must not turn an otherwise unchanged action into a write")
 }
 
+func TestODKUValueEqualityUsesSQLNarrowVectorSemantics(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+
+	for _, tc := range []struct {
+		name  string
+		typ   types.Type
+		left  []byte
+		right []byte
+	}{
+		{
+			name: "float16 signed zero", typ: types.T_array_float16.ToType(),
+			left:  types.ArrayToBytes([]types.Float16{types.Float16(0x8000)}),
+			right: types.ArrayToBytes([]types.Float16{types.Float16(0x0000)}),
+		},
+		{
+			name: "float16 NaN payload", typ: types.T_array_float16.ToType(),
+			left:  types.ArrayToBytes([]types.Float16{types.Float16(0x7e01)}),
+			right: types.ArrayToBytes([]types.Float16{types.Float16(0x7e02)}),
+		},
+		{
+			name: "bf16 signed zero", typ: types.T_array_bf16.ToType(),
+			left:  types.ArrayToBytes([]types.BF16{types.BF16(0x8000)}),
+			right: types.ArrayToBytes([]types.BF16{types.BF16(0x0000)}),
+		},
+		{
+			name: "bf16 NaN payload", typ: types.T_array_bf16.ToType(),
+			left:  types.ArrayToBytes([]types.BF16{types.BF16(0x7fc1)}),
+			right: types.ArrayToBytes([]types.BF16{types.BF16(0x7fc2)}),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			left := vector.NewVec(tc.typ)
+			right := vector.NewVec(tc.typ)
+			defer left.Free(proc.Mp())
+			defer right.Free(proc.Mp())
+			require.NoError(t, vector.AppendBytes(left, tc.left, false, proc.Mp()))
+			require.NoError(t, vector.AppendBytes(right, tc.right, false, proc.Mp()))
+			require.True(t, odkuValuesEqual(left, right))
+		})
+	}
+}
+
+func TestODKUFixedValueEqualityDoesNotAllocate(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+	left := testutil.MakeInt64Vector([]int64{42}, nil, proc.Mp())
+	right := testutil.MakeInt64Vector([]int64{42}, nil, proc.Mp())
+	defer left.Free(proc.Mp())
+	defer right.Free(proc.Mp())
+
+	require.Zero(t, testing.AllocsPerRun(1000, func() {
+		if !odkuValuesEqual(left, right) {
+			t.Fatal("equal fixed values compared unequal")
+		}
+	}))
+}
+
 func TestODKUValueEqualityTreatsNullsAsEqualOnlyWhenBothAreNull(t *testing.T) {
 	proc := testutil.NewProcess(t)
 	defer proc.Free()
@@ -290,10 +348,6 @@ func TestODKUPhysicalChangeSeparatesImplicitColumnsFromNoOp(t *testing.T) {
 	require.False(t, odkuPhysicalChanged(
 		false, []*vector.Vector{oldValue, oldTimestamp}, final, []int32{0, 1}),
 		"a pure no-op must not fire an implicit ON UPDATE expression")
-	restorePureNoOpImage(false, []*vector.Vector{oldValue, oldTimestamp}, final, []int32{0, 1})
-	require.Same(t, oldValue, final.Vecs[0])
-	require.Same(t, oldTimestamp, final.Vecs[1],
-		"downstream CHECK and index consumers must see the stored timestamp")
 }
 
 func TestODKUStableVectorPoolSurvivesJoinBatchWidthChange(t *testing.T) {

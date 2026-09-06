@@ -380,6 +380,84 @@ func (builder *QueryBuilder) modernInsertFkCheckEnabled(tableDef *plan.TableDef)
 	return IsForeignKeyChecksEnabled(builder.compCtx)
 }
 
+func odkuUpdatedNotNullColumns(
+	tableDef *plan.TableDef,
+	updateColIdxList []int32,
+	updateColExprList []*plan.Expr,
+) []int32 {
+	seen := make(map[int32]struct{}, len(updateColIdxList))
+	result := make([]int32, 0, len(updateColIdxList))
+	for i, colIdx := range updateColIdxList {
+		if colIdx < 0 || int(colIdx) >= len(tableDef.Cols) {
+			continue
+		}
+		col := tableDef.Cols[colIdx]
+		if col.Default == nil || col.Default.NullAbility ||
+			strings.HasPrefix(col.Name, catalog.PrefixCBColName) {
+			continue
+		}
+		// Most ODKU assignments into NOT NULL columns are already proven
+		// non-null (for example v = VALUES(v)). Keep those on the one-row-per-key
+		// fast path; action validation is needed only when an expression can
+		// actually produce NULL before a later action restores the final image.
+		if i < len(updateColExprList) && updateColExprList[i] != nil &&
+			updateColExprList[i].Typ.NotNullable {
+			continue
+		}
+		if _, exists := seen[colIdx]; exists {
+			continue
+		}
+		seen[colIdx] = struct{}{}
+		result = append(result, colIdx)
+	}
+	return result
+}
+
+func (builder *QueryBuilder) appendODKUActionNotNullAssertions(
+	bindCtx *BindContext,
+	tableDef *plan.TableDef,
+	lastNodeID int32,
+	selectTag int32,
+	colIdxList []int32,
+) (int32, error) {
+	assertions := make([]*plan.Expr, 0, len(colIdxList))
+	for _, colIdx := range colIdxList {
+		col := tableDef.Cols[colIdx]
+		colType := col.Typ
+		// The action stream can temporarily contain NULL even though the target
+		// schema is NOT NULL. Do not let expression folding use the destination
+		// declaration to reduce isnotnull(action_value) to a constant true.
+		colType.NotNullable = false
+		colExpr := &plan.Expr{
+			Typ:  colType,
+			Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: selectTag, ColPos: colIdx}},
+		}
+		isNotNull, err := BindFuncExprImplByPlanExpr(
+			builder.GetContext(), "isnotnull", []*plan.Expr{colExpr})
+		if err != nil {
+			return 0, err
+		}
+		assertion, err := BindFuncExprImplByPlanExpr(
+			builder.GetContext(), "_check_constraint_assert", []*plan.Expr{
+				isNotNull,
+				makePlan2StringConstExprWithType(fmt.Sprintf("Column '%s' cannot be null", col.Name)),
+			})
+		if err != nil {
+			return 0, err
+		}
+		assertions = append(assertions, assertion)
+	}
+	if len(assertions) == 0 {
+		return lastNodeID, nil
+	}
+	return builder.appendNode(&plan.Node{
+		NodeType:        plan.Node_FILTER,
+		Children:        []int32{lastNodeID},
+		FilterList:      assertions,
+		FilterIsBarrier: true,
+	}, bindCtx), nil
+}
+
 func (builder *QueryBuilder) appendIrregularMaintSource(
 	bindCtx *BindContext,
 	newRowImageID int32,
@@ -2307,6 +2385,8 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 	actionFinalInputPos := int32(-1)
 	var odkuFkEligibilityInputPos []int32
 	odkuNeedFkCheck := false
+	odkuNotNullColIdxList := odkuUpdatedNotNullColumns(
+		tableDef, updateColIdxList, updateColExprList)
 	if onDupAction == plan.Node_UPDATE {
 		odkuNeedFkCheck, err = builder.modernInsertFkCheckEnabled(tableDef)
 		if err != nil {
@@ -2314,7 +2394,7 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 		}
 	}
 	emitODKUActionRows := onDupAction == plan.Node_UPDATE &&
-		(len(tableDef.Checks) > 0 || odkuNeedFkCheck)
+		(len(tableDef.Checks) > 0 || odkuNeedFkCheck || len(odkuNotNullColIdxList) > 0)
 	odkuActionValidationApplied := false
 	if useTargetPk {
 		oldSelectTag := selectTag
@@ -2798,6 +2878,11 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 						return 0, err
 					}
 				}
+				lastNodeID, err = builder.appendODKUActionNotNullAssertions(
+					bindCtx, tableDef, lastNodeID, selectTag, odkuNotNullColIdxList)
+				if err != nil {
+					return 0, err
+				}
 				if odkuNeedFkCheck {
 					var oks []*plan.Expr
 					lastNodeID, oks, err = builder.appendModernChildFkMarkOks(
@@ -2852,6 +2937,11 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 					return 0, err
 				}
 			}
+			lastNodeID, err = builder.appendODKUActionNotNullAssertions(
+				bindCtx, tableDef, lastNodeID, selectTag, odkuNotNullColIdxList)
+			if err != nil {
+				return 0, err
+			}
 			if odkuNeedFkCheck {
 				lastNodeID, selectTag, err = builder.buildModernChildFkAssert(
 					bindCtx, tableDef, lastNodeID, selectTag,
@@ -2861,6 +2951,18 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 				}
 				selectNode = builder.qry.Nodes[lastNodeID]
 			}
+			lastNodeID = builder.appendNode(&plan.Node{
+				NodeType: plan.Node_FILTER,
+				Children: []int32{lastNodeID},
+				FilterList: []*plan.Expr{{
+					Typ: plan.Type{Id: int32(types.T_bool), NotNullable: true},
+					Expr: &plan.Expr_Col{Col: &plan.ColRef{
+						RelPos: selectTag, ColPos: actionFinalInputPos,
+					}},
+				}},
+				FilterIsBarrier: true,
+			}, bindCtx)
+			odkuActionValidationApplied = true
 		}
 
 		// dedup#2:handle unique key dedup

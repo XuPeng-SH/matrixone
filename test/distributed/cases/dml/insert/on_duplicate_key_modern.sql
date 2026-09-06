@@ -573,6 +573,20 @@ insert into t_odku_repeat_onupdate(id, v) values (1, 10)
 select row_count(), v, updated_at = '2000-01-01 00:00:00.000000' as auto_unchanged
   from t_odku_repeat_onupdate;
 drop table t_odku_repeat_onupdate;
+
+-- NOT NULL is an action constraint, not merely a final-row storage check. The
+-- first duplicate action must abort even though the later action would restore
+-- a non-NULL final image; the original row must remain unchanged after rollback.
+drop table if exists t_odku_action_not_null;
+create table t_odku_action_not_null(id int primary key, v int not null, selector int);
+insert into t_odku_action_not_null values (1, 10, 0);
+insert into t_odku_action_not_null values (1, 10, 1), (1, 10, 2)
+  on duplicate key update
+    v = if(values(selector) = 1, null, 20),
+    selector = values(selector);
+select id, v, selector from t_odku_action_not_null;
+drop table t_odku_action_not_null;
+
 create table t_odku_fk_uk_parent(pid int primary key);
 create table t_odku_fk_uk_child(
   id bigint auto_increment primary key,

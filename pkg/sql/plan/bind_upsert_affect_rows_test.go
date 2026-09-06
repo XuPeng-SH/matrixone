@@ -72,6 +72,32 @@ func hasGuardedConstraintAssert(p *Plan, assertName string) bool {
 	return false
 }
 
+func hasActionNotNullAssert(p *Plan) bool {
+	for _, node := range p.GetQuery().Nodes {
+		if node.NodeType != planpb.Node_FILTER || !node.FilterIsBarrier {
+			continue
+		}
+		for _, filter := range node.FilterList {
+			assertFn := filter.GetF()
+			if assertFn == nil || assertFn.Func == nil ||
+				(assertFn.Func.ObjName != "assert" && assertFn.Func.ObjName != "_check_constraint_assert") ||
+				len(assertFn.Args) == 0 {
+				continue
+			}
+			isNotNull := assertFn.Args[0].GetF()
+			if isNotNull == nil || isNotNull.Func == nil ||
+				(isNotNull.Func.ObjName != "isnotnull" && isNotNull.Func.ObjName != "is_not_null") ||
+				len(isNotNull.Args) != 1 {
+				continue
+			}
+			if col := isNotNull.Args[0].GetCol(); col != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestDeepCopyUpdateCtxPreservesChangedRowsCol(t *testing.T) {
 	original := []*planpb.UpdateCtx{{ChangedRowsCol: &planpb.ColRef{RelPos: 3, ColPos: 7}}}
 	copied := DeepCopyUpdateCtxList(original)
@@ -190,6 +216,57 @@ func TestUpsertAffectRowsPlan(t *testing.T) {
 		}
 		require.True(t, hasFinalBarrier,
 			"the synthetic final-action predicate must never be pushed below DEDUP UPDATE")
+	})
+
+	t.Run("ODKU validates each action that can write a NOT NULL column", func(t *testing.T) {
+		original := mock.ctxt.tables["t_on_update"]
+		table := DeepCopyTableDef(original, true)
+		table.Cols[1].Typ.NotNullable = true
+		table.Cols[1].Default.NullAbility = false
+		mock.ctxt.tables["t_on_update"] = table
+		t.Cleanup(func() { mock.ctxt.tables["t_on_update"] = original })
+
+		p, err := runOneStmt(mock, t,
+			"insert into constraint_test.t_on_update(id, val) values (1, 10), (1, 20) "+
+				"on duplicate key update val = if(values(val) = 10, null, values(val))")
+		require.NoError(t, err)
+		require.True(t, odkuDedupCtx(t, p).EmitActionRows)
+		require.True(t, hasActionNotNullAssert(p),
+			"NOT NULL must be asserted before the final-action filter can discard an invalid intermediate action")
+
+		fastPath, err := runOneStmt(mock, t,
+			"insert into constraint_test.t_on_update(id, val) values (1, 10) "+
+				"on duplicate key update val = values(val)")
+		require.NoError(t, err)
+		require.False(t, odkuDedupCtx(t, fastPath).EmitActionRows,
+			"a proven non-null assignment must retain the one-row-per-key fast path")
+	})
+
+	t.Run("unique-only table validates actions before retaining the final row", func(t *testing.T) {
+		original := mock.ctxt.tables["fake_pk_t"]
+		table := DeepCopyTableDef(original, true)
+		table.Cols[1].Typ.NotNullable = true
+		table.Cols[1].Default.NullAbility = false
+		mock.ctxt.tables["fake_pk_t"] = table
+		t.Cleanup(func() { mock.ctxt.tables["fake_pk_t"] = original })
+
+		p, err := runOneStmt(mock, t,
+			"insert into constraint_test.fake_pk_t(a, b) values (1, 'bad'), (1, 'good') "+
+				"on duplicate key update b = if(values(b) = 'bad', null, values(b))")
+		require.NoError(t, err)
+		require.True(t, odkuDedupCtx(t, p).EmitActionRows)
+		require.True(t, hasActionNotNullAssert(p))
+		hasFinalBarrier := false
+		for _, node := range p.GetQuery().Nodes {
+			if node.NodeType != planpb.Node_FILTER || !node.FilterIsBarrier || len(node.FilterList) != 1 {
+				continue
+			}
+			if col := node.FilterList[0].GetCol(); col != nil && node.FilterList[0].Typ.Id == int32(types.T_bool) {
+				hasFinalBarrier = true
+			}
+		}
+		require.True(t, hasFinalBarrier,
+			"the fake-PK/unique-key path must discard non-final action rows after validation")
 	})
 
 	t.Run("REPLACE flags main ctx", func(t *testing.T) {
