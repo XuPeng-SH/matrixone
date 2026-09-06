@@ -1551,7 +1551,7 @@ func (rs *regexpSet) regularLike(pat string, str string, matchType string) (bool
 }
 
 func (rs *regexpSet) regularLikeWithMode(pat string, str string, matchType string, binary bool) (bool, error) {
-	mt, err := getPureMatchType(matchType)
+	mt, err := getPureMatchType(matchType, binary)
 	if err != nil {
 		return false, err
 	}
@@ -1577,24 +1577,28 @@ func (rs *regexpSet) regularLikeWithMode(pat string, str string, matchType strin
 // c: case sensitive.
 // m: multiple line mode.
 // n: '.' can match line terminator.
-func getPureMatchType(input string) (string, error) {
+// Binary operands are always case-sensitive, so i and c still participate in
+// validation but do not change the compiled rule for that execution domain.
+func getPureMatchType(input string, binary bool) (string, error) {
 	retstring := ""
 	caseType := ""
 	foundn := false
 	foundm := false
 
 	for _, c := range input {
-		switch string(c) {
-		case "i":
-			caseType = "i"
-		case "c":
+		switch c {
+		case 'i':
+			if !binary {
+				caseType = "i"
+			}
+		case 'c':
 			caseType = ""
-		case "m":
+		case 'm':
 			if !foundm {
 				retstring += "m"
 				foundm = true
 			}
-		case "n":
+		case 'n':
 			if !foundn {
 				retstring += "s"
 				foundn = true

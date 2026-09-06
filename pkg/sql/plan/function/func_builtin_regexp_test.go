@@ -882,6 +882,59 @@ func Test_BuiltIn_RegularLike(t *testing.T) {
 		require.Equal(t, c.expected, match, i)
 	}
 
+	for _, tc := range []struct {
+		name      string
+		pattern   string
+		subject   string
+		matchType string
+		want      bool
+	}{
+		{name: "binary ignores case insensitive flag", pattern: "a", subject: "A", matchType: "i", want: false},
+		{name: "binary ignores rightmost case flag", pattern: "a", subject: "A", matchType: "ci", want: false},
+		{name: "binary keeps multiline flag", pattern: "^b", subject: "A\nb", matchType: "im", want: true},
+		{name: "binary multiline remains case sensitive", pattern: "^B", subject: "A\nb", matchType: "im", want: false},
+		{name: "binary keeps dotall flag", pattern: ".", subject: "\n", matchType: "in", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			match, err := op.regMap.regularLikeWithMode(tc.pattern, tc.subject, tc.matchType, true)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, match)
+		})
+	}
+
+	_, err := op.regMap.regularLikeWithMode("a", "A", "ix", true)
+	require.Error(t, err, "binary mode must not bypass match_type validation")
+
+}
+
+func Test_BuiltIn_RegexpLikeRebindsBinaryCaseSensitivity(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	varchar := types.T_varchar.ToType()
+	testCase := NewFunctionTestCase(proc,
+		[]FunctionTestInput{
+			NewFunctionTestInput(varchar, []string{"A"}, nil),
+			NewFunctionTestInput(varchar, []string{"a"}, nil),
+			NewFunctionTestInput(varchar, []string{"i"}, nil),
+		},
+		NewFunctionTestResult(types.T_bool.ToType(), false, []bool{false}, nil),
+		newOpBuiltInRegexp().builtInRegexpLike)
+
+	testCase.parameters[0].SetIsBinaryString(true)
+	testCase.parameters[1].SetIsBinaryString(true)
+	ok, info := testCase.Run()
+	require.True(t, ok, info)
+
+	testCase.parameters[0].SetIsBinaryString(false)
+	testCase.parameters[1].SetIsBinaryString(false)
+	testCase.expected.wanted = []bool{true}
+	ok, info = testCase.Run()
+	require.True(t, ok, info)
+
+	testCase.parameters[0].SetIsBinaryString(true)
+	testCase.parameters[1].SetIsBinaryString(true)
+	testCase.expected.wanted = []bool{false}
+	ok, info = testCase.Run()
+	require.True(t, ok, info)
 }
 
 func Test_BuiltIn_RegexpLikeRejectsEmptyPattern(t *testing.T) {

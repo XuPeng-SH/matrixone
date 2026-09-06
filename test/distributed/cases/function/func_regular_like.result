@@ -106,6 +106,27 @@ r
 select regexp_like('CAT','cat','iiiiiiic') r;
 r
 0
+select regexp_like(cast(_binary'A' as varbinary(1)), cast(_binary'a' as varbinary(1)), 'i') binary_i,
+regexp_like('A', 'a', 'i') text_i;
+binary_i    text_i
+0    1
+prepare regexp_like_domain_rebind from 'select regexp_like(?, ?, ''i'')';
+set @regexp_like_subject = cast(_binary'A' as varbinary(1));
+set @regexp_like_pattern = cast(_binary'a' as varbinary(1));
+execute regexp_like_domain_rebind using @regexp_like_subject, @regexp_like_pattern;
+regexp_like(?, ?, i)
+0
+set @regexp_like_subject = 'A';
+set @regexp_like_pattern = 'a';
+execute regexp_like_domain_rebind using @regexp_like_subject, @regexp_like_pattern;
+regexp_like(?, ?, i)
+1
+set @regexp_like_subject = cast(_binary'A' as blob);
+set @regexp_like_pattern = cast(_binary'a' as blob);
+execute regexp_like_domain_rebind using @regexp_like_subject, @regexp_like_pattern;
+regexp_like(?, ?, i)
+0
+deallocate prepare regexp_like_domain_rebind;
 select regexp_like('abc', '');
 Illegal argument to a regular expression.
 select regexp_like('abc', '', 'i');
