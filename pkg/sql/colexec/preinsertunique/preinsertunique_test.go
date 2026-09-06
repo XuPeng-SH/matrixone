@@ -524,6 +524,28 @@ func TestODKUTargetArbitrationHandlesConstNullSnapshotTargets(t *testing.T) {
 	require.Equal(t, int64(0), proc.Mp().CurrNB())
 }
 
+func TestODKUTargetArbitrationRejectsDifferentTargetRepresentation(t *testing.T) {
+	proc := testutil.NewProc(t)
+	input := makeODKUTargetArbitrationBatch(t, proc,
+		[]int32{1}, []int32{10}, nil, nil, []bool{true}, nil, []bool{true})
+	// A planner metadata bug must fail closed before UnionOne copies bytes using
+	// the destination representation.  Fix canonical metadata at the producer;
+	// do not weaken this guard to make incompatible key types look equivalent.
+	input.Vecs[3].Free(proc.Mp())
+	input.Vecs[3] = vector.NewConstNull(types.T_int64.ToType(), input.RowCount(), proc.Mp())
+	arg := newODKUTargetArbitrationArgument(input)
+	account := installODKUTestAllocation(t, arg)
+	require.NoError(t, arg.Prepare(proc))
+
+	_, err := arg.Call(proc)
+	require.ErrorContains(t, err, "ODKU target primary-key type mismatch")
+
+	arg.Free(proc, true, err)
+	require.NoError(t, arg.ClearAllocationAccount(account))
+	input.Clean(proc.Mp())
+	require.Equal(t, int64(0), proc.Mp().CurrNB())
+}
+
 func TestODKUTargetArbitrationAllocationAccountLifecycle(t *testing.T) {
 	proc := testutil.NewProc(t)
 	input := makeODKUTargetArbitrationBatch(t, proc,

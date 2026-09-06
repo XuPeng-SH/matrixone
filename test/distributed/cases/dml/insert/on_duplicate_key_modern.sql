@@ -132,8 +132,8 @@ select * from t_odku_realpk order by id;
 insert into t_odku_realpk values (5, NULL, NULL, 5) on duplicate key update val = val + 1;
 select * from t_odku_realpk order by id;
 
--- In-batch protection: two brand-new rows sharing a new unique-key value still
--- error deterministically (avoids a duplicated unique-index entry).
+-- Statement-local arbitration: the first row inserts and publishes uk1=77;
+-- the later row resolves that conflict as UPDATE of the first row.
 insert into t_odku_realpk values (20, 77, 701, 5), (21, 77, 702, 5) on duplicate key update val = val + 1;
 select * from t_odku_realpk order by id;
 
