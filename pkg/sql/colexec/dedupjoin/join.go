@@ -207,18 +207,18 @@ func (dedupJoin *DedupJoin) Prepare(proc *process.Process) (err error) {
 		if err := validateMetadataPosition(dedupJoin.ActionFinalResultPos, types.T_bool, "action-final"); err != nil {
 			return err
 		}
-		for i, check := range dedupJoin.ForeignKeyChecks {
-			if err := validateMetadataPosition(
-				check.EligibilityResultPos, types.T_bool, fmt.Sprintf("FK eligibility %d", i)); err != nil {
-				return err
-			}
-			if len(check.ColIdxList) == 0 {
-				return moerr.NewInternalError(proc.Ctx, "dedup join FK check has no columns")
-			}
-			for _, pos := range check.ColIdxList {
-				if pos < 0 || int(pos) >= len(dedupJoin.LeftTypes) {
-					return moerr.NewInternalError(proc.Ctx, "dedup join FK column out of range")
-				}
+	}
+	for i, check := range dedupJoin.ForeignKeyChecks {
+		if err := validateMetadataPosition(
+			check.EligibilityResultPos, types.T_bool, fmt.Sprintf("constraint eligibility %d", i)); err != nil {
+			return err
+		}
+		if len(check.ColIdxList) == 0 {
+			return moerr.NewInternalError(proc.Ctx, "dedup join FK check has no columns")
+		}
+		for _, pos := range check.ColIdxList {
+			if pos < 0 || int(pos) >= len(dedupJoin.LeftTypes) {
+				return moerr.NewInternalError(proc.Ctx, "dedup join FK column out of range")
 			}
 		}
 	}
@@ -1602,10 +1602,7 @@ func appendODKUActionMetadata(
 	); handled || err != nil {
 		return handled, err
 	}
-	if !ap.EmitActionRows {
-		return false, nil
-	}
-	if resultPos == ap.ActionFinalResultPos {
+	if ap.EmitActionRows && resultPos == ap.ActionFinalResultPos {
 		return true, vector.AppendFixed(vec, actionFinal, false, mp)
 	}
 	for i, check := range ap.ForeignKeyChecks {
@@ -1961,7 +1958,7 @@ func (ctr *container) probe(bat *batch.Batch, ap *DedupJoin, proc *process.Proce
 						if err := colexec.SetJoinBatchValues(ctr.joinBat2, ctr.batches[idx1], int64(idx2), 1, ctr.cfs2); err != nil {
 							return err
 						}
-						if ap.EmitActionRows {
+						if len(ap.ForeignKeyChecks) > 0 {
 							ctr.snapshotForeignKeys(ap.ForeignKeyChecks)
 						}
 						changed, err := ctr.applyUpdateExpressions(
@@ -1980,7 +1977,7 @@ func (ctr *container) probe(bat *batch.Batch, ap *DedupJoin, proc *process.Proce
 								affectedRows = logicalAffectedRows
 							}
 							var fkEligibility []bool
-							if ap.EmitActionRows {
+							if len(ap.ForeignKeyChecks) > 0 {
 								fkEligibility = ctr.foreignKeyChanges(ap.ForeignKeyChecks)
 							}
 							if err := ctr.appendProbeActionRow(

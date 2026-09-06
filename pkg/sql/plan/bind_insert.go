@@ -369,6 +369,9 @@ func splitIrregularIndexesByUpdatedColumns(
 func (builder *QueryBuilder) modernInsertFkCheckEnabled(tableDef *plan.TableDef) (bool, error) {
 	hasChildParent := false
 	for _, fk := range tableDef.Fkeys {
+		if fk == nil {
+			return false, moerr.NewInternalError(builder.GetContext(), "malformed foreign-key metadata")
+		}
 		if fk.ForeignTbl != 0 {
 			hasChildParent = true
 			break
@@ -378,6 +381,24 @@ func (builder *QueryBuilder) modernInsertFkCheckEnabled(tableDef *plan.TableDef)
 		return false, nil
 	}
 	return IsForeignKeyChecksEnabled(builder.compCtx)
+}
+
+func odkuNonSelfForeignKeys(ctx context.Context, tableDef *plan.TableDef, enabled bool) (*plan.TableDef, error) {
+	filtered := *tableDef
+	filtered.Checks = nil
+	filtered.Fkeys = nil
+	if !enabled {
+		return &filtered, nil
+	}
+	for _, fk := range tableDef.Fkeys {
+		if fk == nil {
+			return nil, moerr.NewInternalError(ctx, "ON DUPLICATE KEY UPDATE has malformed foreign-key metadata")
+		}
+		if fk.ForeignTbl != 0 {
+			filtered.Fkeys = append(filtered.Fkeys, fk)
+		}
+	}
+	return &filtered, nil
 }
 
 func odkuUpdatedNotNullColumns(
@@ -2085,6 +2106,72 @@ func columnPossiblyChanged(tableDef *plan.TableDef, possiblyChanged map[string]s
 	return ok
 }
 
+// odkuAffectedActionConstraints returns only the row-level constraints whose
+// result can change during the ordered ODKU assignment stream.  Validating an
+// unrelated constraint is not merely wasted work: it can reject a historical
+// row that was admitted while that constraint (for example FK checks) was
+// disabled.  Generated-column dependencies are already present in
+// possiblyChanged.
+func odkuAffectedActionConstraints(
+	ctx context.Context,
+	tableDef *plan.TableDef,
+	possiblyChanged map[string]struct{},
+	includeForeignKeys bool,
+) (*plan.TableDef, error) {
+	filtered := *tableDef
+	filtered.Checks = nil
+	filtered.Fkeys = nil
+
+	for _, check := range tableDef.Checks {
+		if check == nil || check.Check == nil {
+			return nil, moerr.NewInternalError(ctx, "ON DUPLICATE KEY UPDATE has malformed CHECK metadata")
+		}
+		for _, pos := range collectRefColPos(check.Check) {
+			if pos < 0 || int(pos) >= len(tableDef.Cols) {
+				return nil, moerr.NewInternalErrorf(ctx,
+					"ON DUPLICATE KEY UPDATE CHECK %s references invalid column position %d",
+					check.Name, pos)
+			}
+			if _, changed := possiblyChanged[tableDef.Cols[pos].Name]; changed {
+				filtered.Checks = append(filtered.Checks, check)
+				break
+			}
+		}
+	}
+
+	if !includeForeignKeys {
+		return &filtered, nil
+	}
+	colNameByID := make(map[uint64]string, len(tableDef.Cols))
+	for _, col := range tableDef.Cols {
+		colNameByID[col.ColId] = col.Name
+	}
+	for _, fk := range tableDef.Fkeys {
+		if fk == nil {
+			return nil, moerr.NewInternalError(ctx, "ON DUPLICATE KEY UPDATE has malformed foreign-key metadata")
+		}
+		if fk.ForeignTbl == 0 { // self FKs remain statement-level
+			continue
+		}
+		if len(fk.Cols) == 0 {
+			return nil, moerr.NewInternalErrorf(ctx,
+				"ON DUPLICATE KEY UPDATE foreign key %s has no child columns", fk.Name)
+		}
+		for _, colID := range fk.Cols {
+			name, ok := colNameByID[colID]
+			if !ok {
+				return nil, moerr.NewInternalErrorf(ctx,
+					"ON DUPLICATE KEY UPDATE cannot locate foreign-key column %d", colID)
+			}
+			if _, changed := possiblyChanged[name]; changed {
+				filtered.Fkeys = append(filtered.Fkeys, fk)
+				break
+			}
+		}
+	}
+	return &filtered, nil
+}
+
 func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 	bindCtx *BindContext,
 	dmlCtx *DMLContext,
@@ -2410,17 +2497,65 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 	physicalChangedRowsInputPos := int32(-1)
 	actionFinalInputPos := int32(-1)
 	var odkuFkEligibilityInputPos []int32
+	var odkuActionFkEligibilityInputPos []int32
+	odkuCheckInsertEligibilityInputPos := int32(-1)
 	odkuNeedFkCheck := false
+	odkuActionConstraintDef := tableDef
+	odkuAllForeignKeyDef := tableDef
+	odkuFinalOnlyCheckDef := *tableDef
+	odkuFinalOnlyCheckDef.Checks = nil
+	odkuFinalOnlyCheckDef.Fkeys = nil
 	odkuNotNullColIdxList := odkuUpdatedNotNullColumns(
 		tableDef, updateColIdxList, updateColExprList)
 	if onDupAction == plan.Node_UPDATE {
-		odkuNeedFkCheck, err = builder.modernInsertFkCheckEnabled(tableDef)
+		fkChecksEnabled, err := builder.modernInsertFkCheckEnabled(tableDef)
 		if err != nil {
 			return 0, err
 		}
+		odkuActionConstraintDef, err = odkuAffectedActionConstraints(
+			builder.GetContext(), tableDef, possiblyChangedCols, fkChecksEnabled)
+		if err != nil {
+			return 0, err
+		}
+		odkuAllForeignKeyDef, err = odkuNonSelfForeignKeys(
+			builder.GetContext(), tableDef, fkChecksEnabled)
+		if err != nil {
+			return 0, err
+		}
+		odkuNeedFkCheck = len(odkuAllForeignKeyDef.Fkeys) > 0
+		affectedChecks := make(map[*plan.CheckDef]struct{}, len(odkuActionConstraintDef.Checks))
+		for _, check := range odkuActionConstraintDef.Checks {
+			affectedChecks[check] = struct{}{}
+		}
+		for _, check := range tableDef.Checks {
+			if _, affected := affectedChecks[check]; !affected {
+				odkuFinalOnlyCheckDef.Checks = append(odkuFinalOnlyCheckDef.Checks, check)
+			}
+		}
 	}
 	emitODKUActionRows := onDupAction == plan.Node_UPDATE &&
-		(len(tableDef.Checks) > 0 || odkuNeedFkCheck || len(odkuNotNullColIdxList) > 0)
+		(len(odkuActionConstraintDef.Checks) > 0 || len(odkuActionConstraintDef.Fkeys) > 0 || len(odkuNotNullColIdxList) > 0)
+	appendODKUFinalOnlyChecks := func(nodeID, inputTag int32) (int32, error) {
+		if len(odkuFinalOnlyCheckDef.Checks) == 0 {
+			return nodeID, nil
+		}
+		if odkuCheckInsertEligibilityInputPos < 0 {
+			return 0, moerr.NewInternalError(builder.GetContext(),
+				"ON DUPLICATE KEY UPDATE CHECK eligibility column is missing")
+		}
+		eligible := &plan.Expr{
+			Typ: plan.Type{Id: int32(types.T_bool), NotNullable: true},
+			Expr: &plan.Expr_Col{Col: &plan.ColRef{
+				RelPos: inputTag, ColPos: odkuCheckInsertEligibilityInputPos,
+			}},
+		}
+		return appendCheckConstraintPlanWithColLookupAndEligibility(
+			builder, bindCtx, &odkuFinalOnlyCheckDef, nodeID, inputTag,
+			func(colName string) (int32, bool) {
+				pos, ok := colName2Idx[tableDef.Name+"."+colName]
+				return pos, ok
+			}, false, eligible)
+	}
 	odkuActionValidationApplied := false
 	if onDupAction == plan.Node_UPDATE {
 		affectedRowsInputPos = int32(len(selectNode.ProjectList))
@@ -2430,15 +2565,25 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 		if emitODKUActionRows {
 			actionFinalInputPos = int32(len(selectNode.ProjectList))
 			selectNode.ProjectList = append(selectNode.ProjectList, MakePlan2BoolConstExprWithType(true))
-			if odkuNeedFkCheck {
-				for _, fk := range tableDef.Fkeys {
-					if fk.ForeignTbl != 0 {
-						odkuFkEligibilityInputPos = append(
-							odkuFkEligibilityInputPos, int32(len(selectNode.ProjectList)))
-						selectNode.ProjectList = append(selectNode.ProjectList, MakePlan2BoolConstExprWithType(true))
-					}
-				}
+		}
+		if odkuNeedFkCheck {
+			actionFKs := make(map[*plan.ForeignKeyDef]struct{}, len(odkuActionConstraintDef.Fkeys))
+			for _, fk := range odkuActionConstraintDef.Fkeys {
+				actionFKs[fk] = struct{}{}
 			}
+			for _, fk := range odkuAllForeignKeyDef.Fkeys {
+				pos := int32(len(selectNode.ProjectList))
+				odkuFkEligibilityInputPos = append(
+					odkuFkEligibilityInputPos, pos)
+				if _, affected := actionFKs[fk]; affected {
+					odkuActionFkEligibilityInputPos = append(odkuActionFkEligibilityInputPos, pos)
+				}
+				selectNode.ProjectList = append(selectNode.ProjectList, MakePlan2BoolConstExprWithType(true))
+			}
+		}
+		if len(odkuFinalOnlyCheckDef.Checks) > 0 {
+			odkuCheckInsertEligibilityInputPos = int32(len(selectNode.ProjectList))
+			selectNode.ProjectList = append(selectNode.ProjectList, MakePlan2BoolConstExprWithType(true))
 		}
 	}
 	if useTargetPk {
@@ -2900,46 +3045,52 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 					dedupJoinNode.DedupJoinCtx.ActionFinalCol = &plan.ColRef{
 						RelPos: selectTag, ColPos: actionFinalInputPos,
 					}
-					if odkuNeedFkCheck {
-						colByID := make(map[uint64]int32, len(tableDef.Cols))
-						for i, col := range tableDef.Cols {
-							colByID[col.ColId] = int32(i)
-						}
-						fkIdx := 0
-						for _, fk := range tableDef.Fkeys {
-							if fk.ForeignTbl == 0 {
-								continue
-							}
-							if len(fk.Cols) == 0 {
-								return 0, moerr.NewInternalErrorf(builder.GetContext(),
-									"ON DUPLICATE KEY UPDATE foreign key %s has no child columns", fk.Name)
-							}
-							check := plan.ODKUForeignKeyCheck{
-								EligibilityCol: &plan.ColRef{
-									RelPos: selectTag, ColPos: odkuFkEligibilityInputPos[fkIdx],
-								},
-							}
-							for _, colID := range fk.Cols {
-								pos, ok := colByID[colID]
-								if !ok {
-									return 0, moerr.NewInternalErrorf(builder.GetContext(),
-										"ON DUPLICATE KEY UPDATE cannot locate foreign-key column %d", colID)
-								}
-								check.ColIdxList = append(check.ColIdxList, pos)
-							}
-							dedupJoinNode.DedupJoinCtx.ForeignKeyChecks = append(
-								dedupJoinNode.DedupJoinCtx.ForeignKeyChecks, check)
-							fkIdx++
-						}
+				}
+				if odkuNeedFkCheck {
+					colByID := make(map[uint64]int32, len(tableDef.Cols))
+					for i, col := range tableDef.Cols {
+						colByID[col.ColId] = int32(i)
 					}
+					for fkIdx, fk := range odkuAllForeignKeyDef.Fkeys {
+						check := plan.ODKUForeignKeyCheck{EligibilityCol: &plan.ColRef{
+							RelPos: selectTag, ColPos: odkuFkEligibilityInputPos[fkIdx],
+						}}
+						for _, colID := range fk.Cols {
+							pos, ok := colByID[colID]
+							if !ok {
+								return 0, moerr.NewInternalErrorf(builder.GetContext(),
+									"ON DUPLICATE KEY UPDATE cannot locate foreign-key column %d", colID)
+							}
+							check.ColIdxList = append(check.ColIdxList, pos)
+						}
+						dedupJoinNode.DedupJoinCtx.ForeignKeyChecks = append(
+							dedupJoinNode.DedupJoinCtx.ForeignKeyChecks, check)
+					}
+				}
+				if odkuCheckInsertEligibilityInputPos >= 0 {
+					pkPos, ok := tableDef.Name2ColIndex[pkName]
+					if !ok || pkPos < 0 || int(pkPos) >= len(tableDef.Cols) {
+						return 0, moerr.NewInternalError(builder.GetContext(),
+							"ON DUPLICATE KEY UPDATE cannot locate primary-key eligibility column")
+					}
+					// Reuse the existing tuple-eligibility transport for the one
+					// statement-level bit needed by unaffected CHECKs. The primary
+					// key cannot be updated by ODKU, so it is eligible exactly for a
+					// newly inserted group and false for an existing target.
+					dedupJoinNode.DedupJoinCtx.ForeignKeyChecks = append(
+						dedupJoinNode.DedupJoinCtx.ForeignKeyChecks, plan.ODKUForeignKeyCheck{
+							ColIdxList: []int32{pkPos}, EligibilityCol: &plan.ColRef{
+								RelPos: selectTag, ColPos: odkuCheckInsertEligibilityInputPos,
+							},
+						})
 				}
 			}
 
 			lastNodeID = builder.appendNode(dedupJoinNode, bindCtx)
 			if emitODKUActionRows {
-				if len(tableDef.Checks) > 0 {
+				if len(odkuActionConstraintDef.Checks) > 0 {
 					lastNodeID, err = appendCheckConstraintPlan(
-						builder, bindCtx, tableDef, lastNodeID, selectTag, colName2Idx, false)
+						builder, bindCtx, odkuActionConstraintDef, lastNodeID, selectTag, colName2Idx, false)
 					if err != nil {
 						return 0, err
 					}
@@ -2949,15 +3100,15 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 				if err != nil {
 					return 0, err
 				}
-				if odkuNeedFkCheck {
+				if len(odkuActionConstraintDef.Fkeys) > 0 {
 					var oks []*plan.Expr
 					lastNodeID, oks, err = builder.appendModernChildFkMarkOks(
-						bindCtx, tableDef, lastNodeID, selectTag,
+						bindCtx, odkuActionConstraintDef, lastNodeID, selectTag,
 						func(colName string) int32 { return colName2Idx[tableDef.Name+"."+colName] }, false)
 					if err != nil {
 						return 0, err
 					}
-					if len(oks) != len(odkuFkEligibilityInputPos) {
+					if len(oks) != len(odkuActionFkEligibilityInputPos) {
 						return 0, moerr.NewInternalError(builder.GetContext(),
 							"ON DUPLICATE KEY UPDATE foreign-key eligibility count mismatch")
 					}
@@ -2966,7 +3117,7 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 						"Cannot add or update a child row: a foreign key constraint fails")
 					for i, ok := range oks {
 						eligible := &plan.Expr{Typ: plan.Type{Id: int32(types.T_bool), NotNullable: true}, Expr: &plan.Expr_Col{Col: &plan.ColRef{
-							RelPos: selectTag, ColPos: odkuFkEligibilityInputPos[i],
+							RelPos: selectTag, ColPos: odkuActionFkEligibilityInputPos[i],
 						}}}
 						ok, err = guardConstraintByEligibility(builder.GetContext(), ok, eligible)
 						if err != nil {
@@ -2992,13 +3143,17 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 					}},
 					FilterIsBarrier: true,
 				}, bindCtx)
+				lastNodeID, err = appendODKUFinalOnlyChecks(lastNodeID, selectTag)
+				if err != nil {
+					return 0, err
+				}
 				odkuActionValidationApplied = true
 			}
 		}
 		if emitODKUActionRows && !odkuActionValidationApplied {
-			if len(tableDef.Checks) > 0 {
+			if len(odkuActionConstraintDef.Checks) > 0 {
 				lastNodeID, err = appendCheckConstraintPlan(
-					builder, bindCtx, tableDef, lastNodeID, selectTag, colName2Idx, false)
+					builder, bindCtx, odkuActionConstraintDef, lastNodeID, selectTag, colName2Idx, false)
 				if err != nil {
 					return 0, err
 				}
@@ -3008,9 +3163,9 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 			if err != nil {
 				return 0, err
 			}
-			if odkuNeedFkCheck {
+			if len(odkuActionConstraintDef.Fkeys) > 0 {
 				lastNodeID, selectTag, err = builder.buildModernChildFkAssert(
-					bindCtx, tableDef, lastNodeID, selectTag,
+					bindCtx, odkuActionConstraintDef, lastNodeID, selectTag,
 					func(colName string) int32 { return colName2Idx[tableDef.Name+"."+colName] })
 				if err != nil {
 					return 0, err
@@ -3028,6 +3183,16 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 				}},
 				FilterIsBarrier: true,
 			}, bindCtx)
+			lastNodeID, err = appendODKUFinalOnlyChecks(lastNodeID, selectTag)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if onDupAction == plan.Node_UPDATE && !emitODKUActionRows {
+			lastNodeID, err = appendODKUFinalOnlyChecks(lastNodeID, selectTag)
+			if err != nil {
+				return 0, err
+			}
 		}
 
 		// dedup#2:handle unique key dedup
@@ -3371,7 +3536,7 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 		if onDupAction == plan.Node_UPDATE && odkuNeedFkCheck {
 			var oks []*plan.Expr
 			lastNodeID, oks, err = builder.appendModernChildFkMarkOks(
-				bindCtx, tableDef, lastNodeID, finalProjTag,
+				bindCtx, odkuAllForeignKeyDef, lastNodeID, finalProjTag,
 				func(colName string) int32 { return colName2Idx[tableDef.Name+"."+colName] }, true)
 			if err != nil {
 				return 0, err

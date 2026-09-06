@@ -118,6 +118,8 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 		wantPhysical      []bool
 		wantFinal         []bool
 		wantFKEligibility []bool
+		compactActions    bool
+		fkTracksKey       bool
 	}{
 		{
 			name: "compact existing row emits one final update action", buildPayload: []int32{100}, probeKey: 10,
@@ -164,6 +166,18 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 			wantPhysical: finalBool(), wantFinal: finalBool(), wantFKEligibility: firstBool(1),
 		},
 		{
+			name: "existing hot group compacts constraint-independent actions", buildPayload: repeatInt32(100), probeKey: 10,
+			wantBatchCount: 1, compactActions: true, fkTracksKey: true,
+			wantPayload: []int32{777}, wantAffected: []uint64{2},
+			wantPhysical: []bool{true}, wantFinal: []bool{true}, wantFKEligibility: []bool{false},
+		},
+		{
+			name: "new hot group retains insert eligibility while compacting actions", buildPayload: []int32{100, 200}, probeKey: 99,
+			wantBatchCount: 1, compactActions: true, fkTracksKey: true,
+			wantPayload: []int32{777}, wantAffected: []uint64{3},
+			wantPhysical: []bool{true}, wantFinal: []bool{true}, wantFKEligibility: []bool{true},
+		},
+		{
 			name: "new hot group resumes finalize action replay", buildPayload: repeatInt32(100), probeKey: 99,
 			wantBatchCount: 2, wantPayload: append([]int32{100}, repeatInt32(777)[:hotRows-1]...),
 			wantAffected: finalUint64(3), wantPhysical: finalBool(), wantFinal: finalBool(),
@@ -196,6 +210,10 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 			updateExpr := &plan.Expr{Typ: plan.Type{Id: int32(types.T_int32)}, Expr: &plan.Expr_Lit{Lit: &plan.Literal{
 				Value: &plan.Literal_I32Val{I32Val: 777},
 			}}}
+			fkColIdx := int32(1)
+			if tc.fkTracksKey {
+				fkColIdx = 0
+			}
 			dedupArg := &DedupJoin{
 				LeftTypes:  []types.Type{int32Typ, int32Typ},
 				RightTypes: []types.Type{int32Typ, int32Typ, uint64Typ, boolTyp, boolTyp, boolTyp},
@@ -209,8 +227,8 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 				UpdateColIdxList:  []int32{1}, UpdateColExprList: []*plan.Expr{updateExpr},
 				UpdateCheckColIdxList: []int32{1}, HasODKUAffectedRows: true,
 				AffectedRowsResultPos: 1, PhysicalChangedResultPos: 2,
-				EmitActionRows: true, ActionFinalResultPos: 3,
-				ForeignKeyChecks: []ODKUForeignKeyCheck{{ColIdxList: []int32{1}, EligibilityResultPos: 4}},
+				EmitActionRows: !tc.compactActions, ActionFinalResultPos: 3,
+				ForeignKeyChecks: []ODKUForeignKeyCheck{{ColIdxList: []int32{fkColIdx}, EligibilityResultPos: 4}},
 				DelColIdx:        -1, DedupDeleteMarkerColIdx: -1, JoinMapTag: tag,
 				OperatorBase: vm.OperatorBase{OperatorInfo: vm.OperatorInfo{Idx: 0}},
 			}

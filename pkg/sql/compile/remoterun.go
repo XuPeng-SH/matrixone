@@ -941,7 +941,7 @@ func convertToPipelineInstruction(op vm.Operator, proc *process.Process, ctx *sc
 		if err := validateRemoteODKUAffectedRowsProtocol(proc, t.HasODKUAffectedRows); err != nil {
 			return ctxId, nil, err
 		}
-		if err := validateRemoteODKUActionRowsProtocol(proc, t.EmitActionRows); err != nil {
+		if err := validateRemoteODKUActionRowsProtocol(proc, t.EmitActionRows || len(t.ForeignKeyChecks) > 0); err != nil {
 			return ctxId, nil, err
 		}
 		relList, colList := getRelColList(t.Result)
@@ -2081,11 +2081,13 @@ func validateRemoteODKUAffectedRowsPipelineProtocol(
 				return err
 			}
 		}
-		if dedup := instruction.GetDedupJoin(); dedup != nil && (dedup.HasOdkuAffectedRows || dedup.EmitActionRows) {
+		if dedup := instruction.GetDedupJoin(); dedup != nil &&
+			(dedup.HasOdkuAffectedRows || dedup.EmitActionRows || len(dedup.ForeignKeyChecks) > 0) {
 			if err := validateRemoteODKUAffectedRowsProtocol(proc, dedup.HasOdkuAffectedRows); err != nil {
 				return err
 			}
-			if err := validateRemoteODKUActionRowsProtocol(proc, dedup.EmitActionRows); err != nil {
+			if err := validateRemoteODKUActionRowsProtocol(
+				proc, dedup.EmitActionRows || len(dedup.ForeignKeyChecks) > 0); err != nil {
 				return err
 			}
 		}

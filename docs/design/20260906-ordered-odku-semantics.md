@@ -61,9 +61,13 @@ replays it against a stable row image and emits:
 - when action validation is required, an action-final marker and constraint
   eligibility markers.
 
-Action validation is enabled only when a changed target can affect CHECK, FK,
-or NOT NULL semantics. CHECK/FK/NOT NULL assertions are barriered before the
-action-final filter. The filter then reduces each key group to its final row.
+Action validation is enabled only when a changed target (including its
+generated-column closure) can affect CHECK, FK, or NOT NULL semantics.
+CHECK/FK/NOT NULL assertions are barriered before the action-final filter. The
+filter then reduces each key group to its final row. Constraints independent of
+the update still validate newly inserted groups through a compact final-row
+eligibility marker; they neither revalidate an existing historical row nor
+force every duplicate action through the validation pipeline.
 The action stream and each constraint's metadata have separate gates. In
 particular, FK eligibility columns are produced, propagated, consumed, and
 validated only when `foreign_key_checks` enables non-self FK checking. CHECK or
@@ -136,8 +140,11 @@ work must not claim row-scoped self-FK semantics until that source exists.
 ## Performance model
 
 Tables whose ODKU targets cannot affect an action-level constraint retain the
-one-row-per-key-group fast path. Constraint-bearing statements pay for action
-rows because discarding them would be incorrect. Fixed scalar comparisons use
+one-row-per-key-group fast path, even when the table has unrelated CHECK or FK
+metadata. Constraint-bearing statements pay for action rows only for CHECK/FK
+dependencies intersecting the generated-column closure of the assigned
+columns, or for a nullable expression targeting NOT NULL. Unaffected
+constraints validate an inserted group once. Fixed scalar comparisons use
 typed vector reads with zero allocation; varlen values compare their existing
 bytes, and JSON decoding is limited to JSON columns.
 
@@ -164,6 +171,7 @@ does not change ordinary INSERT/UPDATE plans or ODKU's per-row hot path.
 |---|---|---|
 | ordered and repeated assignments | DEDUP replay tests | dependent/repeated SET cases |
 | action validation precedes final filtering | plan barrier/metadata tests | invalid-then-valid CHECK/FK/NOT NULL rollback |
+| constraint-sensitive action emission | dependency-closure plan tests and hot-group compact/action operator tests | unrelated-column ODKU on CHECK/FK tables |
 | no-op does not write | change/count marker tests | ROW_COUNT, timestamp, base and forced-index state |
 | type-aware equality | scalar/vector comparator tests and allocation oracle | CHAR/JSON/scaled FLOAT no-op cases |
 | distributed compatibility | encode/decode and version-fence tests | mixed-version rejection coverage |

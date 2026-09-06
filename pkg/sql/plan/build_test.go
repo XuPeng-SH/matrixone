@@ -5181,7 +5181,14 @@ func TestAssignmentCastRollingUpgradePlanGate(t *testing.T) {
 func addPositiveCheck(t *testing.T, mock *MockOptimizer, tableName, columnName string) {
 	t.Helper()
 	tableDef := mock.ctxt.tables[tableName]
-	colPos := tableDef.Name2ColIndex[columnName]
+	colPos := int32(-1)
+	for i, col := range tableDef.Cols {
+		if col.Name == columnName {
+			colPos = int32(i)
+			break
+		}
+	}
+	require.NotEqual(t, int32(-1), colPos, "column %s.%s", tableName, columnName)
 	checkExpr, err := BindFuncExprImplByPlanExpr(
 		t.Context(),
 		">",
@@ -5724,24 +5731,7 @@ func TestCheckConstraintWithChildForeignKey(t *testing.T) {
 
 	build := func(sql string) *plan.Query {
 		mock := NewMockOptimizer(true)
-		tableDef := mock.ctxt.tables["emp"]
-		colPos := tableDef.Name2ColIndex["deptno"]
-		colExpr := &plan.Expr{
-			Typ: tableDef.Cols[colPos].Typ,
-			Expr: &plan.Expr_Col{
-				Col: &plan.ColRef{RelPos: 0, ColPos: colPos},
-			},
-		}
-		checkExpr, err := BindFuncExprImplByPlanExpr(
-			t.Context(),
-			">",
-			[]*plan.Expr{colExpr, MakePlan2Int64ConstExprWithType(0)},
-		)
-		require.NoError(t, err)
-		tableDef.Checks = []*plan.CheckDef{{
-			Name:  "positive_deptno",
-			Check: checkExpr,
-		}}
+		addPositiveCheck(t, mock, "emp", "deptno")
 
 		logicPlan, err := runOneStmt(mock, t, sql)
 		require.NoError(t, err)
@@ -5826,7 +5816,14 @@ func TestCheckConstraintWithChildForeignKey(t *testing.T) {
 		mock := NewMockOptimizer(true)
 		addCheck := func(tableName, checkName, colName string) {
 			tableDef := mock.ctxt.tables[tableName]
-			colPos := tableDef.Name2ColIndex[colName]
+			colPos := int32(-1)
+			for i, col := range tableDef.Cols {
+				if col.Name == colName {
+					colPos = int32(i)
+					break
+				}
+			}
+			require.NotEqual(t, int32(-1), colPos, "column %s.%s", tableName, colName)
 			colExpr := &plan.Expr{
 				Typ:  tableDef.Cols[colPos].Typ,
 				Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: 0, ColPos: colPos}},

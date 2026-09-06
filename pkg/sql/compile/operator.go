@@ -1574,12 +1574,12 @@ func constructDedupJoin(node *plan.Node, leftTypes, rightTypes []types.Type, pro
 		arg.EmitActionRows = node.DedupJoinCtx.EmitActionRows
 		if arg.EmitActionRows {
 			arg.ActionFinalResultPos = findJoinResultPos(result, node.DedupJoinCtx.ActionFinalCol)
-			arg.ForeignKeyChecks = make([]dedupjoin.ODKUForeignKeyCheck, len(node.DedupJoinCtx.ForeignKeyChecks))
-			for i, check := range node.DedupJoinCtx.ForeignKeyChecks {
-				arg.ForeignKeyChecks[i] = dedupjoin.ODKUForeignKeyCheck{
-					ColIdxList:           slices.Clone(check.ColIdxList),
-					EligibilityResultPos: findJoinResultPos(result, check.EligibilityCol),
-				}
+		}
+		arg.ForeignKeyChecks = make([]dedupjoin.ODKUForeignKeyCheck, len(node.DedupJoinCtx.ForeignKeyChecks))
+		for i, check := range node.DedupJoinCtx.ForeignKeyChecks {
+			arg.ForeignKeyChecks[i] = dedupjoin.ODKUForeignKeyCheck{
+				ColIdxList:           slices.Clone(check.ColIdxList),
+				EligibilityResultPos: findJoinResultPos(result, check.EligibilityCol),
 			}
 		}
 		// OldColList identifies the row being updated.  Both FAIL and IGNORE

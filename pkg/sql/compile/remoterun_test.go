@@ -2188,6 +2188,18 @@ func Test_DMLOperatorSerializationRoundtrip(t *testing.T) {
 		require.Equal(t, int32(6), restoredDedup.ActionFinalResultPos)
 		require.Equal(t, []int32{1, 2}, restoredDedup.ForeignKeyChecks[0].ColIdxList)
 		require.Equal(t, int32(7), restoredDedup.ForeignKeyChecks[0].EligibilityResultPos)
+
+		// Constraint eligibility is also required by the compact final-row path:
+		// inserts remain eligible while unrelated updates bypass historical rows.
+		op.EmitActionRows = false
+		_, compactInstr, err := convertToPipelineInstruction(op, proc, ctx, 1)
+		require.NoError(t, err)
+		require.False(t, compactInstr.DedupJoin.EmitActionRows)
+		require.Len(t, compactInstr.DedupJoin.ForeignKeyChecks, 1)
+		compactRestored, err := convertToVmOperator(compactInstr, ctx, nil)
+		require.NoError(t, err)
+		require.False(t, compactRestored.(*dedupjoin.DedupJoin).EmitActionRows)
+		require.Len(t, compactRestored.(*dedupjoin.DedupJoin).ForeignKeyChecks, 1)
 	})
 
 	t.Run("PreInsertUnique_ODKUTargetArbitration", func(t *testing.T) {

@@ -207,12 +207,24 @@ func TestUpsertAffectRowsPlan(t *testing.T) {
 			"tables without CHECK or child FKs must retain the one-row-per-group fast path")
 	})
 
-	t.Run("ODKU FK assertion is guarded by tuple eligibility", func(t *testing.T) {
+	t.Run("ODKU unrelated update skips FK action stream", func(t *testing.T) {
 		p, err := runOneStmt(mock, t,
 			"insert into constraint_test.emp(empno, ename, job, deptno) values (1, 'A', 'B', 1) on duplicate key update sal = sal")
 		require.NoError(t, err)
+		ctx := odkuDedupCtx(t, p)
+		require.False(t, ctx.EmitActionRows,
+			"an unrelated update must retain one-row-per-key execution on an FK table")
+		require.Nil(t, ctx.ActionFinalCol)
+		require.Len(t, ctx.ForeignKeyChecks, 1)
 		require.True(t, hasGuardedConstraintAssert(p, "assert"),
-			"the FK assert must bypass retained rows whose FK tuple did not change")
+			"the single final-row FK probe must bypass an unchanged historical tuple")
+	})
+
+	t.Run("ODKU affected FK assertion is guarded by tuple eligibility", func(t *testing.T) {
+		p, err := runOneStmt(mock, t,
+			"insert into constraint_test.emp(empno, ename, job, deptno) values (1, 'A', 'B', 1) on duplicate key update deptno = values(deptno)")
+		require.NoError(t, err)
+		require.True(t, hasGuardedConstraintAssert(p, "assert"))
 		ctx := odkuDedupCtx(t, p)
 		require.True(t, ctx.EmitActionRows)
 		require.NotNil(t, ctx.ActionFinalCol)
@@ -230,6 +242,17 @@ func TestUpsertAffectRowsPlan(t *testing.T) {
 		}
 		require.True(t, hasFinalBarrier,
 			"the synthetic final-action predicate must never be pushed below DEDUP UPDATE")
+	})
+
+	t.Run("ODKU unrelated update skips CHECK action stream", func(t *testing.T) {
+		m := NewMockOptimizer(true)
+		addPositiveCheck(t, m, "emp", "deptno")
+		p, err := runOneStmt(m, t,
+			"insert into constraint_test.emp(empno, ename, job, deptno) values (1, 'A', 'B', 1) on duplicate key update sal = sal")
+		require.NoError(t, err)
+		require.False(t, odkuDedupCtx(t, p).EmitActionRows)
+		require.True(t, hasGuardedConstraintAssert(p, "_check_constraint_assert"),
+			"an unrelated CHECK applies to new inserts but not an existing update row")
 	})
 
 	t.Run("ODKU action checks remain independent when FK checks are disabled", func(t *testing.T) {
