@@ -2668,6 +2668,11 @@ func (txn *Transaction) Commit(ctx context.Context) (reqs []txn.TxnRequest, err 
 	})
 
 	if txn.readOnly.Load() {
+		if txn.haveDDL.Load() {
+			if pending := txn.pendingCreatedDatabaseWrites(); len(pending) != 0 {
+				return nil, missingCreatedDatabaseWriteError(ctx, pending)
+			}
+		}
 		return nil, nil
 	}
 
@@ -2739,6 +2744,47 @@ func (txn *Transaction) Commit(ctx context.Context) (reqs []txn.TxnRequest, err 
 	}
 
 	return reqs, nil
+}
+
+// pendingCreatedDatabaseWrites returns the physical catalog inserts required
+// by the transaction-local database view. It allocates only for transactions
+// that have an active CREATE DATABASE operation.
+func (txn *Transaction) pendingCreatedDatabaseWrites() map[string]string {
+	if txn.databaseOps == nil {
+		return nil
+	}
+
+	txn.databaseOps.RLock()
+	defer txn.databaseOps.RUnlock()
+
+	var pending map[string]string
+	for key, ops := range txn.databaseOps.names {
+		if len(ops) == 0 || ops[len(ops)-1].kind != INSERT {
+			continue
+		}
+		if pending == nil {
+			pending = make(map[string]string)
+		}
+		pending[noteForCreate(uint64(key.accountId), key.name)] = key.name
+	}
+	return pending
+}
+
+func missingCreatedDatabaseWriteError(ctx context.Context, pending map[string]string) error {
+	var name string
+	for _, candidate := range pending {
+		if name == "" || candidate < name {
+			name = candidate
+		}
+	}
+	if name == "" {
+		return nil
+	}
+	return moerr.NewInternalErrorf(
+		ctx,
+		"cannot commit CREATE DATABASE %q: catalog insert is missing",
+		name,
+	)
 }
 
 func (txn *Transaction) FinalizeCommit(context.Context) {

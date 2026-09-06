@@ -52,6 +52,110 @@ func TestValidateAutoIncrEpochAdvance(t *testing.T) {
 	require.Error(t, validateAutoIncrEpochAdvance(math.MaxUint32-1, 2))
 }
 
+func TestPendingCreatedDatabaseWrites(t *testing.T) {
+	newTxn := func() *Transaction {
+		return &Transaction{databaseOps: newDbOps()}
+	}
+	addCreate := func(txn *Transaction, accountID uint32, name string) {
+		txn.databaseOps.addCreateDatabase(
+			genDatabaseKey(accountID, name),
+			1,
+			&txnDatabase{accountId: accountID, databaseId: 42, databaseName: name},
+		)
+	}
+	validCreateEntry := func(accountID uint32, name string) Entry {
+		bat := batch.NewWithSize(0)
+		bat.SetRowCount(1)
+		return Entry{
+			typ:          INSERT,
+			databaseId:   catalog.MO_CATALOG_ID,
+			tableId:      catalog.MO_DATABASE_ID,
+			databaseName: catalog.MO_CATALOG,
+			tableName:    catalog.MO_DATABASE,
+			note:         noteForCreate(uint64(accountID), name),
+			bat:          bat,
+		}
+	}
+
+	t.Run("matching catalog insert", func(t *testing.T) {
+		txn := newTxn()
+		addCreate(txn, 7, "db")
+		txn.writes = append(txn.writes, validCreateEntry(7, "db"))
+		pending := txn.pendingCreatedDatabaseWrites()
+		for i := range txn.writes {
+			delete(pending, txn.writes[i].note)
+		}
+		require.Empty(t, pending)
+	})
+
+	t.Run("missing catalog insert fails closed", func(t *testing.T) {
+		txn := newTxn()
+		addCreate(txn, 7, "db")
+		err := missingCreatedDatabaseWriteError(context.Background(), txn.pendingCreatedDatabaseWrites())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "catalog insert is missing")
+	})
+
+	t.Run("empty catalog insert is not encoded", func(t *testing.T) {
+		txn := newTxn()
+		addCreate(txn, 7, "db")
+		entry := validCreateEntry(7, "db")
+		entry.bat.SetRowCount(0)
+		txn.writes = append(txn.writes, entry)
+		require.NotEmpty(t, txn.pendingCreatedDatabaseWrites())
+	})
+
+	t.Run("different tenant does not satisfy create", func(t *testing.T) {
+		txn := newTxn()
+		addCreate(txn, 7, "db")
+		txn.writes = append(txn.writes, validCreateEntry(8, "db"))
+		pending := txn.pendingCreatedDatabaseWrites()
+		delete(pending, txn.writes[0].note)
+		require.NotEmpty(t, pending)
+	})
+
+	t.Run("create then drop is a valid net no-op", func(t *testing.T) {
+		txn := newTxn()
+		addCreate(txn, 7, "db")
+		txn.databaseOps.addDeleteDatabase(genDatabaseKey(7, "db"), 2, 42)
+		require.Empty(t, txn.pendingCreatedDatabaseWrites())
+	})
+}
+
+func TestCommitRejectsReadOnlyWorkspaceWithActiveDatabaseCreate(t *testing.T) {
+	txn := &Transaction{
+		op:          newTxnOperatorForTest(t),
+		databaseOps: newDbOps(),
+	}
+	txn.databaseOps.addCreateDatabase(
+		genDatabaseKey(7, "db"),
+		1,
+		&txnDatabase{accountId: 7, databaseId: 42, databaseName: "db"},
+	)
+	txn.readOnly.Store(true)
+	txn.haveDDL.Store(true)
+
+	reqs, err := txn.Commit(context.Background())
+	require.Nil(t, reqs)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "catalog insert is missing")
+}
+
+func TestGenWriteReqsRejectsMissingDatabaseCreate(t *testing.T) {
+	txn := &Transaction{databaseOps: newDbOps()}
+	txn.databaseOps.addCreateDatabase(
+		genDatabaseKey(7, "db"),
+		1,
+		&txnDatabase{accountId: 7, databaseId: 42, databaseName: "db"},
+	)
+	txn.haveDDL.Store(true)
+
+	reqs, err := genWriteReqs(context.Background(), txn)
+	require.Nil(t, reqs)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "catalog insert is missing")
+}
+
 func TestTransactionAutoIncrEpochFenceCapabilityUsesTargetSnapshot(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

@@ -84,14 +84,21 @@ func (s *Scope) CreateDatabase(c *Compile) error {
 
 	createDatabase := s.Plan.GetDdl().GetCreateDatabase()
 	dbName := createDatabase.GetDatabase()
+
+	// The existence decision and the create must be serialized by the same
+	// catalog-key lock. In particular, every transparent RC retry must cross
+	// this boundary again instead of turning a transient catalog view into an
+	// IF NOT EXISTS no-op.
+	if err := lockMoDatabase(c, dbName, lock.LockMode_Exclusive); err != nil {
+		return err
+	}
+
 	if _, err := c.e.Database(ctx, dbName, c.proc.GetTxnOperator()); err == nil {
 		if createDatabase.GetIfNotExists() {
 			return nil
 		}
 		return moerr.NewDBAlreadyExists(ctx, dbName)
-	}
-
-	if err := lockMoDatabase(c, dbName, lock.LockMode_Exclusive); err != nil {
+	} else if !moerr.IsMoErrCode(err, moerr.OkExpectedEOB) {
 		return err
 	}
 
@@ -106,7 +113,11 @@ func (s *Scope) CreateDatabase(c *Compile) error {
 	}
 
 	ctx = context.WithValue(ctx, defines.DatTypKey{}, datType)
-	return c.e.Create(ctx, dbName, c.proc.GetTxnOperator())
+	if err := c.e.Create(ctx, dbName, c.proc.GetTxnOperator()); err != nil {
+		return err
+	}
+	c.setAffectedRows(1)
+	return nil
 }
 
 func (s *Scope) DropDatabase(c *Compile) error {

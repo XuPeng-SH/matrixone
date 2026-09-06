@@ -16,8 +16,10 @@ package compile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +56,86 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
+
+func TestCreateDatabaseSerializesExistenceAndReportsPhysicalCreation(t *testing.T) {
+	lookupErr := errors.New("catalog lookup failed")
+	lockErr := errors.New("catalog lock failed")
+	createErr := errors.New("catalog create failed")
+
+	for _, tc := range []struct {
+		name         string
+		existing     bool
+		ifNotExists  bool
+		lookupErr    error
+		lockErr      error
+		createErr    error
+		wantCreate   bool
+		wantErr      error
+		wantErrCode  uint16
+		wantAffected uint64
+	}{
+		{name: "physical creation", lookupErr: moerr.GetOkExpectedEOB(), wantCreate: true, wantAffected: 1},
+		{name: "if not exists no-op", existing: true, ifNotExists: true},
+		{name: "strict duplicate", existing: true, wantErrCode: moerr.ErrDBAlreadyExists},
+		{name: "lookup failure is not absence", lookupErr: lookupErr, wantErr: lookupErr},
+		{name: "lock failure stops before lookup", lockErr: lockErr, wantErr: lockErr},
+		{name: "create failure has no affected row", lookupErr: moerr.GetOkExpectedEOB(), createErr: createErr, wantCreate: true, wantErr: createErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			eng := mock_frontend.NewMockEngine(ctrl)
+			lockCalled := false
+			lockStub := gostub.Stub(&lockMoDatabase, func(_ *Compile, name string, mode lock.LockMode) error {
+				require.Equal(t, "db1", name)
+				require.Equal(t, lock.LockMode_Exclusive, mode)
+				lockCalled = true
+				return tc.lockErr
+			})
+			defer lockStub.Reset()
+
+			if tc.lockErr == nil {
+				var db engine.Database
+				if tc.existing {
+					db = mock_frontend.NewMockDatabase(ctrl)
+				}
+				eng.EXPECT().Database(gomock.Any(), "db1", gomock.Any()).DoAndReturn(
+					func(context.Context, string, client.TxnOperator) (engine.Database, error) {
+						require.True(t, lockCalled, "existence must be checked under the catalog lock")
+						return db, tc.lookupErr
+					},
+				)
+			}
+			if tc.wantCreate {
+				eng.EXPECT().Create(gomock.Any(), "db1", gomock.Any()).Return(tc.createErr)
+			}
+
+			proc := testutil.NewProcess(t)
+			ctx := defines.AttachAccountId(context.Background(), sysAccountId)
+			proc.Ctx = ctx
+			proc.ReplaceTopCtx(ctx)
+			c := &Compile{e: eng, proc: proc, affectRows: new(atomic.Uint64)}
+			s := &Scope{
+				Magic: CreateDatabase,
+				Plan: &plan2.Plan{Plan: &plan2.Plan_Ddl{Ddl: &plan2.DataDefinition{
+					Definition: &plan2.DataDefinition_CreateDatabase{CreateDatabase: &plan2.CreateDatabase{
+						Database:    "db1",
+						IfNotExists: tc.ifNotExists,
+					}},
+				}}},
+			}
+
+			err := c.run(s)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else if tc.wantErrCode != 0 {
+				require.True(t, moerr.IsMoErrCode(err, tc.wantErrCode), "unexpected error: %v", err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.wantAffected, c.getAffectedRows())
+		})
+	}
+}
 
 type mongoDBMappingTestExecutor struct {
 	results map[string]executor.Result
