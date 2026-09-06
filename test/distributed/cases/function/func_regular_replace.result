@@ -1,5 +1,5 @@
 SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat','Cat', 'Tiger') 'Result';
-Result 
+Result
 Tiger Dog Tiger Dog Tiger
 SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat', 'Cow', 'Tiger') 'Result';
 Result
@@ -8,7 +8,7 @@ SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat', 'Cat', 'Tiger', 1, 2) 'Result';
 Result
 Cat Dog Tiger Dog Cat
 SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat', 'Cat', 'Tiger', 2, 1) 'Result';
-Result 
+Result
 Cat Dog Tiger Dog Cat
 SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat', 'Cat', 'Tiger', 2, 2) 'Result';
 Result
@@ -25,6 +25,10 @@ NULL
 SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat', 'Cow', NULL);
 regexp_replace(Cat Dog Cat Dog Cat, Cow, null) 
 NULL
+SELECT REGEXP_REPLACE(NULL, '', NULL, NULL, NULL);
+Illegal argument to a regular expression.
+SELECT REGEXP_REPLACE('abc', '', 'X', 0, 0);
+Illegal argument to a regular expression.
 create table t1(a int, b varchar(100));
 insert into t1 values(1 , 'Cat Dog Cat Dog Cat Cat Dog Cat Dog Cat');
 insert into t1 values(2 , 'Cat Dog Cat Dog Cat Cat Dog Cat Dog Cat');

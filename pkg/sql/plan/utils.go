@@ -4768,6 +4768,12 @@ func validatePreparedPaginationValue(value any) (valid bool, negative bool) {
 type ParamValue struct {
 	Value any
 	IsBin bool
+	// IsBinaryString is the execute-time text/binary domain advertised by a
+	// prepared parameter. It is separate from IsBin (literal syntax) and from
+	// RuntimeType (numeric overload selection): COM_STMT BLOB families carry a
+	// binary string domain while retaining the prepared statement's text-shaped
+	// transport type.
+	IsBinaryString bool
 	// IsBinaryProtocol records that the value came from COM_STMT_EXECUTE.
 	// It is intentionally separate from IsBin: a VAR_STRING parameter is a
 	// binary-protocol value without being a binary string literal.
@@ -4775,9 +4781,9 @@ type ParamValue struct {
 	PrepareParamKind vector.PrepareParamKind
 	// SourceType is the logical type of a SQL EXECUTE USING user variable. It
 	// is deliberately separate from RuntimeType: SQL parameters are transported
-	// through a text vector, and their source type is used only after an
-	// arithmetic consumer establishes a numeric domain. Comparisons keep their
-	// existing common-type and numeric-prefix contracts.
+	// through a text vector. Numeric consumers use it only after establishing a
+	// numeric domain, while string consumers must retain its text/binary domain.
+	// Comparisons keep their existing common-type and numeric-prefix contracts.
 	SourceType    types.Type
 	HasSourceType bool
 	// RuntimeType is the type advertised by the binary-protocol parameter
@@ -5916,6 +5922,8 @@ func replaceParamValsWithSelection(
 		isBin := false
 		runtimeType := types.T_text.ToType()
 		hasRuntimeType := false
+		stringDomainType := types.Type{}
+		hasStringDomainType := false
 		numericPrefixSource := false
 		retainParamRef := false
 		if param, ok := val.(ParamValue); ok {
@@ -5928,6 +5936,23 @@ func replaceParamValsWithSelection(
 			hasRuntimeType = param.HasRuntimeType
 			numericPrefixSource = param.EnableNumericPrefix
 			retainParamRef = param.RetainParamRef
+			// Plan specialization materializes every marker in the copied plan,
+			// including markers outside the expression that triggered it. Preserve
+			// an execute-time binary string domain here so functions such as ORD do
+			// not silently receive a TEXT literal merely because a sibling regexp or
+			// numeric expression required specialization. NULL keeps the prepared
+			// marker's domain, and numeric RuntimeType remains authoritative below.
+			if param.Value != nil {
+				switch {
+				case param.HasSourceType &&
+					types.StaticStringDomain(param.SourceType) == types.StringDomainBinary:
+					stringDomainType = param.SourceType
+					hasStringDomainType = true
+				case param.IsBinaryString:
+					stringDomainType = types.T_varbinary.ToType()
+					hasStringDomainType = true
+				}
+			}
 			if param.HasSourceType && param.Value != nil {
 				sqlExecuteStringBackedParams[i] = isStringBackedType(param.SourceType)
 				sqlExecuteNumericParams[i], err = preparedSQLExecuteNumericParamExpr(
@@ -5946,6 +5971,8 @@ func replaceParamValsWithSelection(
 		paramType := plan.Type{Id: int32(types.T_text)}
 		if hasRuntimeType {
 			paramType = makePlan2Type(&runtimeType)
+		} else if hasStringDomainType {
+			paramType = makePlan2Type(&stringDomainType)
 		}
 		_, directRuntimeResult := slices.BinarySearch(directResultPositions, int32(i))
 		directRuntimeResult = directRuntimeResult && hasRuntimeType

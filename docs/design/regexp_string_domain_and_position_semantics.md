@@ -16,8 +16,9 @@ limited to behavior MatrixOne can implement independently of the regexp engine:
 - BINARY, VARBINARY, BLOB, and runtime binary parameters use byte positions;
 - statically known text and binary regexp operands are rejected with MySQL
   error 3995;
-- a parameter marker owns its string domain at EXECUTE time, including when it
-  is nested in a domain-preserving expression;
+- a parameter marker may defer its string-domain check during PREPARE, but all
+  concrete domains are checked again at EXECUTE, including when a marker is
+  nested in a domain-preserving expression;
 - `ORD` interprets its input in the selected row's effective string domain;
   `REGEXP_SUBSTR` and `REGEXP_REPLACE` also preserve that domain on their
   string result;
@@ -64,7 +65,15 @@ while holding incompatible siblings fixed.
 Static regexp validation compares every singleton operand. Runtime-owned
 operands are deferred, but known operands are still compared with one another.
 This preserves early 3995 errors without rejecting a statement whose legal
-domain is determined only at EXECUTE time.
+domain is determined only at EXECUTE time. The defer mask is PREPARE-only:
+execute-time rebinding supplies an explicit resolved mask, so cached ParamRefs
+cannot cause a second deferral after their current values and domains are known.
+A bare NULL literal contributes no domain. A prepared marker whose current
+value is NULL retains its PREPARE-time domain, matching MySQL's parameter
+contract instead of silently bypassing a text/binary mismatch. A NULL-valued
+function result likewise retains its declared domain; it is not equivalent to
+a bare NULL literal. A failed execution leaves the cached plan unchanged and
+reusable.
 
 ### Position and anchor policies
 
@@ -89,11 +98,25 @@ advances by exactly one text code point / binary byte. This preserves the ICU
 sequence while guaranteeing termination. `REGEXP_REPLACE` keeps MySQL's
 function-level exception that an empty subject is returned unchanged.
 
+MySQL has one additional INSTR-only boundary: for an empty subject, every
+positive `pos` is accepted. A zero-width anchor match is reported at that
+requested position, while a consuming pattern or a later occurrence returns
+zero. SUBSTR and REPLACE retain their ordinary `pos <= length` validation.
+
+An empty pattern is not treated as a valid zero-width regexp. All predicate,
+INSTR, SUBSTR, and REPLACE variants return error 3685 for a non-NULL empty
+pattern, including when the subject, replacement, occurrence, or position is
+NULL or otherwise invalid. REGEXP_LIKE still returns NULL first when its
+`match_type` itself is NULL, matching MySQL's argument semantics.
+
 ## Data flow and ownership
 
 1. The binder records which regexp operands have a runtime-owned domain.
-2. Execute-time rebinding replaces parameters in a copied plan. The cached
-   prepared plan remains immutable.
+2. Execute-time rebinding replaces parameters in a copied plan. Materialized
+   parameters retain their execute-time binary type even when a different
+   sibling expression triggered specialization, so `ORD(?)` and other string
+   consumers cannot fall back to text semantics. The cached prepared plan
+   remains immutable.
 3. COM_STMT and SQL EXECUTE rebuild parameter metadata on every execution;
    binary-to-text-to-binary reuse must not retain a stale domain.
 4. Vectors carry static type plus optional row-level runtime provenance.
@@ -132,6 +155,11 @@ escapes are mapped to the same alphabet. Unicode properties and code-point
 escapes above `0xff` are rejected in binary mode so callers cannot address the
 internal alphabet.
 
+Binary operands establish a case-sensitive default, but explicit `i` and `c`
+flags override it and the rightmost flag wins. ASCII bytes can therefore fold
+under `i`; encoded high bytes remain distinct private-use runes and are not
+subject to Unicode case folding.
+
 The regexp cache is operator-owned, limited to 100 entries, and clones pattern
 keys whose source vector may be reused. Its syntax-derived zero-width metadata
 uses the same keys and is evicted atomically with each matcher, so it cannot grow
@@ -150,7 +178,9 @@ Cost model:
   iterator;
 - INSTR encodes only the suffix starting at `pos`; SUBSTR and REPLACE retain the
   complete subject because their anchor contract requires it;
-- the uniform-domain predicate path stays vectorized and allocation-free.
+- the uniform-domain predicate path stays vectorized and allocation-free when
+  the subject has no NULLs; batches containing NULL subjects use the row-aware
+  path so an empty non-NULL pattern still raises 3685.
 
 ## Alternatives
 
@@ -187,7 +217,11 @@ RE2 encoding is retained.
 | SUBSTR/REPLACE original anchors | start-aware iterator tests | existing BVT positional cases |
 | nested dynamic result domain | binder accepts correlated runtime domains and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse |
 | static mismatch | function resolver returns 3995 for known mixed operands | existing BVT matrix |
+| execute-time mismatch | resolved defer mask rejects mixed COM_STMT/SQL EXECUTE domains without mutating the cached plan | binary/text/binary reuse with an intervening 3995 |
 | byte positions/results | binary vectors without legacy `SetIsBin` | BINARY/VARBINARY/BLOB BVT |
+| binary match flags | ASCII `i`, rightmost `ci`/`ic`, and non-ASCII byte controls | REGEXP_LIKE BVT compared with MySQL 8.4 |
+| empty pattern | every arity and NULL/invalid-position precedence returns 3685 | public SQL for LIKE/INSTR/SUBSTR/REPLACE |
+| empty INSTR subject | arbitrary positive position, anchor/no-match/second-occurrence and binary controls | public SQL at `pos = 5` |
 | zero-width sequence/progress | adjacent nonempty/empty, anchor, boundary, empty-subject, and cache-bound unit tests | SQL results compared with MySQL 8.4 |
 | hot-path cost | allocation benchmarks for ASCII, high-byte, and near-end positions | performance evidence, not BVT timing assertions |
 

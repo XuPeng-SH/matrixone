@@ -7,6 +7,8 @@ SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat', 'Cat', 'Tiger', 1, 0) 'Result';
 SELECT REGEXP_REPLACE(NULL, 'Cow', 'Tiger');
 SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat', NULL, 'Tiger');
 SELECT REGEXP_REPLACE('Cat Dog Cat Dog Cat', 'Cow', NULL);
+SELECT REGEXP_REPLACE(NULL, '', NULL, NULL, NULL);
+SELECT REGEXP_REPLACE('abc', '', 'X', 0, 0);
 
 create table t1(a int, b varchar(100));
 insert into t1 values(1 , 'Cat Dog Cat Dog Cat Cat Dog Cat Dog Cat');

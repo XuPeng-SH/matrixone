@@ -780,6 +780,11 @@ func TestRegexpFunctionsDeferOnlyDynamicStringDomains(t *testing.T) {
 	_, err = GetFunctionByNameWithDynamicStringDomains(
 		ctx, "regexp_instr", []types.Type{text, binary}, []bool{true})
 	require.Error(t, err, "a partial mask would silently assign ownership to the wrong argument")
+
+	_, err = GetFunctionByNameWithDynamicStringDomains(
+		ctx, "regexp_instr", []types.Type{text, binary}, []bool{false, false})
+	require.Error(t, err, "an execute-time resolved mask must validate every concrete domain")
+	require.True(t, moerr.IsMoErrCode(err, moerr.ErrCharacterSetMismatch))
 }
 
 func BenchmarkRegexpReplaceModes(b *testing.B) {
@@ -906,15 +911,29 @@ func Test_BuiltIn_RegexpEmptySubject(t *testing.T) {
 		})
 	}
 
-	for _, pos := range []int64{0, 2} {
-		_, err := op.regMap.regularInstr("^$", "", pos, 1, 0)
-		require.Error(t, err)
+	_, err := op.regMap.regularInstr("^$", "", 0, 1, 0)
+	require.Error(t, err)
+	for _, pos := range []int64{1, 2, 5, 100} {
+		index, err := op.regMap.regularInstr("^$", "", pos, 1, 0)
+		require.NoError(t, err)
+		require.Equal(t, pos, index)
+	}
+	index, err := op.regMap.regularInstr(".", "", 5, 1, 0)
+	require.NoError(t, err)
+	require.Zero(t, index)
+	index, err = op.regMap.regularInstr("^$", "", 5, 2, 0)
+	require.NoError(t, err)
+	require.Zero(t, index)
+	index, err = op.regMap.regularInstrWithMode("^$", "", 5, 1, 1, true)
+	require.NoError(t, err)
+	require.Equal(t, int64(5), index)
 
+	for _, pos := range []int64{0, 2} {
 		_, _, err = op.regMap.regularSubstr("^$", "", pos, 1)
 		require.Error(t, err)
 	}
 
-	_, err := op.regMap.regularInstr("^$", "", 1, 0, 0)
+	_, err = op.regMap.regularInstr("^$", "", 1, 0, 0)
 	require.Error(t, err)
 	_, err = op.regMap.regularInstr("^$", "", 1, 1, -1)
 	require.Error(t, err)
@@ -991,10 +1010,12 @@ func Test_BuiltIn_RegularLike(t *testing.T) {
 		matchType string
 		want      bool
 	}{
-		{name: "binary ignores case insensitive flag", pattern: "a", subject: "A", matchType: "i", want: false},
-		{name: "binary ignores rightmost case flag", pattern: "a", subject: "A", matchType: "ci", want: false},
+		{name: "binary honors case insensitive flag", pattern: "a", subject: "A", matchType: "i", want: true},
+		{name: "binary honors rightmost insensitive flag", pattern: "a", subject: "A", matchType: "ci", want: true},
+		{name: "binary honors rightmost sensitive flag", pattern: "a", subject: "A", matchType: "ic", want: false},
+		{name: "binary does not unicode-fold encoded bytes", pattern: "é", subject: "É", matchType: "i", want: false},
 		{name: "binary keeps multiline flag", pattern: "^b", subject: "A\nb", matchType: "im", want: true},
-		{name: "binary multiline remains case sensitive", pattern: "^B", subject: "A\nb", matchType: "im", want: false},
+		{name: "binary multiline honors insensitive flag", pattern: "^B", subject: "A\nb", matchType: "im", want: true},
 		{name: "binary keeps dotall flag", pattern: ".", subject: "\n", matchType: "in", want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1014,8 +1035,8 @@ func Test_BuiltIn_RegexpLikeRebindsBinaryCaseSensitivity(t *testing.T) {
 	varchar := types.T_varchar.ToType()
 	testCase := NewFunctionTestCase(proc,
 		[]FunctionTestInput{
-			NewFunctionTestInput(varchar, []string{"A"}, nil),
-			NewFunctionTestInput(varchar, []string{"a"}, nil),
+			NewFunctionTestInput(varchar, []string{"É"}, nil),
+			NewFunctionTestInput(varchar, []string{"é"}, nil),
 			NewFunctionTestInput(varchar, []string{"i"}, nil),
 		},
 		NewFunctionTestResult(types.T_bool.ToType(), false, []bool{false}, nil),
@@ -1037,6 +1058,57 @@ func Test_BuiltIn_RegexpLikeRebindsBinaryCaseSensitivity(t *testing.T) {
 	testCase.expected.wanted = []bool{false}
 	ok, info = testCase.Run()
 	require.True(t, ok, info)
+}
+
+func Test_BuiltIn_RegexpValueFunctionsRejectEmptyPattern(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	text := types.T_varchar.ToType()
+	int64Type := types.T_int64.ToType()
+	int8Type := types.T_int8.ToType()
+	nullText := NewFunctionTestInput(text, []string{""}, []bool{true})
+	emptyPattern := NewFunctionTestInput(text, []string{""}, []bool{false})
+	nullInt64 := NewFunctionTestInput(int64Type, []int64{0}, []bool{true})
+	nullInt8 := NewFunctionTestInput(int8Type, []int8{0}, []bool{true})
+
+	for _, tc := range []struct {
+		name       string
+		fn         fEvalFn
+		inputs     []FunctionTestInput
+		resultType types.Type
+	}{
+		{name: "instr_2", fn: newOpBuiltInRegexp().builtInRegexpInstr, inputs: []FunctionTestInput{nullText, emptyPattern}, resultType: int64Type},
+		{name: "instr_3", fn: newOpBuiltInRegexp().builtInRegexpInstr, inputs: []FunctionTestInput{nullText, emptyPattern, nullInt64}, resultType: int64Type},
+		{name: "instr_4", fn: newOpBuiltInRegexp().builtInRegexpInstr, inputs: []FunctionTestInput{nullText, emptyPattern, nullInt64, nullInt64}, resultType: int64Type},
+		{name: "instr_5", fn: newOpBuiltInRegexp().builtInRegexpInstr, inputs: []FunctionTestInput{nullText, emptyPattern, nullInt64, nullInt64, nullInt8}, resultType: int64Type},
+		{name: "substr_2", fn: newOpBuiltInRegexp().builtInRegexpSubstr, inputs: []FunctionTestInput{nullText, emptyPattern}, resultType: text},
+		{name: "substr_3", fn: newOpBuiltInRegexp().builtInRegexpSubstr, inputs: []FunctionTestInput{nullText, emptyPattern, nullInt64}, resultType: text},
+		{name: "substr_4", fn: newOpBuiltInRegexp().builtInRegexpSubstr, inputs: []FunctionTestInput{nullText, emptyPattern, nullInt64, nullInt64}, resultType: text},
+		{name: "replace_3", fn: newOpBuiltInRegexp().builtInRegexpReplace, inputs: []FunctionTestInput{nullText, emptyPattern, nullText}, resultType: text},
+		{name: "replace_4", fn: newOpBuiltInRegexp().builtInRegexpReplace, inputs: []FunctionTestInput{nullText, emptyPattern, nullText, nullInt64}, resultType: text},
+		{name: "replace_5", fn: newOpBuiltInRegexp().builtInRegexpReplace, inputs: []FunctionTestInput{nullText, emptyPattern, nullText, nullInt64, nullInt64}, resultType: text},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tcc := NewFunctionTestCase(
+				proc, tc.inputs, NewFunctionTestResult(tc.resultType, true, nil, nil), tc.fn)
+			require.NoError(t, tcc.result.PreExtendAndReset(tcc.fnLength))
+			_, err := tcc.DebugRun()
+			require.Error(t, err)
+			var moErr *moerr.Error
+			require.ErrorAs(t, err, &moErr)
+			require.Equal(t, uint16(moerr.ER_REGEXP_ILLEGAL_ARGUMENT), moErr.MySQLCode())
+			require.Equal(t, "HY000", moErr.SqlState())
+		})
+	}
+
+	for _, call := range []func() error{
+		func() error { _, err := newOpBuiltInRegexp().regMap.regularInstr("", "abc", 0, 1, 0); return err },
+		func() error { _, _, err := newOpBuiltInRegexp().regMap.regularSubstr("", "abc", 0, 1); return err },
+		func() error { _, err := newOpBuiltInRegexp().regMap.regularReplace("", "abc", "X", 0, 0); return err },
+	} {
+		err := call()
+		require.Error(t, err)
+		require.True(t, moerr.IsMoErrCode(err, moerr.ErrRegexpIllegalArgument), err)
+	}
 }
 
 func Test_BuiltIn_RegexpLikeRejectsEmptyPattern(t *testing.T) {

@@ -382,7 +382,7 @@ func (op *opBuiltInRegexp) builtInRegexpPredicate(
 	if len(parameters) < 2 || len(parameters) > 3 || (!like && len(parameters) != 2) {
 		return moerr.NewInvalidInputNoCtx("invalid regexp predicate arity")
 	}
-	if len(parameters) == 2 {
+	if len(parameters) == 2 && !parameters[0].HasNull() {
 		if binary, uniform := regexpOperandsUniformBinary(parameters, 2); uniform {
 			return opBinaryStrStrToFixedWithErrorCheck[bool](
 				parameters, result, nil, length,
@@ -422,7 +422,16 @@ func (op *opBuiltInRegexp) builtInRegexpPredicate(
 		if len(parameters) == 3 {
 			matchType, matchTypeNull = p3.GetStrValue(i)
 		}
-		if subjectNull || patternNull || matchTypeNull {
+		if patternNull || matchTypeNull {
+			if err := rs.Append(false, true); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := validateRegexpPattern(functionUtil.QuickBytesToStr(pattern)); err != nil {
+			return err
+		}
+		if subjectNull {
 			if err := rs.Append(false, true); err != nil {
 				return err
 			}
@@ -471,7 +480,13 @@ func (op *opBuiltInRegexp) builtInRegexpSubstr(parameters []*vector.Vector, resu
 			}
 			v1, null1 := p1.GetStrValue(i)
 			v2, null2 := p2.GetStrValue(i)
-			if null1 || null2 || len(v2) == 0 {
+			if null2 {
+				if err := rs.AppendBytes(nil, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 {
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
@@ -505,7 +520,13 @@ func (op *opBuiltInRegexp) builtInRegexpSubstr(parameters []*vector.Vector, resu
 			v1, null1 := p1.GetStrValue(i)
 			v2, null2 := p2.GetStrValue(i)
 			pos, null3 := positions.GetValue(i)
-			if null1 || null2 || null3 || len(v2) == 0 {
+			if null2 {
+				if err := rs.AppendBytes(nil, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 || null3 {
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
@@ -541,7 +562,13 @@ func (op *opBuiltInRegexp) builtInRegexpSubstr(parameters []*vector.Vector, resu
 			v2, null2 := p2.GetStrValue(i)
 			pos, null3 := positions.GetValue(i)
 			ocur, null4 := occurrences.GetValue(i)
-			if null1 || null2 || null3 || null4 || len(v2) == 0 {
+			if null2 {
+				if err := rs.AppendBytes(nil, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 || null3 || null4 {
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
@@ -584,7 +611,16 @@ func (op *opBuiltInRegexp) builtInRegexpInstr(parameters []*vector.Vector, resul
 			}
 			v1, null1 := p1.GetStrValue(i)
 			v2, null2 := p2.GetStrValue(i)
-			if null1 || null2 {
+			if null2 {
+				if err := rs.Append(0, true); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			}
+			if null1 {
 				if err := rs.Append(0, true); err != nil {
 					return err
 				}
@@ -611,7 +647,13 @@ func (op *opBuiltInRegexp) builtInRegexpInstr(parameters []*vector.Vector, resul
 			v1, null1 := p1.GetStrValue(i)
 			v2, null2 := p2.GetStrValue(i)
 			pos, null3 := positions.GetValue(i)
-			if null1 || null2 || null3 {
+			if null2 {
+				if err := rs.Append(0, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 || null3 {
 				if err := rs.Append(0, true); err != nil {
 					return err
 				}
@@ -642,7 +684,13 @@ func (op *opBuiltInRegexp) builtInRegexpInstr(parameters []*vector.Vector, resul
 			v2, null2 := p2.GetStrValue(i)
 			pos, null3 := positions.GetValue(i)
 			ocur, null4 := occurrences.GetValue(i)
-			if null1 || null2 || null3 || null4 {
+			if null2 {
+				if err := rs.Append(0, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 || null3 || null4 {
 				if err := rs.Append(0, true); err != nil {
 					return err
 				}
@@ -676,7 +724,13 @@ func (op *opBuiltInRegexp) builtInRegexpInstr(parameters []*vector.Vector, resul
 			pos, null3 := positions.GetValue(i)
 			ocur, null4 := occurrences.GetValue(i)
 			resOp, null5 := resultOption.GetValue(i)
-			if null1 || null2 || null3 || null4 || null5 {
+			if null2 {
+				if err := rs.Append(0, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 || null3 || null4 || null5 {
 				if err := rs.Append(0, true); err != nil {
 					return err
 				}
@@ -706,15 +760,6 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 	p3 := vector.GenerateFunctionStrParameter(parameters[2]) // repl
 	rs := vector.MustFunctionResult[types.Varlena](result)
 
-	if parameters[0].IsConstNull() || parameters[1].IsConstNull() || parameters[2].IsConstNull() {
-		for i := uint64(0); i < uint64(length); i++ {
-			if err := rs.AppendBytes(nil, true); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
 	switch len(parameters) {
 	case 3:
 		for i := uint64(0); i < uint64(length); i++ {
@@ -727,7 +772,13 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 			v1, null1 := p1.GetStrValue(i)
 			v2, null2 := p2.GetStrValue(i)
 			v3, null3 := p3.GetStrValue(i)
-			if null1 || null2 || null3 {
+			if null2 {
+				if err := rs.AppendBytes(nil, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 || null3 {
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
@@ -759,7 +810,13 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 			v2, null2 := p2.GetStrValue(i)
 			v3, null3 := p3.GetStrValue(i)
 			v4, null4 := p4.GetValue(i)
-			if null1 || null2 || null3 || null4 {
+			if null2 {
+				if err := rs.AppendBytes(nil, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 || null3 || null4 {
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
@@ -793,7 +850,13 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 			v3, null3 := p3.GetStrValue(i)
 			v4, null4 := p4.GetValue(i)
 			v5, null5 := p5.GetValue(i)
-			if null1 || null2 || null3 || null4 || null5 {
+			if null2 {
+				if err := rs.AppendBytes(nil, true); err != nil {
+					return err
+				}
+			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+				return err
+			} else if null1 || null3 || null4 || null5 {
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
@@ -962,10 +1025,17 @@ func regexpSyntaxMayMatchEmpty(expr *syntax.Regexp) bool {
 }
 
 func (rs *regexpSet) getRegularMatcherForMatchWithMode(pat string, binary bool) (*regexp.Regexp, error) {
-	if pat == "" {
-		return nil, moerr.NewRegexpIllegalArgumentNoCtx()
+	if err := validateRegexpPattern(pat); err != nil {
+		return nil, err
 	}
 	return rs.getRegularMatcherWithMode(pat, binary)
+}
+
+func validateRegexpPattern(pat string) error {
+	if pat == "" {
+		return moerr.NewRegexpIllegalArgumentNoCtx()
+	}
+	return nil
 }
 
 func (rs *regexpSet) regularMatchWithMode(pat, str string, binary bool) (bool, error) {
@@ -1058,6 +1128,9 @@ func (rs *regexpSet) regularSubstr(pat string, str string, pos, occurrence int64
 }
 
 func (rs *regexpSet) regularSubstrWithMode(pat string, str string, pos, occurrence int64, subjectIsBinary bool) (match bool, substr string, err error) {
+	if err = validateRegexpPattern(pat); err != nil {
+		return false, "", err
+	}
 	// check position
 	startByte, ok := regexpSearchStartByte(str, pos, subjectIsBinary)
 	if !ok {
@@ -1088,6 +1161,9 @@ func (rs *regexpSet) regularReplace(pat string, str string, repl string, pos, oc
 }
 
 func (rs *regexpSet) regularReplaceWithMode(pat string, str string, repl string, pos, occurrence int64, subjectIsBinary bool) (r string, err error) {
+	if err = validateRegexpPattern(pat); err != nil {
+		return "", err
+	}
 	// check position
 	startByte, ok := regexpSearchStartByte(str, pos, subjectIsBinary)
 	if !ok {
@@ -1140,8 +1216,14 @@ func (rs *regexpSet) regularInstr(pat string, str string, pos, occurrence int64,
 }
 
 func (rs *regexpSet) regularInstrWithMode(pat string, str string, pos, occurrence int64, retOption int8, subjectIsBinary bool) (index int64, err error) {
+	if err = validateRegexpPattern(pat); err != nil {
+		return 0, err
+	}
 	// check position
-	startByte, ok := regexpSearchStartByte(str, pos, subjectIsBinary)
+	startByte, ok := 0, pos >= 1 && len(str) == 0
+	if len(str) != 0 {
+		startByte, ok = regexpSearchStartByte(str, pos, subjectIsBinary)
+	}
 	if !ok {
 		return 0, moerr.NewInvalidInputNoCtxf("regexp_instr: Index out of bounds in regular expression search. Search start position: %d, Search string length: %d", pos, regexpSubjectLength(str, subjectIsBinary))
 	}
@@ -1612,12 +1694,12 @@ func (rs *regexpSet) regularLike(pat string, str string, matchType string) (bool
 }
 
 func (rs *regexpSet) regularLikeWithMode(pat string, str string, matchType string, binary bool) (bool, error) {
-	mt, err := getPureMatchType(matchType, binary)
+	mt, err := getPureMatchType(matchType)
 	if err != nil {
 		return false, err
 	}
-	if pat == "" {
-		return false, moerr.NewRegexpIllegalArgumentNoCtx()
+	if err = validateRegexpPattern(pat); err != nil {
+		return false, err
 	}
 	rule := fmt.Sprintf("(?%s)%s", mt, pat)
 
@@ -1638,9 +1720,10 @@ func (rs *regexpSet) regularLikeWithMode(pat string, str string, matchType strin
 // c: case sensitive.
 // m: multiple line mode.
 // n: '.' can match line terminator.
-// Binary operands are always case-sensitive, so i and c still participate in
-// validation but do not change the compiled rule for that execution domain.
-func getPureMatchType(input string, binary bool) (string, error) {
+// Binary operands default to case-sensitive matching, but an explicit i or c
+// still overrides that default.  The rightmost case flag wins in both domains;
+// byte encoding naturally limits binary case folding to ASCII-compatible bytes.
+func getPureMatchType(input string) (string, error) {
 	retstring := ""
 	caseType := ""
 	foundn := false
@@ -1649,9 +1732,7 @@ func getPureMatchType(input string, binary bool) (string, error) {
 	for _, c := range input {
 		switch c {
 		case 'i':
-			if !binary {
-				caseType = "i"
-			}
+			caseType = "i"
 		case 'c':
 			caseType = ""
 		case 'm':

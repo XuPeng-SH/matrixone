@@ -4438,17 +4438,9 @@ func bindMixedInListComparison(
 // expression-aware: parameter markers are represented as TEXT while cached,
 // so their Type alone cannot distinguish them from a statically text value.
 func preparedRegexpDynamicStringDomains(name string, args []*Expr) []bool {
-	stringOperands := 0
-	switch name {
-	case "reg_match", "not_reg_match", "regexp_instr", "regexp_like", "regexp_substr":
-		stringOperands = 2
-	case "regexp_replace":
-		stringOperands = 3
-	default:
+	stringOperands := preparedRegexpStringOperandCount(name, len(args))
+	if stringOperands == 0 {
 		return nil
-	}
-	if stringOperands > len(args) {
-		stringOperands = len(args)
 	}
 
 	var dynamic []bool
@@ -4468,6 +4460,22 @@ func preparedRegexpDynamicStringDomains(name string, args []*Expr) []bool {
 		dynamic[i] = true
 	}
 	return dynamic
+}
+
+func preparedRegexpStringOperandCount(name string, arity int) int {
+	stringOperands := 0
+	switch name {
+	case "reg_match", "not_reg_match", "regexp_instr", "regexp_like", "regexp_substr":
+		stringOperands = 2
+	case "regexp_replace":
+		stringOperands = 3
+	default:
+		return 0
+	}
+	if stringOperands > arity {
+		return arity
+	}
+	return stringOperands
 }
 
 // preparedFunctionStringDomainDependsOnRuntimeParam reports whether rebinding
@@ -4586,10 +4594,17 @@ func bindPreparedFuncExprImplByPlanExpr(
 	ctx context.Context,
 	name string,
 	args []*Expr,
-	originalArgs []*Expr,
+	resolvedStringDomains []bool,
 ) (*plan.Expr, error) {
+	if resolvedStringDomains == nil && preparedRegexpStringOperandCount(name, len(args)) > 0 {
+		// PREPARE may defer compatibility for parameter-owned domains, but this
+		// path runs only after the current EXECUTE values have been bound. An
+		// explicit mask prevents cached ParamRefs from deferring the check again;
+		// callers mark only bare untyped-NULL operands as domainless.
+		resolvedStringDomains = make([]bool, len(args))
+	}
 	return bindFuncExprImplByPlanExpr(
-		ctx, name, args, true, preparedRegexpDynamicStringDomains(name, originalArgs))
+		ctx, name, args, true, resolvedStringDomains)
 }
 
 func bindFuncExprImplByPlanExpr(

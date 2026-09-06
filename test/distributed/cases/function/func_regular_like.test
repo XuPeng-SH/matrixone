@@ -65,9 +65,13 @@ select regexp_like('\n','.','n') r;
 select regexp_like('abc\ndef','^def','m') r;
 select regexp_like('CAT','cat','iiiiiiic') r;
 
-# Binary operands remain case-sensitive even when match_type requests i. The
-# same prepared statement must follow the current binary/text execution domain.
+# Binary operands default to case-sensitive matching, while explicit i/c flags
+# override the default and the rightmost flag wins. Non-ASCII bytes are not
+# Unicode-folded in the byte domain.
 select regexp_like(cast(_binary'A' as varbinary(1)), cast(_binary'a' as varbinary(1)), 'i') binary_i,
+       regexp_like(cast(_binary'A' as varbinary(1)), cast(_binary'a' as varbinary(1)), 'ci') binary_ci,
+       regexp_like(cast(_binary'A' as varbinary(1)), cast(_binary'a' as varbinary(1)), 'ic') binary_ic,
+       regexp_like(cast(X'C3A9' as varbinary(2)), cast(X'C389' as varbinary(2)), 'i') binary_unicode_i,
        regexp_like('A', 'a', 'i') text_i;
 prepare regexp_like_domain_rebind from 'select regexp_like(?, ?, ''i'')';
 set @regexp_like_subject = cast(_binary'A' as varbinary(1));
@@ -83,6 +87,7 @@ deallocate prepare regexp_like_domain_rebind;
 
 select regexp_like('abc', '');
 select regexp_like('abc', '', 'i');
+select regexp_like(NULL, '', 'i');
 
 select 'abc' regexp '';
 select 'abc' rlike '';

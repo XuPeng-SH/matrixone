@@ -408,7 +408,7 @@ func TestInitExecuteStmtParamPreservesStringDomainsPerUserVariable(t *testing.T)
 	require.True(t, cw.proc.GetPrepareParamIsBinaryString(0))
 	require.False(t, cw.proc.GetPrepareParamIsBinaryString(1))
 	require.Equal(t, plan2.ParamValue{
-		Value: "AB\x00\x00", IsBin: false, EnableNumericPrefix: true,
+		Value: "AB\x00\x00", IsBin: false, IsBinaryString: true, EnableNumericPrefix: true,
 		SourceType: types.T_varbinary.ToType(), HasSourceType: true,
 	}, cw.paramVals[0])
 	require.Equal(t, plan2.ParamValue{
@@ -479,8 +479,8 @@ func TestBinaryProtocolPreparedParamRebindsStringDomain(t *testing.T) {
 }
 
 func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
-	const query = "select regexp_instr(?, ?, 2), regexp_replace('中', '.', ?, 1, 0), " +
-		"regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)"
+	const query = "select regexp_instr(?, ?, 2), regexp_replace(?, ?, ?, 1, 0), " +
+		"regexp_instr(regexp_substr(?, ?), ?, 1)"
 	ses, prepareStmt, cw, execCtx := newPreparedExecuteEnvForSQL(t, 104, query)
 	proto, _, scratchPrepare := newBinaryPrepareProtocolTestCase(t, query)
 	defer func() {
@@ -510,47 +510,38 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 		return data[:pos]
 	}
 
+	values := []string{"中中", "中", "中", ".", "X", "中中", "中", "."}
+	cachedPlan, err := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan.Marshal()
+	require.NoError(t, err)
+
 	for _, tc := range []struct {
 		name              string
 		mysqlTypes        []defines.MysqlType
-		wantBinary        []bool
 		wantInstr         int64
 		wantReplace       string
 		wantReplaceBinary bool
 	}{
 		{
-			name: "binary subject",
-			mysqlTypes: []defines.MysqlType{
-				defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING,
-				defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_BLOB},
-			wantBinary: []bool{true, false, false, true, true}, wantInstr: 4, wantReplace: "X",
-		},
-		{
-			name: "binary pattern and replacement",
-			mysqlTypes: []defines.MysqlType{
-				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_BLOB,
-				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
-			wantBinary: []bool{false, true, true, false, false}, wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
-		},
-		{
 			name: "all text",
 			mysqlTypes: []defines.MysqlType{
 				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING,
+				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING,
 				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
-			wantBinary: []bool{false, false, false, false, false}, wantInstr: 2, wantReplace: "X",
+			wantInstr: 2, wantReplace: "X",
 		},
 		{
 			name: "all binary rebind",
 			mysqlTypes: []defines.MysqlType{
 				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB,
+				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB,
 				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB},
-			wantBinary: []bool{true, true, true, true, true}, wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
+			wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NoError(t, proto.ParseExecuteData(
 				execCtx.reqCtx, cw.proc, prepareStmt,
-				buildPacket(tc.mysqlTypes, []string{"中中", "中", "X", "中中", "中"}), 0))
+				buildPacket(tc.mysqlTypes, values), 0))
 
 			_, runtimePlan, executionStmt, _, owned, err := initExecuteStmtParam(
 				execCtx, ses, cw, nil, prepareStmt.Name)
@@ -558,8 +549,9 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 			if owned {
 				defer executionStmt.Free()
 			}
-			for parameter, wantBinary := range tc.wantBinary {
-				require.Equal(t, wantBinary, cw.proc.GetPrepareParamIsBinaryString(parameter))
+			for parameter, mysqlType := range tc.mysqlTypes {
+				require.Equal(t, mysqlType == defines.MYSQL_TYPE_LONG_BLOB,
+					cw.proc.GetPrepareParamIsBinaryString(parameter))
 				require.Equal(t, types.StringSourceCOMStmt,
 					cw.proc.GetPrepareParams().GetStringSourceAt(parameter))
 			}
@@ -590,6 +582,44 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 			nestedResult, err := nestedExecutor.Eval(cw.proc, []*batch.Batch{input}, nil)
 			require.NoError(t, err)
 			require.Equal(t, int64(1), vector.GetFixedAtNoTypeCheck[int64](nestedResult, 0))
+
+			after, err := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan.Marshal()
+			require.NoError(t, err)
+			require.Equal(t, cachedPlan, after, "execute-time rebinding must not mutate the cached plan")
+		})
+	}
+
+	textTypes := make([]defines.MysqlType, len(values))
+	for i := range textTypes {
+		textTypes[i] = defines.MYSQL_TYPE_VAR_STRING
+	}
+	for _, tc := range []struct {
+		name   string
+		binary int
+	}{
+		{name: "mixed instr operands", binary: 0},
+		{name: "mixed replace operands", binary: 4},
+		{name: "mixed nested outer operands", binary: 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mysqlTypes := append([]defines.MysqlType(nil), textTypes...)
+			mysqlTypes[tc.binary] = defines.MYSQL_TYPE_BLOB
+			require.NoError(t, proto.ParseExecuteData(
+				execCtx.reqCtx, cw.proc, prepareStmt, buildPacket(mysqlTypes, values), 0))
+
+			_, _, executionStmt, _, owned, err := initExecuteStmtParam(
+				execCtx, ses, cw, nil, prepareStmt.Name)
+			if owned && executionStmt != nil {
+				executionStmt.Free()
+			}
+			require.Error(t, err)
+			var moErr *moerr.Error
+			require.ErrorAs(t, err, &moErr)
+			require.Equal(t, uint16(moerr.ER_CHARACTER_SET_MISMATCH), moErr.MySQLCode())
+
+			after, marshalErr := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan.Marshal()
+			require.NoError(t, marshalErr)
+			require.Equal(t, cachedPlan, after, "failed rebinding must leave the cached plan reusable")
 		})
 	}
 }
@@ -666,7 +696,7 @@ func TestBuildPlanRegexpDefersOnlyRuntimeStringDomains(t *testing.T) {
 	}
 }
 
-func TestPreparedRegexpDynamicStringDomainSurvivesExecuteRebind(t *testing.T) {
+func TestPreparedRegexpDynamicStringDomainValidatedAtExecuteRebind(t *testing.T) {
 	const query = "select regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)"
 	_, prepareStmt, _, _ := newPreparedExecuteEnvForSQL(t, 118, query)
 	defer prepareStmt.Close()
@@ -675,8 +705,9 @@ func TestPreparedRegexpDynamicStringDomainSurvivesExecuteRebind(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
-		name  string
-		value plan2.ParamValue
+		name    string
+		value   plan2.ParamValue
+		wantErr bool
 	}{
 		{
 			name: "binary protocol binary string",
@@ -687,15 +718,100 @@ func TestPreparedRegexpDynamicStringDomainSurvivesExecuteRebind(t *testing.T) {
 			name: "sql execute text variable",
 			value: plan2.ParamValue{Value: "中中", SourceType: types.T_text.ToType(),
 				HasSourceType: true},
+			wantErr: true,
+		},
+		{name: "null retains prepared text domain", value: plan2.ParamValue{}, wantErr: true},
+		{
+			name: "later binary execution remains valid",
+			value: plan2.ParamValue{Value: "中中", IsBin: true, IsBinaryProtocol: true,
+				RuntimeType: types.T_blob.ToType(), HasRuntimeType: true},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := plan2.FillValuesOfParamsInPlanWithSpecialization(
 				context.Background(), preparedPlan, []any{tc.value})
-			require.NoError(t, err)
+			if tc.wantErr {
+				require.Error(t, err)
+				var moErr *moerr.Error
+				require.ErrorAs(t, err, &moErr)
+				require.Equal(t, uint16(moerr.ER_CHARACTER_SET_MISMATCH), moErr.MySQLCode())
+			} else {
+				require.NoError(t, err)
+			}
 			after, err := preparedPlan.Marshal()
 			require.NoError(t, err)
 			require.Equal(t, cached, after, "execute-time rebinding must not mutate the cached plan")
+		})
+	}
+}
+
+func TestPreparedRegexpNestedNullResultRetainsPreparedDomainAtExecuteRebind(t *testing.T) {
+	const query = "select regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)"
+	_, prepareStmt, _, _ := newPreparedExecuteEnvForSQL(t, 119, query)
+	defer prepareStmt.Close()
+	preparedPlan := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan
+	cached, err := preparedPlan.Marshal()
+	require.NoError(t, err)
+
+	_, _, err = plan2.FillValuesOfParamsInPlanWithSpecialization(
+		context.Background(), preparedPlan,
+		[]any{plan2.ParamValue{}, plan2.ParamValue{}})
+	require.Error(t, err)
+	var moErr *moerr.Error
+	require.ErrorAs(t, err, &moErr)
+	require.Equal(t, uint16(moerr.ER_CHARACTER_SET_MISMATCH), moErr.MySQLCode())
+	after, err := preparedPlan.Marshal()
+	require.NoError(t, err)
+	require.Equal(t, cached, after, "nested NULL rebinding must not mutate the cached plan")
+}
+
+func TestPreparedRegexpBareNullRemainsDomainlessAtExecuteRebind(t *testing.T) {
+	const query = "select regexp_instr(NULL, ?)"
+	_, prepareStmt, _, _ := newPreparedExecuteEnvForSQL(t, 120, query)
+	defer prepareStmt.Close()
+	preparedPlan := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan
+
+	_, _, err := plan2.FillValuesOfParamsInPlanWithSpecialization(
+		context.Background(), preparedPlan,
+		[]any{plan2.ParamValue{
+			Value: "a", IsBinaryString: true, IsBinaryProtocol: true,
+		}})
+	require.NoError(t, err)
+}
+
+func TestPreparedRegexpTypedNullRetainsStaticDomainAtExecuteRebind(t *testing.T) {
+	for i, tc := range []struct {
+		name  string
+		query string
+		value plan2.ParamValue
+	}{
+		{
+			name:  "text null with binary pattern",
+			query: "select regexp_instr(cast(NULL as char), ?)",
+			value: plan2.ParamValue{Value: "a", IsBinaryString: true, IsBinaryProtocol: true},
+		},
+		{
+			name:  "binary null with text pattern",
+			query: "select regexp_instr(cast(NULL as binary), ?)",
+			value: plan2.ParamValue{Value: "a", IsBinaryProtocol: true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, prepareStmt, _, _ := newPreparedExecuteEnvForSQL(t, uint32(121+i), tc.query)
+			defer prepareStmt.Close()
+			preparedPlan := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan
+			cached, err := preparedPlan.Marshal()
+			require.NoError(t, err)
+
+			_, _, err = plan2.FillValuesOfParamsInPlanWithSpecialization(
+				context.Background(), preparedPlan, []any{tc.value})
+			require.Error(t, err)
+			var moErr *moerr.Error
+			require.ErrorAs(t, err, &moErr)
+			require.Equal(t, uint16(moerr.ER_CHARACTER_SET_MISMATCH), moErr.MySQLCode())
+			after, marshalErr := preparedPlan.Marshal()
+			require.NoError(t, marshalErr)
+			require.Equal(t, cached, after)
 		})
 	}
 }
@@ -792,7 +908,8 @@ func TestIssue27640InitExecuteStmtParamAcceptsODBCIntegerTextPagination(t *testi
 					enableNumericPrefix = test.prefix[valueIndex]
 				}
 				wantParamVals = append(wantParamVals, plan2.ParamValue{
-					Value: value, IsBinaryProtocol: true, EnableNumericPrefix: enableNumericPrefix,
+					Value: value, IsBinaryString: binaryProtocolPrepareParamIsBinaryString(mysqlType),
+					IsBinaryProtocol: true, EnableNumericPrefix: enableNumericPrefix,
 				})
 			}
 
@@ -2433,6 +2550,17 @@ func TestPreparedRuntimeSemanticKeyKeepsValueAndSQLSourceDomains(t *testing.T) {
 		preparedRuntimeSemanticKey(decimal("2.5", 20, 5)),
 		preparedRuntimeSemanticKey(decimal("2.5", 30, 8)),
 		"a different SQL source domain must not reuse stale arithmetic metadata")
+}
+
+func TestPreparedRuntimeSemanticKeyIncludesBinaryStringDomain(t *testing.T) {
+	text := []any{plan2.ParamValue{
+		Value: "value", IsBinaryProtocol: true,
+	}}
+	binary := []any{plan2.ParamValue{
+		Value: "value", IsBinaryProtocol: true, IsBinaryString: true,
+	}}
+	require.NotEqual(t, preparedRuntimeSemanticKey(text), preparedRuntimeSemanticKey(binary),
+		"a cached regexp specialization must not cross text/binary domains")
 }
 
 func TestPreparedDirectResultSemanticKeyPreservesDecimalMetadataDomain(t *testing.T) {

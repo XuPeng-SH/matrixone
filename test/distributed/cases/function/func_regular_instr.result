@@ -13,6 +13,16 @@ explicit_pos_match
 SELECT REGEXP_INSTR('', 'x', 1) AS explicit_pos_no_match;
 explicit_pos_no_match
 0
+SELECT REGEXP_INSTR('', '^$', 5) AS empty_subject_late_anchor,
+REGEXP_INSTR('', '.', 5) AS empty_subject_late_no_match,
+REGEXP_INSTR('', '^$', 5, 2) AS empty_subject_second_occurrence,
+REGEXP_INSTR(CAST(_binary'' AS VARBINARY(1)), CAST(_binary'^$' AS VARBINARY(2)), 5, 1, 1) AS empty_binary_late_anchor;
+empty_subject_late_anchor    empty_subject_late_no_match    empty_subject_second_occurrence    empty_binary_late_anchor
+5    0    0    5
+SELECT REGEXP_INSTR(NULL, '');
+Illegal argument to a regular expression.
+SELECT REGEXP_INSTR('abc', '', 0);
+Illegal argument to a regular expression.
 SELECT REGEXP_INSTR('Cat', 'at') Result;
 result
 2
@@ -282,8 +292,10 @@ ord(?)    regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)    ord(regexp_s
 228    4    228
 SET @regexp_subject = '中中';
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
-ord(?)    regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)    ord(regexp_substr(?, cast(_binary'中' as varbinary(3)), 2))
-14989485    4    228
+Character set 'utf8mb4_general_ci' cannot be used in conjunction with 'binary' in call to regexp_instr.
+SET @regexp_subject = NULL;
+EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
+Character set 'utf8mb4_general_ci' cannot be used in conjunction with 'binary' in call to regexp_instr.
 SET @regexp_subject = CAST(_binary'中中' AS BLOB);
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
 ord(?)    regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)    ord(regexp_substr(?, cast(_binary'中' as varbinary(3)), 2))
@@ -299,8 +311,11 @@ ord(regexp_substr(?, ?))    regexp_instr(regexp_substr(?, ?), cast(_binary'.' as
 SET @regexp_nested_subject = '中中';
 SET @regexp_nested_pattern = '中';
 EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
-ord(regexp_substr(?, ?))    regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)
-14989485    1
+Character set 'utf8mb4_general_ci' cannot be used in conjunction with 'binary' in call to regexp_instr.
+SET @regexp_nested_subject = NULL;
+SET @regexp_nested_pattern = NULL;
+EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
+Character set 'utf8mb4_general_ci' cannot be used in conjunction with 'binary' in call to regexp_instr.
 SET @regexp_nested_subject = CAST(_binary'中中' AS BLOB);
 SET @regexp_nested_pattern = CAST(_binary'中' AS BLOB);
 EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;

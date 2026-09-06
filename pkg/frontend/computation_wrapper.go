@@ -1862,6 +1862,7 @@ func preparedRuntimeSemanticKey(paramVals []any) string {
 		}
 		fmt.Fprintf(&key, "%d:%d:%d:%d:%d;", i, param.PrepareParamKind,
 			runtimeType.Oid, runtimeType.Width, runtimeType.Scale)
+		fmt.Fprintf(&key, "binary:%t;", param.IsBinaryString)
 		if param.HasSourceType {
 			// SQL EXECUTE arithmetic specializes from the user variable's logical
 			// type. Keep that dependency in the cache identity without replacing
@@ -2218,6 +2219,7 @@ func preparedParamValues(proc *process.Process, paramTypes []byte) ([]any, error
 	for i := range values {
 		paramValue := plan2.ParamValue{
 			IsBin:               proc.GetPrepareParamIsBin(i),
+			IsBinaryString:      proc.GetPrepareParamIsBinaryString(i),
 			IsBinaryProtocol:    true,
 			PrepareParamKind:    proc.GetPrepareParamKind(i),
 			EnableNumericPrefix: currentProtocolVersion(proc) >= defines.MORPCVersion30,
@@ -2464,6 +2466,7 @@ func buildExecuteUserParams(
 		paramValue := plan2.ParamValue{
 			Value:               param,
 			IsBin:               paramIsBin[i],
+			IsBinaryString:      paramBinaryString[i],
 			PrepareParamKind:    paramKinds[i],
 			EnableNumericPrefix: currentProtocolVersion(proc) >= defines.MORPCVersion30,
 		}

@@ -3,6 +3,12 @@ SELECT REGEXP_INSTR('', '^$') AS default_pos_match;
 SELECT REGEXP_INSTR('', 'x') AS default_pos_no_match;
 SELECT REGEXP_INSTR('', '^$', 1) AS explicit_pos_match;
 SELECT REGEXP_INSTR('', 'x', 1) AS explicit_pos_no_match;
+SELECT REGEXP_INSTR('', '^$', 5) AS empty_subject_late_anchor,
+       REGEXP_INSTR('', '.', 5) AS empty_subject_late_no_match,
+       REGEXP_INSTR('', '^$', 5, 2) AS empty_subject_second_occurrence,
+       REGEXP_INSTR(CAST(_binary'' AS VARBINARY(1)), CAST(_binary'^$' AS VARBINARY(2)), 5, 1, 1) AS empty_binary_late_anchor;
+SELECT REGEXP_INSTR(NULL, '');
+SELECT REGEXP_INSTR('abc', '', 0);
 
 SELECT REGEXP_INSTR('Cat', 'at') Result;
 SELECT REGEXP_INSTR('Cat', '^at') Result;
@@ -161,6 +167,10 @@ SET @regexp_subject = CAST(_binary'中中' AS VARBINARY(6));
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
 SET @regexp_subject = '中中';
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
+# A NULL execution keeps the marker's PREPARE-time text domain; it is not the
+# same as a bare NULL literal.
+SET @regexp_subject = NULL;
+EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
 SET @regexp_subject = CAST(_binary'中中' AS BLOB);
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
 DEALLOCATE PREPARE regexp_domain_rebind;
@@ -175,6 +185,9 @@ SET @regexp_nested_pattern = CAST(_binary'中' AS VARBINARY(3));
 EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
 SET @regexp_nested_subject = '中中';
 SET @regexp_nested_pattern = '中';
+EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
+SET @regexp_nested_subject = NULL;
+SET @regexp_nested_pattern = NULL;
 EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
 SET @regexp_nested_subject = CAST(_binary'中中' AS BLOB);
 SET @regexp_nested_pattern = CAST(_binary'中' AS BLOB);
