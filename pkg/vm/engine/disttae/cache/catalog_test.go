@@ -66,56 +66,52 @@ func TestCatalogCacheConcurrentGC(t *testing.T) {
 }
 
 func TestCatalogGCVersionRetirementPreservesVisibility(t *testing.T) {
-	t.Run("database tombstone remains authoritative", func(t *testing.T) {
+	t.Run("real GC keeps tombstones authoritative during retirement", func(t *testing.T) {
 		cc := NewCatalog()
 		cc.UpdateDuration(types.TS{}, types.MaxTs())
-		oldLive := &DatabaseItem{
+		cc.databases.data.Set(&DatabaseItem{
 			AccountId: 1, Name: "dropped_db", Id: 41,
 			Ts: timestamp.Timestamp{PhysicalTime: 10},
-		}
-		tombstone := &DatabaseItem{
+		})
+		cc.databases.data.Set(&DatabaseItem{
 			AccountId: 1, Name: "dropped_db", Id: 41, deleted: true,
 			Ts: timestamp.Timestamp{PhysicalTime: 20},
-		}
-		cc.databases.data.Set(oldLive)
-		cc.databases.data.Set(tombstone)
-		cc.UpdateStart(types.BuildTS(30, 0))
-
-		deleteCatalogVersions([]*DatabaseItem{tombstone, oldLive}, func(item *DatabaseItem) {
-			cc.databases.data.Delete(item)
-			require.False(t, cc.CanServe(types.BuildTS(15, 0)),
-				"snapshots whose history is being retired must fall back to storage")
-			query := &DatabaseItem{
-				AccountId: 1, Name: "dropped_db",
-				Ts: timestamp.Timestamp{PhysicalTime: 40},
-			}
-			require.False(t, cc.GetDatabase(query),
-				"catalog GC must never expose a superseded live database version")
 		})
-	})
-
-	t.Run("table tombstone remains authoritative", func(t *testing.T) {
-		cc := NewCatalog()
-		oldLive := &TableItem{
+		cc.tables.data.Set(&TableItem{
 			AccountId: 1, DatabaseId: 2, Name: "dropped_table", Id: 41,
 			Ts: timestamp.Timestamp{PhysicalTime: 10},
-		}
-		tombstone := &TableItem{
+		})
+		cc.tables.data.Set(&TableItem{
 			AccountId: 1, DatabaseId: 2, Name: "dropped_table", Id: 41, deleted: true,
 			Ts: timestamp.Timestamp{PhysicalTime: 20},
-		}
-		cc.tables.data.Set(oldLive)
-		cc.tables.data.Set(tombstone)
-
-		deleteCatalogVersions([]*TableItem{tombstone, oldLive}, func(item *TableItem) {
-			cc.tables.data.Delete(item)
-			query := &TableItem{
-				AccountId: 1, DatabaseId: 2, Name: "dropped_table",
-				Ts: timestamp.Timestamp{PhysicalTime: 40},
-			}
-			require.False(t, cc.GetTable(query),
-				"catalog GC must never expose a superseded live table version")
 		})
+
+		deleteCounts := make(map[catalogGCDeleteKind]int)
+		cc.gcDeleteObserverForTesting = func(kind catalogGCDeleteKind) {
+			deleteCounts[kind]++
+			require.False(t, cc.CanServe(types.BuildTS(15, 0)),
+				"snapshots whose history is being retired must fall back to storage")
+			switch kind {
+			case catalogGCDeleteDatabase:
+				query := &DatabaseItem{
+					AccountId: 1, Name: "dropped_db",
+					Ts: timestamp.Timestamp{PhysicalTime: 40},
+				}
+				require.False(t, cc.GetDatabase(query),
+					"catalog GC must never expose a superseded live database version")
+			case catalogGCDeleteTable:
+				query := &TableItem{
+					AccountId: 1, DatabaseId: 2, Name: "dropped_table",
+					Ts: timestamp.Timestamp{PhysicalTime: 40},
+				}
+				require.False(t, cc.GetTable(query),
+					"catalog GC must never expose a superseded live table version")
+			}
+		}
+
+		cc.GC(timestamp.Timestamp{PhysicalTime: 30})
+		require.Equal(t, 2, deleteCounts[catalogGCDeleteDatabase])
+		require.Equal(t, 2, deleteCounts[catalogGCDeleteTable])
 	})
 
 	t.Run("GC retains newest live recreation", func(t *testing.T) {

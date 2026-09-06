@@ -98,6 +98,13 @@ type GCReport struct {
 	DStaleCpk  int
 }
 
+type catalogGCDeleteKind uint8
+
+const (
+	catalogGCDeleteTable catalogGCDeleteKind = iota
+	catalogGCDeleteDatabase
+)
+
 // deleteCatalogVersions deletes a newest-first group from oldest to newest.
 // When the newest collected version is a tombstone, keeping it until all
 // superseded live versions are gone prevents concurrent readers from briefly
@@ -180,6 +187,9 @@ func (cc *CatalogCache) GC(ts timestamp.Timestamp) GCReport {
 		r.TStaleCpk = len(deletedCpkey)
 		deleteCatalogVersions(deletedItems, func(item *TableItem) {
 			cc.tables.data.Delete(item)
+			if cc.gcDeleteObserverForTesting != nil {
+				cc.gcDeleteObserverForTesting(catalogGCDeleteTable)
+			}
 		})
 		for _, item := range deletedCpkey {
 			cc.tables.cpkeyIndex.Delete(item)
@@ -221,6 +231,9 @@ func (cc *CatalogCache) GC(ts timestamp.Timestamp) GCReport {
 		r.DStaleCpk = len(deletedCpkey)
 		deleteCatalogVersions(deletedItems, func(item *DatabaseItem) {
 			cc.databases.data.Delete(item)
+			if cc.gcDeleteObserverForTesting != nil {
+				cc.gcDeleteObserverForTesting(catalogGCDeleteDatabase)
+			}
 		})
 		for _, item := range deletedCpkey {
 			cc.databases.cpkeyIndex.Delete(item)
