@@ -40,7 +40,7 @@ func genWriteReqs(
 	txnCommit *Transaction,
 ) ([]txn.TxnRequest, error) {
 	writes, tablesInVain, op := txnCommit.writes, txnCommit.tablesInVain, txnCommit.op
-	var pendingDatabaseCreates map[string]string
+	var pendingDatabaseCreates map[databaseKey]uint64
 	if txnCommit.haveDDL.Load() {
 		pendingDatabaseCreates = txnCommit.pendingCreatedDatabaseWrites()
 	}
@@ -71,7 +71,7 @@ func genWriteReqs(
 			e.typ == INSERT &&
 			e.databaseId == catalog.MO_CATALOG_ID &&
 			e.tableId == catalog.MO_DATABASE_ID {
-			delete(pendingDatabaseCreates, e.note)
+			consumeCreatedDatabaseWrites(pendingDatabaseCreates, e.bat)
 		}
 		// --sql
 		// create table t (a int);
