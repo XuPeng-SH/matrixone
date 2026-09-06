@@ -64,6 +64,11 @@ replays it against a stable row image and emits:
 Action validation is enabled only when a changed target can affect CHECK, FK,
 or NOT NULL semantics. CHECK/FK/NOT NULL assertions are barriered before the
 action-final filter. The filter then reduces each key group to its final row.
+The action stream and each constraint's metadata have separate gates. In
+particular, FK eligibility columns are produced, propagated, consumed, and
+validated only when `foreign_key_checks` enables non-self FK checking. CHECK or
+NOT NULL validation may still require the action stream while FK checking is
+disabled; those states must never manufacture or consume FK metadata.
 `MULTI_UPDATE` consumes the count marker independently and applies the physical
 marker uniformly to base, regular-index, irregular-index, partition, direct,
 and S3 writers.

@@ -2900,35 +2900,37 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 					dedupJoinNode.DedupJoinCtx.ActionFinalCol = &plan.ColRef{
 						RelPos: selectTag, ColPos: actionFinalInputPos,
 					}
-					colByID := make(map[uint64]int32, len(tableDef.Cols))
-					for i, col := range tableDef.Cols {
-						colByID[col.ColId] = int32(i)
-					}
-					fkIdx := 0
-					for _, fk := range tableDef.Fkeys {
-						if fk.ForeignTbl == 0 {
-							continue
+					if odkuNeedFkCheck {
+						colByID := make(map[uint64]int32, len(tableDef.Cols))
+						for i, col := range tableDef.Cols {
+							colByID[col.ColId] = int32(i)
 						}
-						if len(fk.Cols) == 0 {
-							return 0, moerr.NewInternalErrorf(builder.GetContext(),
-								"ON DUPLICATE KEY UPDATE foreign key %s has no child columns", fk.Name)
-						}
-						check := plan.ODKUForeignKeyCheck{
-							EligibilityCol: &plan.ColRef{
-								RelPos: selectTag, ColPos: odkuFkEligibilityInputPos[fkIdx],
-							},
-						}
-						for _, colID := range fk.Cols {
-							pos, ok := colByID[colID]
-							if !ok {
-								return 0, moerr.NewInternalErrorf(builder.GetContext(),
-									"ON DUPLICATE KEY UPDATE cannot locate foreign-key column %d", colID)
+						fkIdx := 0
+						for _, fk := range tableDef.Fkeys {
+							if fk.ForeignTbl == 0 {
+								continue
 							}
-							check.ColIdxList = append(check.ColIdxList, pos)
+							if len(fk.Cols) == 0 {
+								return 0, moerr.NewInternalErrorf(builder.GetContext(),
+									"ON DUPLICATE KEY UPDATE foreign key %s has no child columns", fk.Name)
+							}
+							check := plan.ODKUForeignKeyCheck{
+								EligibilityCol: &plan.ColRef{
+									RelPos: selectTag, ColPos: odkuFkEligibilityInputPos[fkIdx],
+								},
+							}
+							for _, colID := range fk.Cols {
+								pos, ok := colByID[colID]
+								if !ok {
+									return 0, moerr.NewInternalErrorf(builder.GetContext(),
+										"ON DUPLICATE KEY UPDATE cannot locate foreign-key column %d", colID)
+								}
+								check.ColIdxList = append(check.ColIdxList, pos)
+							}
+							dedupJoinNode.DedupJoinCtx.ForeignKeyChecks = append(
+								dedupJoinNode.DedupJoinCtx.ForeignKeyChecks, check)
+							fkIdx++
 						}
-						dedupJoinNode.DedupJoinCtx.ForeignKeyChecks = append(
-							dedupJoinNode.DedupJoinCtx.ForeignKeyChecks, check)
-						fkIdx++
 					}
 				}
 			}

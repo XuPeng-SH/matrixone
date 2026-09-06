@@ -15,8 +15,10 @@
 package plan
 
 import (
+	"context"
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	planpb "github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/stretchr/testify/require"
@@ -65,6 +67,18 @@ func hasGuardedConstraintAssert(p *Plan, assertName string) bool {
 			notEligible := guard.Args[0].GetF()
 			if notEligible != nil && notEligible.Func != nil && notEligible.Func.ObjName == "not" &&
 				len(notEligible.Args) == 1 && notEligible.Args[0].GetCol() != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasConstraintAssert(p *Plan, assertName string) bool {
+	for _, node := range p.GetQuery().Nodes {
+		for _, filter := range node.FilterList {
+			assertFn := filter.GetF()
+			if assertFn != nil && assertFn.Func != nil && assertFn.Func.ObjName == assertName {
 				return true
 			}
 		}
@@ -216,6 +230,67 @@ func TestUpsertAffectRowsPlan(t *testing.T) {
 		}
 		require.True(t, hasFinalBarrier,
 			"the synthetic final-action predicate must never be pushed below DEDUP UPDATE")
+	})
+
+	t.Run("ODKU action checks remain independent when FK checks are disabled", func(t *testing.T) {
+		newMock := func(t *testing.T) *MockOptimizer {
+			t.Helper()
+			m := NewMockOptimizer(true)
+			m.ctxt.ResolveVariableFunc = func(name string, _, _ bool) (interface{}, error) {
+				switch name {
+				case "foreign_key_checks":
+					return int64(0), nil
+				case "sql_mode":
+					return "", nil
+				default:
+					return nil, moerr.NewInternalError(context.Background(), "unexpected variable")
+				}
+			}
+			return m
+		}
+
+		t.Run("CHECK", func(t *testing.T) {
+			m := newMock(t)
+			addPositiveCheck(t, m, "emp", "deptno")
+
+			p, err := runOneStmt(m, t,
+				"insert into constraint_test.emp(empno, ename, job, deptno) values (1, 'A', 'B', 1) "+
+					"on duplicate key update deptno = values(deptno)")
+			require.NoError(t, err)
+			ctx := odkuDedupCtx(t, p)
+			require.True(t, ctx.EmitActionRows,
+				"CHECK still requires the ordered action stream")
+			require.Empty(t, ctx.ForeignKeyChecks,
+				"disabled FK checks must not consume unmaterialized eligibility columns")
+			require.True(t, hasConstraintAssert(p, "_check_constraint_assert"),
+				"disabling FK checks must not disable CHECK validation")
+		})
+
+		t.Run("NOT NULL", func(t *testing.T) {
+			m := newMock(t)
+			table := DeepCopyTableDef(m.ctxt.tables["t_on_update"], true)
+			table.Cols[1].Typ.NotNullable = true
+			table.Cols[1].Default.NullAbility = false
+			table.Fkeys = []*planpb.ForeignKeyDef{{
+				Name:        "fk_val",
+				Cols:        []uint64{table.Cols[1].ColId},
+				ForeignTbl:  88888,
+				ForeignCols: []uint64{1},
+			}}
+			m.ctxt.tables["t_on_update"] = table
+
+			p, err := runOneStmt(m, t,
+				"insert into constraint_test.t_on_update(id, val) values (1, 10) "+
+					"on duplicate key update val = if(values(val) = 10, null, values(val))")
+			require.NoError(t, err)
+			ctx := odkuDedupCtx(t, p)
+			require.True(t, ctx.EmitActionRows,
+				"nullable expression into NOT NULL still requires the ordered action stream")
+			require.Empty(t, ctx.ForeignKeyChecks,
+				"disabled FK checks must not consume unmaterialized eligibility columns")
+			require.True(t, hasActionNotNullAssert(p),
+				"disabling FK checks must not disable NOT NULL action validation")
+		})
 	})
 
 	t.Run("ODKU validates each action that can write a NOT NULL column", func(t *testing.T) {

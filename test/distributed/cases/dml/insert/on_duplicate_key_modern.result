@@ -252,11 +252,34 @@ drop table if exists t_odku_prefix;
 drop table if exists t_odku_fk_child;
 drop table if exists t_odku_fk_parent;
 create table t_odku_fk_parent(pid int primary key, pname varchar(20));
-create table t_odku_fk_child(cid int primary key, pid int, val int, foreign key(pid) references t_odku_fk_parent(pid));
+create table t_odku_fk_child(
+cid int primary key,
+pid int,
+val int not null,
+constraint ck_odku_fk_action check(val >= 0),
+foreign key(pid) references t_odku_fk_parent(pid)
+);
 insert into t_odku_fk_parent values (1, 'P1'), (2, 'P2');
 insert into t_odku_fk_child values (1, 1, 100);
 set foreign_key_checks=0;
 insert into t_odku_fk_child values (2, 99, 200);
+insert into t_odku_fk_child values (1, 999, 100)
+on duplicate key update val = values(val);
+select cid, pid, val from t_odku_fk_child where cid = 1;
+➤ cid[4,32,0]  ¦  pid[4,32,0]  ¦  val[4,32,0]  𝄀
+1  ¦  1  ¦  100
+insert into t_odku_fk_child values (1, 999, -1)
+on duplicate key update val = values(val);
+constraint violation: Check constraint 'ck_odku_fk_action' is violated
+select cid, pid, val from t_odku_fk_child where cid = 1;
+➤ cid[4,32,0]  ¦  pid[4,32,0]  ¦  val[4,32,0]  𝄀
+1  ¦  1  ¦  100
+insert into t_odku_fk_child values (1, 999, 102)
+on duplicate key update val = if(values(val) = 102, null, values(val));
+constraint violation: Column 'val' cannot be null
+select cid, pid, val from t_odku_fk_child where cid = 1;
+➤ cid[4,32,0]  ¦  pid[4,32,0]  ¦  val[4,32,0]  𝄀
+1  ¦  1  ¦  100
 set foreign_key_checks=1;
 insert into t_odku_fk_child values (2, 99, 0) on duplicate key update val = val;
 select row_count(), cid, pid, val from t_odku_fk_child where cid = 2;

@@ -260,12 +260,30 @@ drop table if exists t_odku_prefix;
 drop table if exists t_odku_fk_child;
 drop table if exists t_odku_fk_parent;
 create table t_odku_fk_parent(pid int primary key, pname varchar(20));
-create table t_odku_fk_child(cid int primary key, pid int, val int, foreign key(pid) references t_odku_fk_parent(pid));
+create table t_odku_fk_child(
+  cid int primary key,
+  pid int,
+  val int not null,
+  constraint ck_odku_fk_action check(val >= 0),
+  foreign key(pid) references t_odku_fk_parent(pid)
+);
 insert into t_odku_fk_parent values (1, 'P1'), (2, 'P2');
 insert into t_odku_fk_child values (1, 1, 100);
 -- seed an unrelated orphan row under FOREIGN_KEY_CHECKS=0 (pid=99 has no parent)
 set foreign_key_checks=0;
 insert into t_odku_fk_child values (2, 99, 200);
+-- CHECK/NOT NULL still require the ordered action stream while FK checking is
+-- disabled, but the planner must not consume FK eligibility columns that were
+-- deliberately not produced.
+insert into t_odku_fk_child values (1, 999, 100)
+  on duplicate key update val = values(val);
+select cid, pid, val from t_odku_fk_child where cid = 1;
+insert into t_odku_fk_child values (1, 999, -1)
+  on duplicate key update val = values(val);
+select cid, pid, val from t_odku_fk_child where cid = 1;
+insert into t_odku_fk_child values (1, 999, 102)
+  on duplicate key update val = if(values(val) = 102, null, values(val));
+select cid, pid, val from t_odku_fk_child where cid = 1;
 set foreign_key_checks=1;
 -- A conflicting no-op must not revalidate the unchanged orphan reference. The
 -- row remains in the stream for CLIENT_FOUND_ROWS accounting only.

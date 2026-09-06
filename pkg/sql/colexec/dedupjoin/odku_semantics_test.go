@@ -38,32 +38,126 @@ func TestODKUMetadataContractRejectsMalformedPlans(t *testing.T) {
 	proc := testutil.NewProcess(t)
 	defer proc.Free()
 	keyType := types.T_int32.ToType()
+	uint64Type := types.T_uint64.ToType()
 	boolType := types.T_bool.ToType()
 	condition := newExpr(0, keyType)
 
-	t.Run("shared result position", func(t *testing.T) {
-		arg := &DedupJoin{
-			LeftTypes: []types.Type{keyType}, RightTypes: []types.Type{types.T_uint64.ToType()},
-			Conditions:          [][]*plan.Expr{{condition}, {condition}},
-			Result:              []colexec.ResultPos{colexec.NewResultPos(1, 0)},
-			HasODKUAffectedRows: true, AffectedRowsResultPos: 0, PhysicalChangedResultPos: 0,
+	newValidArg := func() *DedupJoin {
+		return &DedupJoin{
+			LeftTypes:  []types.Type{keyType},
+			RightTypes: []types.Type{uint64Type, boolType, boolType, boolType},
+			Conditions: [][]*plan.Expr{{condition}, {condition}},
+			Result: []colexec.ResultPos{
+				colexec.NewResultPos(1, 0),
+				colexec.NewResultPos(1, 1),
+				colexec.NewResultPos(1, 2),
+				colexec.NewResultPos(1, 3),
+			},
+			HasODKUAffectedRows:      true,
+			AffectedRowsResultPos:    0,
+			PhysicalChangedResultPos: 1,
+			EmitActionRows:           true,
+			ActionFinalResultPos:     2,
 		}
-		installTestAllocation(t, arg)
-		require.ErrorContains(t, arg.Prepare(proc), "result column is shared")
-		arg.Free(proc, false, nil)
-	})
+	}
 
-	t.Run("wrong action marker type", func(t *testing.T) {
-		arg := &DedupJoin{
-			LeftTypes: []types.Type{keyType}, RightTypes: []types.Type{keyType, boolType},
-			Conditions:     [][]*plan.Expr{{condition}, {condition}},
-			Result:         []colexec.ResultPos{colexec.NewResultPos(1, 0)},
-			EmitActionRows: true, ActionFinalResultPos: 0,
-		}
-		installTestAllocation(t, arg)
-		require.ErrorContains(t, arg.Prepare(proc), "expected")
-		arg.Free(proc, false, nil)
-	})
+	tests := []struct {
+		name    string
+		wantErr string
+		mutate  func(*DedupJoin)
+	}{
+		{
+			name:    "update column and expression counts differ",
+			wantErr: "update column/expression count mismatch",
+			mutate:  func(arg *DedupJoin) { arg.UpdateColIdxList = []int32{0} },
+		},
+		{
+			name:    "update column is out of range",
+			wantErr: "update column out of range",
+			mutate: func(arg *DedupJoin) {
+				arg.UpdateColIdxList = []int32{1}
+				arg.UpdateColExprList = []*plan.Expr{condition}
+			},
+		},
+		{
+			name:    "metadata result column is out of range",
+			wantErr: "result column out of range",
+			mutate:  func(arg *DedupJoin) { arg.AffectedRowsResultPos = 4 },
+		},
+		{
+			name:    "metadata left source column is out of range",
+			wantErr: "source column out of range",
+			mutate:  func(arg *DedupJoin) { arg.Result[0] = colexec.NewResultPos(0, 1) },
+		},
+		{
+			name:    "action marker has the wrong type with left-side affected-row metadata",
+			wantErr: "expected BOOL",
+			mutate: func(arg *DedupJoin) {
+				arg.LeftTypes[0] = uint64Type
+				arg.Result[0] = colexec.NewResultPos(0, 0)
+				arg.Result[2] = colexec.NewResultPos(1, 0)
+			},
+		},
+		{
+			name:    "metadata right source column is out of range",
+			wantErr: "source column out of range",
+			mutate:  func(arg *DedupJoin) { arg.Result[0] = colexec.NewResultPos(1, 4) },
+		},
+		{
+			name:    "metadata source has the wrong type",
+			wantErr: "expected BIGINT UNSIGNED",
+			mutate:  func(arg *DedupJoin) { arg.Result[0] = colexec.NewResultPos(1, 1) },
+		},
+		{
+			name:    "metadata result position is shared",
+			wantErr: "result column is shared",
+			mutate:  func(arg *DedupJoin) { arg.PhysicalChangedResultPos = 0 },
+		},
+		{
+			name:    "FK eligibility result column is out of range",
+			wantErr: "result column out of range",
+			mutate: func(arg *DedupJoin) {
+				arg.ForeignKeyChecks = []ODKUForeignKeyCheck{{ColIdxList: []int32{0}, EligibilityResultPos: 4}}
+			},
+		},
+		{
+			name:    "FK eligibility marker has the wrong type",
+			wantErr: "expected BOOL",
+			mutate: func(arg *DedupJoin) {
+				arg.ForeignKeyChecks = []ODKUForeignKeyCheck{{ColIdxList: []int32{0}, EligibilityResultPos: 3}}
+				arg.Result[3] = colexec.NewResultPos(1, 0)
+			},
+		},
+		{
+			name:    "FK check has no child columns",
+			wantErr: "FK check has no columns",
+			mutate: func(arg *DedupJoin) {
+				arg.ForeignKeyChecks = []ODKUForeignKeyCheck{{EligibilityResultPos: 3}}
+			},
+		},
+		{
+			name:    "FK child column is out of range",
+			wantErr: "FK column out of range",
+			mutate: func(arg *DedupJoin) {
+				arg.ForeignKeyChecks = []ODKUForeignKeyCheck{{ColIdxList: []int32{1}, EligibilityResultPos: 3}}
+			},
+		},
+		{
+			name:    "ODKU comparison column is out of range",
+			wantErr: "ODKU check column out of range",
+			mutate:  func(arg *DedupJoin) { arg.UpdateCheckColIdxList = []int32{1} },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			arg := newValidArg()
+			test.mutate(arg)
+			installTestAllocation(t, arg)
+			t.Cleanup(func() { arg.Free(proc, false, nil) })
+			require.ErrorContains(t, arg.Prepare(proc), test.wantErr)
+		})
+	}
 }
 
 func TestODKUValueEqualityUsesSQLJSONAndScaledFloatSemantics(t *testing.T) {
