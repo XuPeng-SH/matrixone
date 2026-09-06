@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -1166,53 +1167,121 @@ func restorePureNoOpImage(
 }
 
 func odkuValuesEqual(left, right *vector.Vector) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	if left.GetType().Oid != right.GetType().Oid {
+		return false
+	}
+
 	switch left.GetType().Oid {
 	case types.T_char:
 		// CHAR uses PAD SPACE comparison semantics. Keep this aligned with the
 		// SQL equality operators: trailing spaces do not turn an assignment into
 		// a logical change, fire implicit ON UPDATE columns, or cause a write.
 		return bytes.Equal(
-			bytes.TrimRight(left.GetRawBytesAt(0), " "),
-			bytes.TrimRight(right.GetRawBytesAt(0), " "),
+			bytes.TrimRight(left.GetBytesAt(0), " "),
+			bytes.TrimRight(right.GetBytesAt(0), " "),
 		)
 	case types.T_float32:
 		leftNormalizer := types.NewFloat32ScaleNormalizer(left.GetType().Scale)
 		rightNormalizer := types.NewFloat32ScaleNormalizer(right.GetType().Scale)
-		return leftNormalizer.Normalize(vector.GetFixedAtNoTypeCheck[float32](left, 0)) ==
-			rightNormalizer.Normalize(vector.GetFixedAtNoTypeCheck[float32](right, 0))
+		return odkuFloat32Equal(
+			leftNormalizer.Normalize(vector.GetFixedAtNoTypeCheck[float32](left, 0)),
+			rightNormalizer.Normalize(vector.GetFixedAtNoTypeCheck[float32](right, 0)),
+		)
 	case types.T_float64:
-		return vector.GetFixedAtNoTypeCheck[float64](left, 0) ==
-			vector.GetFixedAtNoTypeCheck[float64](right, 0)
+		return odkuFloat64Equal(
+			vector.GetFixedAtNoTypeCheck[float64](left, 0),
+			vector.GetFixedAtNoTypeCheck[float64](right, 0),
+		)
 	case types.T_array_float32:
 		l, r := types.BytesToArray[float32](left.GetBytesAt(0)), types.BytesToArray[float32](right.GetBytesAt(0))
-		if len(l) != len(r) {
-			return false
-		}
-		for i := range l {
-			if l[i] != r[i] {
-				return false
-			}
-		}
-		return true
+		return odkuFloat32ArrayEqual(l, r)
 	case types.T_array_float64:
 		l, r := types.BytesToArray[float64](left.GetBytesAt(0)), types.BytesToArray[float64](right.GetBytesAt(0))
-		if len(l) != len(r) {
-			return false
-		}
-		for i := range l {
-			if l[i] != r[i] {
-				return false
-			}
-		}
-		return true
+		return odkuFloat64ArrayEqual(l, r)
+	case types.T_array_bf16:
+		return odkuNarrowFloatArrayEqual(
+			types.BytesToArray[types.BF16](left.GetBytesAt(0)),
+			types.BytesToArray[types.BF16](right.GetBytesAt(0)),
+		)
+	case types.T_array_float16:
+		return odkuNarrowFloatArrayEqual(
+			types.BytesToArray[types.Float16](left.GetBytesAt(0)),
+			types.BytesToArray[types.Float16](right.GetBytesAt(0)),
+		)
+	case types.T_array_int8:
+		return types.ArrayElementCompare[int8](
+			types.BytesToArray[int8](left.GetBytesAt(0)),
+			types.BytesToArray[int8](right.GetBytesAt(0)),
+		) == 0
+	case types.T_array_uint8:
+		return types.ArrayElementCompare[uint8](
+			types.BytesToArray[uint8](left.GetBytesAt(0)),
+			types.BytesToArray[uint8](right.GetBytesAt(0)),
+		) == 0
 	case types.T_json:
 		return bytejson.CompareByteJson(
 			types.DecodeJson(left.GetBytesAt(0)),
 			types.DecodeJson(right.GetBytesAt(0)),
 		) == 0
+	case types.T_varchar, types.T_blob, types.T_text, types.T_binary,
+		types.T_varbinary, types.T_datalink, types.T_geometry, types.T_geometry32:
+		return bytes.Equal(left.GetBytesAt(0), right.GetBytesAt(0))
 	default:
-		return bytes.Equal(left.GetRawBytesAt(0), right.GetRawBytesAt(0))
+		// Decode fixed-width values before comparing them. Raw bytes are an
+		// implementation detail (and are not a SQL comparator for values such as
+		// FLOAT NaNs, decimals, timestamps, or UUIDs); CompareValue supplies the
+		// type-specific value semantics for the remaining scalar families.
+		return types.CompareValue(
+			vector.GetAny(left, 0, false), vector.GetAny(right, 0, false),
+		) == 0
 	}
+}
+
+func odkuFloat32Equal(left, right float32) bool {
+	return left == right || (math.IsNaN(float64(left)) && math.IsNaN(float64(right)))
+}
+
+func odkuFloat64Equal(left, right float64) bool {
+	return left == right || (math.IsNaN(left) && math.IsNaN(right))
+}
+
+func odkuFloat32ArrayEqual(left, right []float32) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !odkuFloat32Equal(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func odkuFloat64ArrayEqual(left, right []float64) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !odkuFloat64Equal(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func odkuNarrowFloatArrayEqual[T interface{ ToFloat32() float32 }](left, right []T) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !odkuFloat32Equal(left[i].ToFloat32(), right[i].ToFloat32()) {
+			return false
+		}
+	}
+	return true
 }
 
 func odkuAffectedRows(changed, countFoundRows bool) uint64 {

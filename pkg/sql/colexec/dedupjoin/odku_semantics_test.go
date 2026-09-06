@@ -141,6 +141,43 @@ func TestODKUValueEqualityUsesSQLFloatSemantics(t *testing.T) {
 	require.NoError(t, vector.AppendFixed(left, math.Copysign(0, -1), false, proc.Mp()))
 	require.NoError(t, vector.AppendFixed(right, float64(0), false, proc.Mp()))
 	require.True(t, odkuValuesEqual(left, right), "-0 and +0 are SQL-equal and must remain a no-op")
+
+	left.CleanOnlyData()
+	right.CleanOnlyData()
+	require.NoError(t, vector.AppendFixed(left, math.Float64frombits(0x7ff8000000000001), false, proc.Mp()))
+	require.NoError(t, vector.AppendFixed(right, math.Float64frombits(0x7ff8000000000002), false, proc.Mp()))
+	require.True(t, odkuValuesEqual(left, right), "all FLOAT NaN values are one SQL comparison peer")
+
+	float32Left := vector.NewVec(types.T_float32.ToType())
+	float32Right := vector.NewVec(types.T_float32.ToType())
+	defer float32Left.Free(proc.Mp())
+	defer float32Right.Free(proc.Mp())
+	require.NoError(t, vector.AppendFixed(float32Left, math.Float32frombits(0x7fc00001), false, proc.Mp()))
+	require.NoError(t, vector.AppendFixed(float32Right, math.Float32frombits(0x7fc00002), false, proc.Mp()))
+	require.True(t, odkuValuesEqual(float32Left, float32Right),
+		"FLOAT32 NaN payloads must not turn an otherwise unchanged action into a write")
+}
+
+func TestODKUValueEqualityTreatsNullsAsEqualOnlyWhenBothAreNull(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+
+	left := vector.NewVec(types.T_int32.ToType())
+	right := vector.NewVec(types.T_int32.ToType())
+	defer left.Free(proc.Mp())
+	defer right.Free(proc.Mp())
+	require.NoError(t, vector.AppendNull(left, proc.Mp()))
+	require.NoError(t, vector.AppendNull(right, proc.Mp()))
+
+	after := &batch.Batch{Vecs: []*vector.Vector{right}}
+	after.SetRowCount(1)
+	require.False(t, snapshotChanged([]*vector.Vector{left}, after, []int32{0}),
+		"NULL to NULL is a no-op for ODKU change detection")
+
+	right.CleanOnlyData()
+	require.NoError(t, vector.AppendFixed(right, int32(1), false, proc.Mp()))
+	require.True(t, snapshotChanged([]*vector.Vector{left}, after, []int32{0}),
+		"NULL to a value is a logical change")
 }
 
 func TestODKUValueEqualityUsesSQLStringSemantics(t *testing.T) {
