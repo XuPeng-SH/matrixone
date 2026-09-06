@@ -1154,6 +1154,7 @@ func copyPreparedNumericMetadata(metadata *plan.PreparedNumericMetadata) *plan.P
 		ProvisionalResultPeerTypeId: metadata.ProvisionalResultPeerTypeId,
 		ProvisionalResultPeerWidth:  metadata.ProvisionalResultPeerWidth,
 		ProvisionalResultPeerScale:  metadata.ProvisionalResultPeerScale,
+		StringDomainSource:          DeepCopyExpr(metadata.StringDomainSource),
 	}
 }
 

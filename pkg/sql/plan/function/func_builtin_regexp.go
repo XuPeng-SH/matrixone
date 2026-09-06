@@ -466,7 +466,12 @@ func (op *opBuiltInRegexp) builtInRegexpPredicate(
 			continue
 		}
 
-		match := regexpMatchCompiled(reg, functionUtil.QuickBytesToStr(subject), binary)
+		match := regexpMatchCompiled(
+			reg,
+			functionUtil.QuickBytesToStr(subject),
+			binary,
+			binary && strings.ContainsRune(pureMatchType, 'i'),
+		)
 		if negate {
 			match = !match
 		}
@@ -985,40 +990,40 @@ func (c *regexpReplacementDomainConverter) forMatchDomain(
 		return replacement
 	}
 	if !c.constant {
-		return regexpBinaryReplacementToText(replacement)
+		return regexpBinaryBytesToText(replacement)
 	}
 	if !c.constantTextConverted {
-		c.constantText = regexpBinaryReplacementToText(replacement)
+		c.constantText = regexpBinaryBytesToText(replacement)
 		c.constantTextConverted = true
 	}
 	return c.constantText
 }
 
 // MySQL presents binary strings to its regexp library as Windows-1252 so that
-// each source byte has a stable character value. The domain converter above
-// calls this only for a binary replacement in a text match. Keep ASCII
-// zero-copy; a binary match bypasses this conversion and retains raw bytes.
-func regexpBinaryReplacementToText(replacement string) string {
+// each source byte has a stable character value. Replacement conversion uses
+// this when a binary replacement enters a text result; REGEXP_LIKE also uses
+// it while explicit case folding is active. Keep ASCII zero-copy.
+func regexpBinaryBytesToText(value string) string {
 	firstHighByte := -1
-	for i := 0; i < len(replacement); i++ {
-		if replacement[i] >= utf8.RuneSelf {
+	for i := 0; i < len(value); i++ {
+		if value[i] >= utf8.RuneSelf {
 			firstHighByte = i
 			break
 		}
 	}
 	if firstHighByte == -1 {
-		return replacement
+		return value
 	}
 
 	var converted strings.Builder
-	converted.Grow(len(replacement))
-	converted.WriteString(replacement[:firstHighByte])
-	for i := firstHighByte; i < len(replacement); i++ {
-		value := replacement[i]
-		if value < utf8.RuneSelf {
-			converted.WriteByte(value)
+	converted.Grow(len(value))
+	converted.WriteString(value[:firstHighByte])
+	for i := firstHighByte; i < len(value); i++ {
+		current := value[i]
+		if current < utf8.RuneSelf {
+			converted.WriteByte(current)
 		} else {
-			converted.WriteRune(regexpWindows1252Rune(value))
+			converted.WriteRune(regexpWindows1252Rune(current))
 		}
 	}
 	return converted.String()
@@ -1131,8 +1136,9 @@ func (rs *regexpSet) getRegularMatcher(pat string) (*regexp.Regexp, error) {
 }
 
 type regexpCacheKey struct {
-	pattern string
-	binary  bool
+	pattern        string
+	binary         bool
+	binaryCaseFold bool
 }
 
 func (rs *regexpSet) getRegularMatcherWithMode(pat string, binary bool) (*regexp.Regexp, error) {
@@ -1141,9 +1147,15 @@ func (rs *regexpSet) getRegularMatcherWithMode(pat string, binary bool) (*regexp
 }
 
 func (rs *regexpSet) getRegularMatcherInfoWithMode(pat string, binary bool) (*regexp.Regexp, bool, error) {
+	return rs.getRegularMatcherInfoWithBinaryCaseFold(pat, binary, false)
+}
+
+func (rs *regexpSet) getRegularMatcherInfoWithBinaryCaseFold(
+	pat string, binary bool, binaryCaseFold bool,
+) (*regexp.Regexp, bool, error) {
 	var err error
 
-	key := regexpCacheKey{pattern: pat, binary: binary}
+	key := regexpCacheKey{pattern: pat, binary: binary, binaryCaseFold: binaryCaseFold}
 	reg, ok := rs.mp[key]
 	if !ok {
 		if len(rs.mp) == mapSizeForRegexp {
@@ -1160,7 +1172,7 @@ func (rs *regexpSet) getRegularMatcherInfoWithMode(pat string, binary bool) (*re
 		key.pattern = pat
 		expression := pat
 		if binary {
-			expression, err = encodeBinaryRegexpPattern(pat)
+			expression, err = encodeBinaryRegexpPattern(pat, binaryCaseFold)
 			if err != nil {
 				return nil, false, err
 			}
@@ -1721,12 +1733,13 @@ func encodeBinaryRegexpBytes(value string, startByte int) (encoded string, encod
 	return b.String(), encodedStart
 }
 
-// encodeBinaryRegexpPattern maps literal bytes to the same alphabet used for
-// binary subjects, but preserves regexp syntax. In particular, hexadecimal and
-// octal escapes that denote non-ASCII bytes must be mapped as bytes as well;
-// leaving \xFF unchanged would make RE2 look for U+00FF while a subject byte
-// 0xFF is represented by U+E0FF.
-func encodeBinaryRegexpPattern(pattern string) (string, error) {
+// encodeBinaryRegexpPattern preserves regexp syntax while mapping literal
+// bytes to the subject alphabet. The ordinary binary path uses private-use
+// runes for exact byte identity. REGEXP_LIKE with explicit i uses Windows-1252
+// runes instead, allowing RE2's Unicode folding to implement MySQL's binary
+// facade high-byte folding. Hexadecimal and octal byte escapes follow the same
+// rule as literal bytes.
+func encodeBinaryRegexpPattern(pattern string, caseFold bool) (string, error) {
 	if err := validateBinaryRegexpPattern(pattern); err != nil {
 		return "", err
 	}
@@ -1735,7 +1748,7 @@ func encodeBinaryRegexpPattern(pattern string) (string, error) {
 	quoted := false
 	for i := 0; i < len(pattern); {
 		if pattern[i] != '\\' {
-			writeBinaryRegexpByte(&b, pattern[i])
+			writeBinaryRegexpPatternByte(&b, pattern[i], caseFold)
 			i++
 			continue
 		}
@@ -1765,7 +1778,7 @@ func encodeBinaryRegexpPattern(pattern string) (string, error) {
 		value, end, ok := binaryRegexpByteEscape(pattern, i)
 		if ok {
 			if value >= utf8.RuneSelf {
-				writeBinaryRegexpByte(&b, value)
+				writeBinaryRegexpPatternByte(&b, value, caseFold)
 			} else {
 				b.WriteString(pattern[i:end])
 			}
@@ -1778,6 +1791,14 @@ func encodeBinaryRegexpPattern(pattern string) (string, error) {
 		i += 2
 	}
 	return b.String(), nil
+}
+
+func writeBinaryRegexpPatternByte(b *strings.Builder, value byte, caseFold bool) {
+	if caseFold && value >= utf8.RuneSelf {
+		b.WriteRune(regexpWindows1252Rune(value))
+		return
+	}
+	writeBinaryRegexpByte(b, value)
 }
 
 // validateBinaryRegexpPattern defines the public grammar boundary around the
@@ -1917,16 +1938,6 @@ func (rs *regexpSet) regularLike(pat string, str string, matchType string) (bool
 	return rs.regularLikeWithMode(pat, str, matchType, false)
 }
 
-func (rs *regexpSet) getRegularLikeMatcherWithMode(
-	pat string, matchType string, binary bool,
-) (*regexp.Regexp, error) {
-	mt, err := getPureMatchType(matchType)
-	if err != nil {
-		return nil, err
-	}
-	return rs.getRegularLikeMatcherForPureMatchTypeWithMode(pat, mt, binary)
-}
-
 func (rs *regexpSet) getRegularLikeMatcherForPureMatchTypeWithMode(
 	pat string, pureMatchType string, binary bool,
 ) (*regexp.Regexp, error) {
@@ -1934,22 +1945,33 @@ func (rs *regexpSet) getRegularLikeMatcherForPureMatchTypeWithMode(
 		return nil, err
 	}
 	rule := fmt.Sprintf("(?%s)%s", pureMatchType, pat)
-	return rs.getRegularMatcherWithMode(rule, binary)
+	binaryCaseFold := binary && strings.ContainsRune(pureMatchType, 'i')
+	reg, _, err := rs.getRegularMatcherInfoWithBinaryCaseFold(rule, binary, binaryCaseFold)
+	return reg, err
 }
 
-func regexpMatchCompiled(reg *regexp.Regexp, str string, binary bool) bool {
+func regexpMatchCompiled(reg *regexp.Regexp, str string, binary, binaryCaseFold bool) bool {
 	if binary {
-		str, _ = encodeBinaryRegexpBytes(str, 0)
+		if binaryCaseFold {
+			str = regexpBinaryBytesToText(str)
+		} else {
+			str, _ = encodeBinaryRegexpBytes(str, 0)
+		}
 	}
 	return reg.MatchString(str)
 }
 
 func (rs *regexpSet) regularLikeWithMode(pat string, str string, matchType string, binary bool) (bool, error) {
-	reg, err := rs.getRegularLikeMatcherWithMode(pat, matchType, binary)
+	pureMatchType, err := getPureMatchType(matchType)
 	if err != nil {
 		return false, err
 	}
-	return regexpMatchCompiled(reg, str, binary), nil
+	reg, err := rs.getRegularLikeMatcherForPureMatchTypeWithMode(pat, pureMatchType, binary)
+	if err != nil {
+		return false, err
+	}
+	return regexpMatchCompiled(
+		reg, str, binary, binary && strings.ContainsRune(pureMatchType, 'i')), nil
 }
 
 // Support four arguments:
@@ -1959,7 +1981,7 @@ func (rs *regexpSet) regularLikeWithMode(pat string, str string, matchType strin
 // n: '.' can match line terminator.
 // Binary operands default to case-sensitive matching, but an explicit i or c
 // still overrides that default.  The rightmost case flag wins in both domains;
-// byte encoding naturally limits binary case folding to ASCII-compatible bytes.
+// high bytes use MySQL's Windows-1252 binary facade while explicit i is active.
 func getPureMatchType(input string) (string, error) {
 	retstring := ""
 	caseType := ""

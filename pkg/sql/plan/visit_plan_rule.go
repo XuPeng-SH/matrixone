@@ -281,9 +281,18 @@ func (rule *ResetParamOrderRule) ApplyExpr(e *plan.Expr) (*plan.Expr, error) {
 }
 
 func (rule *ResetParamOrderRule) applyExpr(e *plan.Expr) (*plan.Expr, error) {
-	if metadata := e.GetPreparedNumeric(); metadata.GetFallback() {
-		if mapped, ok := rule.params[int(metadata.ParamPos)]; ok {
-			metadata.ParamPos = int32(mapped)
+	if metadata := e.GetPreparedNumeric(); metadata != nil {
+		if metadata.GetFallback() {
+			if mapped, ok := rule.params[int(metadata.ParamPos)]; ok {
+				metadata.ParamPos = int32(mapped)
+			}
+		}
+		if metadata.StringDomainSource != nil {
+			var err error
+			metadata.StringDomainSource, err = rule.ApplyExpr(metadata.StringDomainSource)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	switch exprImpl := e.Expr.(type) {
@@ -473,10 +482,9 @@ type ResetParamRefRule struct {
 	// consumers so their provisional prepare-time envelopes are rebound too.
 	sqlExecuteNumericDependent  map[*plan.Expr]bool
 	serializedDecimalParamTypes map[*plan.Expr]types.Type
-	// preparedPlan is used only to synchronize a flattened scalar-subquery
-	// ColRef with the rebound type of its inner projection.  The explicit
-	// source node/column metadata on Expr avoids relying on AuxId or expression
-	// pointer identity after a plan copy.
+	// preparedPlan locates existing numeric scalar-subquery fallback sources.
+	// String-domain lineage is self-contained in sparse expression metadata and
+	// does not add a plan-graph walk to prepared execution.
 	preparedPlan *Plan
 	// paramKinds is populated by the execute-time replacement path.  It is
 	// deliberately kept on the rule rather than inferred from Expr.Typ: a
@@ -1667,6 +1675,11 @@ func (rule *ResetParamRefRule) preparedExecutionExprType(
 	case *plan.Expr_Sub:
 		if exprImpl.Sub != nil {
 			return rule.preparedExecutionExprType(exprImpl.Sub.Child)
+		}
+		return preparedType, false, false, nil
+	case *plan.Expr_Col:
+		if source := expr.GetPreparedNumeric().GetStringDomainSource(); source != nil {
+			return rule.preparedExecutionExprType(source)
 		}
 		return preparedType, false, false, nil
 	case *plan.Expr_F:

@@ -286,6 +286,11 @@ HEX(REGEXP_REPLACE(bl, CAST(_binary'中' AS BINARY(3)), _binary'X', 2, 1)) AS bl
 FROM t_regexp_utf8 WHERE id = 1;
 vb_ord    blob_ord    vb_pos    blob_pos    blob_substr    blob_replace
 228    228    4    4    E4B8AD    E4B8AD58
+SELECT REGEXP_INSTR(bl, '中', 2) AS blob_text_pos,
+REGEXP_INSTR(CAST(_binary'中中' AS BINARY(6)), '中', 2) AS binary_text_pos
+FROM t_regexp_utf8 WHERE id = 1;
+blob_text_pos    binary_text_pos
+4    4
 PREPARE regexp_domain_rebind FROM
 'SELECT ORD(?), REGEXP_INSTR(?, CAST(_binary''中'' AS VARBINARY(3)), 2), ORD(REGEXP_SUBSTR(?, CAST(_binary''中'' AS VARBINARY(3)), 2))';
 SET @regexp_subject = CAST(_binary'中中' AS VARBINARY(6));
@@ -314,6 +319,27 @@ EXECUTE regexp_marker_static_text USING @regexp_marker_subject;
 marker_static_text
 2
 DEALLOCATE PREPARE regexp_marker_static_text;
+PREPARE regexp_scalar_domain_rebind FROM
+'SELECT REGEXP_INSTR((SELECT ? FROM t_regexp_utf8 LIMIT 1), (SELECT ? FROM t_regexp_utf8 LIMIT 1), 2) AS scalar_pos';
+SET @regexp_scalar_subject = CAST(_binary'中中' AS VARBINARY(6));
+SET @regexp_scalar_pattern = CAST(_binary'中' AS VARBINARY(3));
+EXECUTE regexp_scalar_domain_rebind USING @regexp_scalar_subject, @regexp_scalar_pattern;
+scalar_pos
+4
+SET @regexp_scalar_subject = '中中';
+SET @regexp_scalar_pattern = '中';
+EXECUTE regexp_scalar_domain_rebind USING @regexp_scalar_subject, @regexp_scalar_pattern;
+scalar_pos
+2
+SET @regexp_scalar_subject = CAST(_binary'中中' AS BLOB);
+EXECUTE regexp_scalar_domain_rebind USING @regexp_scalar_subject, @regexp_scalar_pattern;
+scalar_pos
+4
+SET @regexp_scalar_subject = CAST(_binary'中中' AS VARBINARY(6));
+EXECUTE regexp_scalar_domain_rebind USING @regexp_scalar_subject, @regexp_scalar_pattern;
+scalar_pos
+4
+DEALLOCATE PREPARE regexp_scalar_domain_rebind;
 PREPARE regexp_nested_domain_rebind FROM
 'SELECT ORD(REGEXP_SUBSTR(?, ?)), REGEXP_INSTR(REGEXP_SUBSTR(?, ?), CAST(_binary''.'' AS VARBINARY(1)), 1)';
 SET @regexp_nested_subject = CAST(_binary'中中' AS VARBINARY(6));

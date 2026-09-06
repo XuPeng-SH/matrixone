@@ -14,8 +14,9 @@ limited to behavior MatrixOne can implement independently of the regexp engine:
 
 - SQL text values use UTF-8 code-point positions;
 - BINARY, VARBINARY, BLOB, and runtime binary parameters use byte positions;
-- a statically known binary regexp operand cannot be combined with a text
-  operand and is rejected with MySQL error 3995;
+- a statically known VARBINARY regexp operand is MySQL's 3995 trigger and
+  cannot be combined with a text operand; BINARY and BLOB remain byte-domain,
+  binary-compatible operands but are not `is_binary_string()` triggers;
 - a direct parameter marker defers its domain at PREPARE and retains MySQL's
   `PARAM_ITEM` provenance at EXECUTE: a binary marker does not itself trigger
   3995, but a text marker remains incompatible with a statically binary peer;
@@ -56,7 +57,7 @@ Compatibility checking keeps provenance separate from that current domain:
 
 | Check mode | Compatibility meaning |
 |---|---|
-| known | current text participates; current binary is a binary trigger |
+| known | current text participates; VARBINARY is a binary trigger; BINARY/BLOB are binary-compatible only |
 | deferred | PREPARE-time runtime-owned domain is omitted until EXECUTE |
 | direct marker | current text participates; current binary is compatible but does not trigger 3995 |
 | domainless | a bare untyped NULL contributes no domain |
@@ -145,6 +146,10 @@ first when `match_type` itself is NULL, matching MySQL's argument semantics.
 
 1. The binder records deferred regexp operands at PREPARE and reconstructs the
    known/direct-marker/domainless modes at every function boundary at EXECUTE.
+   If flattening turns a scalar subquery into a ColRef, its domain-producing
+   expression is retained in the existing sparse prepared-expression metadata
+   so the outer consumer can recompute its execute-time type without replacing
+   scalar-subquery value semantics or walking the plan graph at EXECUTE.
 2. Execute-time rebinding replaces parameters in a copied plan. Materialized
    parameters retain their execute-time binary type even when a different
    sibling expression triggered specialization, so `ORD(?)` and other string
@@ -194,9 +199,10 @@ escapes above `0xff` are rejected in binary mode so callers cannot address the
 internal alphabet.
 
 Binary operands establish a case-sensitive default, but explicit `i` and `c`
-flags override it and the rightmost flag wins. ASCII bytes can therefore fold
-under `i`; encoded high bytes remain distinct private-use runes and are not
-subject to Unicode case folding.
+flags override it and the rightmost flag wins. Under explicit `i`, binary bytes
+are presented to RE2 through the same Windows-1252 facade MySQL presents to
+ICU, so pairs such as `C9`/`E9` fold. Other binary calls retain the private-use
+byte alphabet and exact byte identity.
 
 The regexp cache is operator-owned, limited to 100 entries, and clones pattern
 keys whose source vector may be reused. Its syntax-derived zero-width metadata
@@ -207,6 +213,9 @@ become unreachable after evaluation.
 Cost model:
 
 - ASCII binary subjects remain zero-copy;
+- explicit binary `i` scans only subjects/patterns containing high bytes and
+  converts them through Windows-1252; all other binary modes retain the
+  existing private-use encoder;
 - a non-ASCII binary subject is encoded in `O(n)` time with at most three UTF-8
   bytes per source byte;
 - positional matching streams occurrences and retains constant match-index
@@ -259,11 +268,13 @@ RE2 encoding is retained.
 | INSTR suffix anchors | direct matcher tests for `^`, multiline `^`, `\\b`, `$` | BVT SQL at `pos > 1` |
 | SUBSTR/REPLACE original anchors | start-aware iterator tests | existing BVT positional cases |
 | nested dynamic result domain | binder accepts correlated runtime domains, propagates binary from subject/pattern, excludes replacement from result ownership, and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse, including replacement-only BLOB |
+| flattened scalar-subquery domain | sparse source-expression metadata recomputes the outer ColRef domain without removing scalar semantics | prepared VARBINARY/text rebind, explicit-cast boundary, and cached-plan immutability |
 | replacement-domain conversion | Windows-1252 edge bytes, UTF-8-looking binary bytes, text control, binary-result byte preservation, and every REGEXP_REPLACE arity | SQL PREPARE binary/text/binary reuse observed through `HEX` |
-| static mismatch | function resolver returns 3995 for known mixed operands | existing BVT matrix |
+| static mismatch | function resolver returns 3995 only for known VARBINARY/text mixes; BINARY/BLOB controls remain compatible | BVT matrix |
 | execute-time marker semantics | exhaustive known/deferred/direct-marker/domainless matrix | mixed direct markers, fixed-binary controls, nested-result controls, and cached-plan reuse |
 | byte positions/results | binary vectors without legacy `SetIsBin` | BINARY/VARBINARY/BLOB BVT |
-| binary match flags | ASCII `i`, rightmost `ci`/`ic`, and non-ASCII byte controls | REGEXP_LIKE BVT compared with MySQL 8.4 |
+| binary match flags | ASCII `i`, rightmost `ci`/`ic`, CP-1252 high-byte folds, and unrelated-byte controls | REGEXP_LIKE BVT compared with MySQL 8.4 |
+| replace result bound | `S+(S+1)*R` covers zero-width expansion while domain remains owned by subject/pattern | metadata and large-replacement controls |
 | pattern and match-type precedence | empty and malformed patterns across every arity and later NULL boundary; invalid/present/NULL match types | public SQL for LIKE/INSTR/SUBSTR/REPLACE |
 | empty INSTR subject | arbitrary positive position, anchor/no-match/second-occurrence and binary controls | public SQL at `pos = 5` |
 | zero-width sequence/progress | adjacent nonempty/empty, anchor, boundary, empty-subject, and cache-bound unit tests | SQL results compared with MySQL 8.4 |
@@ -275,9 +286,10 @@ reset/reuse oracle; a fresh statement is the control.
 
 ## Rollback and residual compatibility
 
-The change adds no persisted, catalog, or wire field. Rolling back code restores
-the former SQL behavior without migration. Mixed-version remote execution uses
-the existing prepared-parameter transport; runtime binary provenance remains a
+The change adds no persisted catalog state. It adds backward-compatible sparse
+planner provenance fields that older nodes ignore; rolling back code requires
+no data migration. Mixed-version remote execution uses the existing prepared-
+parameter transport; runtime binary provenance remains a
 local process concern.
 
 RE2/ICU grammar differences remain explicit non-goals. Errors caused solely by

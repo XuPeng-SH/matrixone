@@ -300,10 +300,11 @@ func regexpStringDomainFixedTypeMatchN(
 				firstText, hasText = inputs[i], true
 			}
 		case types.StringDomainBinary:
-			// MySQL excludes a direct PARAM_ITEM from is_binary_string().
-			// Its current binary domain still remains compatible with another
-			// binary operand, but it cannot make a fixed text operand illegal.
-			if mode == StringDomainCheckParamMarker {
+			// MySQL's is_binary_string() is narrower than its binary-compatible
+			// domain: only MYSQL_TYPE_VARCHAR with the binary charset is a 3995
+			// trigger. BINARY (MYSQL_TYPE_STRING), BLOB, and direct PARAM_ITEM
+			// values remain byte-domain operands without making text peers illegal.
+			if mode == StringDomainCheckParamMarker || inputs[i].Oid != types.T_varbinary {
 				continue
 			}
 			if hasText {

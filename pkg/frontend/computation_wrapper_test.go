@@ -595,6 +595,14 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 			mysqlTypes: typesWithBinary(5, 7),
 			wantInstr:  2, wantReplace: "X",
 		},
+		{
+			// A binary pattern makes the inner result byte-domain, but its
+			// unbounded text subject gives that result BLOB width. BLOB is
+			// binary-compatible without being a MySQL 3995 trigger.
+			name:       "blob nested pattern result with text outer pattern marker",
+			mysqlTypes: typesWithBinary(6),
+			wantInstr:  2, wantReplace: "X",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			caseValues := append([]string(nil), values...)
@@ -656,7 +664,6 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 		binary []int
 	}{
 		{name: "binary nested subject result with text outer pattern marker", binary: []int{5}},
-		{name: "binary nested pattern result with text outer pattern marker", binary: []int{6}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mysqlTypes := typesWithBinary(tc.binary...)
@@ -690,7 +697,6 @@ func TestBuildPlanRegexpStaticStringDomainMatrix(t *testing.T) {
 		"select regexp_substr(_binary'abc123', '[0-9]+')",
 		"select regexp_replace(_binary'abc123', _binary'[0-9]+', 'X')",
 		"select regexp_replace('abc123', '[0-9]+', _binary'X')",
-		"select cast(null as binary) regexp 'a'",
 	} {
 		t.Run(sql, func(t *testing.T) {
 			statements, err := mysql.Parse(ctx, sql, 1)
@@ -708,6 +714,7 @@ func TestBuildPlanRegexpStaticStringDomainMatrix(t *testing.T) {
 		"select _binary'abc' regexp _binary'a'",
 		"select regexp_like(null, 'a')",
 		"select regexp_instr(123, _binary'2')",
+		"select cast(null as binary) regexp 'a'",
 	} {
 		t.Run("accepted_"+sql, func(t *testing.T) {
 			statements, err := mysql.Parse(ctx, sql, 1)
@@ -858,10 +865,9 @@ func TestPreparedRegexpTypedNullRetainsStaticDomainAtExecuteRebind(t *testing.T)
 			value: plan2.ParamValue{Value: "a", IsBinaryProtocol: true},
 		},
 		{
-			name:    "binary null with text direct marker",
-			query:   "select regexp_instr(cast(NULL as binary), ?)",
-			value:   plan2.ParamValue{Value: "a", IsBinaryProtocol: true},
-			wantErr: true,
+			name:  "binary null with text direct marker",
+			query: "select regexp_instr(cast(NULL as binary), ?)",
+			value: plan2.ParamValue{Value: "a", IsBinaryProtocol: true},
 		},
 		{
 			name:  "binary null with binary direct marker",

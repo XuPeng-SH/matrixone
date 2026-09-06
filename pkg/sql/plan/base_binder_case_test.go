@@ -21,6 +21,7 @@ import (
 	"unsafe"
 
 	"github.com/gogo/protobuf/proto"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	planpb "github.com/matrixorigin/matrixone/pkg/pb/plan"
@@ -40,6 +41,10 @@ func TestPreparedNumericFallbackMetadataSurvivesProtoRoundTrip(t *testing.T) {
 			FallbackSource:       true,
 			FallbackSourceNodeId: 7,
 			FallbackSourceColPos: 2,
+			StringDomainSource: &planpb.Expr{
+				Typ:  planpb.Type{Id: int32(types.T_varchar)},
+				Expr: &planpb.Expr_P{P: &planpb.ParamRef{Pos: 1}},
+			},
 		},
 	}
 	payload, err := proto.Marshal(original)
@@ -54,6 +59,7 @@ func TestPreparedNumericFallbackMetadataSurvivesProtoRoundTrip(t *testing.T) {
 	require.True(t, metadata.GetFallbackSource())
 	require.Equal(t, int32(7), metadata.GetFallbackSourceNodeId())
 	require.Equal(t, int32(2), metadata.GetFallbackSourceColPos())
+	require.Equal(t, int32(1), metadata.GetStringDomainSource().GetP().GetPos())
 	require.Zero(t, restored.AuxId,
 		"prepared numeric provenance must not be encoded as an executor memo id")
 }
@@ -168,6 +174,63 @@ func TestPreparedRegexpResultDomainTransferUsesOnlyMatchOperands(t *testing.T) {
 		preparedRegexpCompatibilityStringOperandCount("regexp_replace", 5))
 	require.Equal(t, function.RegexpMatchStringOperandCount,
 		preparedRegexpResultStringOperandCount("regexp_replace", 5))
+}
+
+func TestPreparedRegexpScalarSubqueryPropagatesRuntimeDomain(t *testing.T) {
+	ctx := context.Background()
+	prepared, err := runOneStmt(NewMockOptimizer(false), t,
+		"prepare stmt_regexp_scalar_domain from 'select regexp_instr("+
+			"(select ? from nation limit 1), (select ? from nation limit 1), 2)'")
+	require.NoError(t, err)
+	preparedPlan := prepared.GetDcl().GetPrepare().Plan
+	cached := proto.Clone(preparedPlan).(*planpb.Plan)
+	preparedRegexp := findPlanFunctionExpr(preparedPlan, "regexp_instr")
+	require.NotNil(t, preparedRegexp)
+	require.Equal(t, int32(0), preparedRegexp.GetF().Args[0].GetPreparedNumeric().
+		GetStringDomainSource().GetP().GetPos())
+	require.Equal(t, int32(1), preparedRegexp.GetF().Args[1].GetPreparedNumeric().
+		GetStringDomainSource().GetP().GetPos())
+
+	varbinary := types.T_varbinary.ToType()
+	binaryPlan, _, err := FillValuesOfParamsInPlanWithSpecialization(ctx, preparedPlan, []any{
+		ParamValue{Value: "中中", IsBin: true, IsBinaryProtocol: true,
+			RuntimeType: varbinary, HasRuntimeType: true},
+		ParamValue{Value: "中", IsBin: true, IsBinaryProtocol: true,
+			RuntimeType: varbinary, HasRuntimeType: true},
+	})
+	require.NoError(t, err)
+	regexpInstr := findPlanFunctionExpr(binaryPlan, "regexp_instr")
+	require.NotNil(t, regexpInstr)
+	require.Equal(t, int32(types.T_varbinary), regexpInstr.GetF().Args[0].Typ.Id)
+	require.Equal(t, int32(types.T_varbinary), regexpInstr.GetF().Args[1].Typ.Id)
+
+	_, _, err = FillValuesOfParamsInPlanWithSpecialization(ctx, preparedPlan, []any{
+		ParamValue{Value: "中中", IsBin: true, IsBinaryProtocol: true,
+			RuntimeType: varbinary, HasRuntimeType: true},
+		ParamValue{Value: "中", IsBinaryProtocol: true,
+			RuntimeType: types.T_text.ToType(), HasRuntimeType: true},
+	})
+	require.Error(t, err)
+	require.True(t, moerr.IsMoErrCode(err, moerr.ErrCharacterSetMismatch))
+
+	require.True(t, proto.Equal(cached, preparedPlan),
+		"execute-time scalar lineage must not mutate the cached plan")
+
+	// An explicit cast is a semantic domain boundary. Runtime binary provenance
+	// below it must not escape through scalar-subquery flattening.
+	explicit, err := runOneStmt(NewMockOptimizer(false), t,
+		"prepare stmt_regexp_scalar_cast from 'select regexp_instr("+
+			"(select cast(? as varchar) from nation limit 1), ''中'', 2)'")
+	require.NoError(t, err)
+	explicitPlan, _, err := FillValuesOfParamsInPlanWithSpecialization(
+		ctx, explicit.GetDcl().GetPrepare().Plan, []any{
+			ParamValue{Value: "中中", IsBin: true, IsBinaryProtocol: true,
+				RuntimeType: varbinary, HasRuntimeType: true},
+		})
+	require.NoError(t, err)
+	explicitRegexp := findPlanFunctionExpr(explicitPlan, "regexp_instr")
+	require.NotNil(t, explicitRegexp)
+	require.Equal(t, int32(types.T_varchar), explicitRegexp.GetF().Args[0].Typ.Id)
 }
 
 func TestPreparedNumericMetadataIsSparse(t *testing.T) {

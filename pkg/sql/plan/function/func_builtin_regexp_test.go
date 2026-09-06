@@ -682,7 +682,7 @@ func Test_BuiltIn_RegexpUsesMatchOperandDomain(t *testing.T) {
 	require.False(t, replaceWithUnicodePattern.GetResultVectorDirectly().GetIsBinaryStringAt(0))
 }
 
-func TestRegexpReplacementForMatchDomain(t *testing.T) {
+func TestRegexpBinaryBytesToText(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		replacement string
@@ -696,7 +696,7 @@ func TestRegexpReplacementForMatchDomain(t *testing.T) {
 		{name: "utf8 looking bytes are decoded independently", replacement: "中", want: "ä¸\u00ad"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, regexpBinaryReplacementToText(tc.replacement))
+			require.Equal(t, tc.want, regexpBinaryBytesToText(tc.replacement))
 		})
 	}
 
@@ -706,7 +706,7 @@ func TestRegexpReplacementForMatchDomain(t *testing.T) {
 	}
 	require.Equal(t,
 		"€\u0081‚ƒ„…†‡ˆ‰Š‹Œ\u008dŽ\u008f\u0090‘’“”•–—˜™š›œ\u009džŸ",
-		regexpBinaryReplacementToText(string(windows1252Bytes)))
+		regexpBinaryBytesToText(string(windows1252Bytes)))
 
 	latin1Bytes := make([]byte, 0x60)
 	latin1Runes := make([]rune, 0, len(latin1Bytes))
@@ -715,7 +715,7 @@ func TestRegexpReplacementForMatchDomain(t *testing.T) {
 		latin1Runes = append(latin1Runes, rune(0xa0+i))
 	}
 	require.Equal(t, string(latin1Runes),
-		regexpBinaryReplacementToText(string(latin1Bytes)))
+		regexpBinaryBytesToText(string(latin1Bytes)))
 
 	proc := testutil.NewProcess(t)
 	constantBinary, err := vector.NewConstBytes(types.T_blob.ToType(), []byte{0xff}, 2, proc.Mp())
@@ -833,6 +833,8 @@ func TestRegexpFunctionsRejectStaticMixedStringDomains(t *testing.T) {
 	ctx := context.Background()
 	text := types.T_varchar.ToType()
 	binary := types.T_varbinary.ToType()
+	fixedBinary := types.T_binary.ToType()
+	blob := types.T_blob.ToType()
 	any := types.T_any.ToType()
 	int64Type := types.T_int64.ToType()
 	int8Type := types.T_int8.ToType()
@@ -873,6 +875,9 @@ func TestRegexpFunctionsRejectStaticMixedStringDomains(t *testing.T) {
 		{name: "regexp_substr", args: []types.Type{any, binary}},
 		{name: "regexp_replace", args: []types.Type{binary, any, binary}},
 		{name: "regexp_replace", args: []types.Type{any, text, any}},
+		{name: "regexp_instr", args: []types.Type{fixedBinary, text}},
+		{name: "regexp_instr", args: []types.Type{blob, text}},
+		{name: "regexp_replace", args: []types.Type{text, text, blob}},
 	} {
 		t.Run("accepted_"+tc.name, func(t *testing.T) {
 			_, err := GetFunctionByName(ctx, tc.name, tc.args)
@@ -1308,7 +1313,11 @@ func Test_BuiltIn_RegularLike(t *testing.T) {
 		{name: "binary honors case insensitive flag", pattern: "a", subject: "A", matchType: "i", want: true},
 		{name: "binary honors rightmost insensitive flag", pattern: "a", subject: "A", matchType: "ci", want: true},
 		{name: "binary honors rightmost sensitive flag", pattern: "a", subject: "A", matchType: "ic", want: false},
-		{name: "binary does not unicode-fold encoded bytes", pattern: "é", subject: "É", matchType: "i", want: false},
+		{name: "binary CP-1252 folds latin one high bytes", pattern: "\xe9", subject: "\xc9", matchType: "i", want: true},
+		{name: "binary CP-1252 folds extension high bytes", pattern: "\x9a", subject: "\x8a", matchType: "i", want: true},
+		{name: "binary CP-1252 folds escaped high bytes", pattern: `\xE9`, subject: "\xc9", matchType: "i", want: true},
+		{name: "binary CP-1252 keeps unrelated high bytes distinct", pattern: "\xff", subject: "\xfe", matchType: "i", want: false},
+		{name: "binary high bytes remain sensitive under c", pattern: "\xe9", subject: "\xc9", matchType: "ic", want: false},
 		{name: "binary keeps multiline flag", pattern: "^b", subject: "A\nb", matchType: "im", want: true},
 		{name: "binary multiline honors insensitive flag", pattern: "^B", subject: "A\nb", matchType: "im", want: true},
 		{name: "binary keeps dotall flag", pattern: ".", subject: "\n", matchType: "in", want: true},

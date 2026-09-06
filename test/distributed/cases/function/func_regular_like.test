@@ -71,7 +71,8 @@ select regexp_like('CAT','cat','iiiiiiic') r;
 select regexp_like(cast(_binary'A' as varbinary(1)), cast(_binary'a' as varbinary(1)), 'i') binary_i,
        regexp_like(cast(_binary'A' as varbinary(1)), cast(_binary'a' as varbinary(1)), 'ci') binary_ci,
        regexp_like(cast(_binary'A' as varbinary(1)), cast(_binary'a' as varbinary(1)), 'ic') binary_ic,
-       regexp_like(cast(X'C3A9' as varbinary(2)), cast(X'C389' as varbinary(2)), 'i') binary_unicode_i,
+       regexp_like(cast(X'C9' as varbinary(1)), cast(X'E9' as varbinary(1)), 'i') binary_cp1252_i,
+       regexp_like(cast(X'C3A9' as varbinary(2)), cast(X'C389' as varbinary(2)), 'i') binary_utf8_bytes_i,
        regexp_like('A', 'a', 'i') text_i;
 prepare regexp_like_domain_rebind from 'select regexp_like(?, ?, ''i'')';
 set @regexp_like_subject = cast(_binary'A' as varbinary(1));

@@ -3537,6 +3537,9 @@ func (b *baseBinder) bindFuncExprImplByAstExpr(name string, astArgs []tree.Expr,
 		}
 	}
 	args = useStoredMySQLSpecialTypesForNumericContract(b.GetContext(), name, args)
+	if b.builder != nil && b.builder.isPrepareStatement {
+		b.markPreparedStringDomainSubquerySources(name, args)
+	}
 	args, coerceErr := b.coerceBoolNumericAggregateArg(name, args)
 	if coerceErr != nil {
 		return nil, coerceErr
@@ -4448,12 +4451,7 @@ func preparedRegexpStringDomainCheckModes(
 	var modes []function.StringDomainCheckMode
 	for i := 0; i < stringOperands; i++ {
 		arg := args[i]
-		if arg == nil || !preparedExprContainsParam(arg) || isExplicitPreparedCast(arg) {
-			continue
-		}
-		dependsOnRuntimeDomain := arg.GetP() != nil || arg.GetV() != nil ||
-			preparedFunctionStringDomainDependsOnRuntimeParam(arg)
-		if !dependsOnRuntimeDomain {
+		if arg == nil || !preparedExprStringDomainDependsOnRuntime(arg) || isExplicitPreparedCast(arg) {
 			continue
 		}
 		if modes == nil {
@@ -4462,6 +4460,76 @@ func preparedRegexpStringDomainCheckModes(
 		modes[i] = function.StringDomainCheckDeferred
 	}
 	return modes
+}
+
+func (b *baseBinder) markPreparedStringDomainSubquerySources(name string, args []*Expr) {
+	stringOperands := preparedRegexpCompatibilityStringOperandCount(name, len(args))
+	for i := 0; i < stringOperands; i++ {
+		b.markPreparedStringDomainSubquerySource(args[i], make(map[int32]struct{}))
+	}
+}
+
+// markPreparedStringDomainSubquerySource records only lineage that expression
+// traversal loses when a scalar subquery with a real input is flattened to a
+// ColRef. Direct markers and ordinary nested functions retain their own
+// provenance and need no metadata.
+func (b *baseBinder) markPreparedStringDomainSubquerySource(
+	expr *plan.Expr, visited map[int32]struct{},
+) bool {
+	if expr == nil || isExplicitPreparedCast(expr) {
+		return false
+	}
+	if expr.GetP() != nil || expr.GetV() != nil || expr.GetPreparedNumeric().GetStringDomainSource() != nil {
+		return true
+	}
+	if fn := expr.GetF(); fn != nil {
+		dynamic := false
+		for _, arg := range fn.Args {
+			dynamic = b.markPreparedStringDomainSubquerySource(arg, visited) || dynamic
+		}
+		return dynamic && preparedFunctionStringDomainDependsOnRuntimeParam(expr)
+	}
+	if list := expr.GetList(); list != nil {
+		dynamic := false
+		for _, item := range list.List {
+			dynamic = b.markPreparedStringDomainSubquerySource(item, visited) || dynamic
+		}
+		return dynamic
+	}
+	sub := expr.GetSub()
+	if sub == nil {
+		return false
+	}
+	if sub.Typ != plan.SubqueryRef_SCALAR || b.builder == nil || b.builder.qry == nil ||
+		sub.NodeId < 0 || int(sub.NodeId) >= len(b.builder.qry.Nodes) {
+		return b.markPreparedStringDomainSubquerySource(sub.Child, visited)
+	}
+	if _, seen := visited[sub.NodeId]; seen {
+		return false
+	}
+	visited[sub.NodeId] = struct{}{}
+	node := b.builder.qry.Nodes[sub.NodeId]
+	if node == nil {
+		return false
+	}
+	// A scalar subquery has exactly one visible result. Internal projection
+	// columns are implementation details and must never become its type owner.
+	if len(node.ProjectList) > 0 &&
+		b.markPreparedStringDomainSubquerySource(node.ProjectList[0], visited) {
+		metadata := ensurePreparedNumericMetadata(expr)
+		metadata.StringDomainSource = DeepCopyExpr(node.ProjectList[0])
+		return true
+	}
+	return false
+}
+
+func preparedExprStringDomainDependsOnRuntime(expr *plan.Expr) bool {
+	if expr == nil || isExplicitPreparedCast(expr) {
+		return false
+	}
+	return expr.GetP() != nil || expr.GetV() != nil ||
+		expr.GetPreparedNumeric().GetStringDomainSource() != nil ||
+		preparedFunctionStringDomainDependsOnRuntimeParam(expr)
 }
 
 func preparedRegexpCompatibilityStringOperandCount(name string, arity int) int {
@@ -4488,6 +4556,9 @@ func preparedFunctionStringDomainDependsOnRuntimeParam(expr *plan.Expr) bool {
 	if expr == nil {
 		return false
 	}
+	if expr.GetPreparedNumeric().GetStringDomainSource() != nil {
+		return true
+	}
 	fn := expr.GetF()
 	if fn == nil || fn.Func == nil || len(fn.Args) == 0 {
 		return false
@@ -4503,8 +4574,7 @@ func preparedFunctionStringDomainDependsOnRuntimeParam(expr *plan.Expr) bool {
 		if isExplicitPreparedCast(arg) {
 			continue
 		}
-		if arg.GetP() != nil || arg.GetV() != nil ||
-			preparedFunctionStringDomainDependsOnRuntimeParam(arg) {
+		if preparedExprStringDomainDependsOnRuntime(arg) {
 			dynamicArgs = append(dynamicArgs, i)
 		}
 	}
