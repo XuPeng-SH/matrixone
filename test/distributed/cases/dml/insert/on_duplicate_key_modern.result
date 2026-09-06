@@ -296,13 +296,13 @@ select row_count(), cid, pid, val from t_odku_fk_child where cid = 2;
 ➤ row_count()[-5,64,0]  ¦  cid[4,32,0]  ¦  pid[4,32,0]  ¦  val[4,32,0]  𝄀
 2  ¦  2  ¦  2  ¦  201
 insert into t_odku_fk_child values (1, 999, 0), (1, 1, 0)
-  on duplicate key update pid = values(pid);
+on duplicate key update pid = values(pid);
 internal error: Cannot add or update a child row: a foreign key constraint fails
 select cid, pid, val from t_odku_fk_child where cid = 1;
 ➤ cid[4,32,0]  ¦  pid[4,32,0]  ¦  val[4,32,0]  𝄀
 1  ¦  1  ¦  101
 insert into t_odku_fk_child values (5, 999, 0), (5, 1, 0)
-  on duplicate key update pid = values(pid);
+on duplicate key update pid = values(pid);
 internal error: Cannot add or update a child row: a foreign key constraint fails
 select count(*) from t_odku_fk_child where cid = 5;
 ➤ count(*)[5,64,0]  𝄀
@@ -313,19 +313,19 @@ drop table if exists t_odku_action_check;
 create table t_odku_action_check(id int primary key, v int, constraint ck_action check(v >= 0));
 insert into t_odku_action_check values (1, 1);
 insert into t_odku_action_check values (1, -1), (1, 2)
-  on duplicate key update v = values(v);
+on duplicate key update v = values(v);
 constraint violation: Check constraint 'ck_action' is violated
 select * from t_odku_action_check;
 ➤ id[4,32,0]  ¦  v[4,32,0]  𝄀
 1  ¦  1
 insert into t_odku_action_check values (2, -1), (2, 2)
-  on duplicate key update v = values(v);
+on duplicate key update v = values(v);
 constraint violation: Check constraint 'ck_action' is violated
 select count(*) from t_odku_action_check where id = 2;
 ➤ count(*)[5,64,0]  𝄀
 0
 insert into t_odku_action_check values (1, 3), (1, 4)
-  on duplicate key update v = values(v);
+on duplicate key update v = values(v);
 select * from t_odku_action_check;
 ➤ id[4,32,0]  ¦  v[4,32,0]  𝄀
 1  ¦  4
@@ -385,15 +385,15 @@ drop table if exists t_odku_onupdate;
 drop table if exists t_odku_char_pad;
 drop table if exists t_odku_json_equal;
 create table t_odku_json_equal (
-  id int primary key,
-  j json,
-  updated_at timestamp default '2000-01-01 00:00:00' on update current_timestamp
+id int primary key,
+j json,
+updated_at timestamp default '2000-01-01 00:00:00' on update current_timestamp
 );
 insert into t_odku_json_equal values (1, '1', '2000-01-01 00:00:00');
 insert into t_odku_json_equal(id, j) values (1, '1.0')
-  on duplicate key update j = values(j);
+on duplicate key update j = values(j);
 select row_count(), json_type(j), updated_at = '2000-01-01 00:00:00' as auto_unchanged
-  from t_odku_json_equal;
+from t_odku_json_equal;
 ➤ row_count()[-5,64,0]  ¦  json_type(j)[12,-1,0]  ¦  auto_unchanged[-7,1,0]  𝄀
 1  ¦  INTEGER  ¦  1
 drop table t_odku_json_equal;
