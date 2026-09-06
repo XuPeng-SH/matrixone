@@ -6020,6 +6020,8 @@ func TestInsertOnDupRealPKUniqueKeyConflictUpdates(t *testing.T) {
 			require.Len(t, node.PreInsertUkCtx.KeyColumns, 2,
 				"PRIMARY and secondary UNIQUE must participate in one ordered arbiter")
 			require.Len(t, node.PreInsertUkCtx.TargetColumns, 2)
+			require.Equal(t, int(node.PreInsertUkCtx.OutputColumns)+1, len(node.ProjectList),
+				"the runtime-resolved target identity must remain the final arbiter output")
 		}
 	}
 	assert.True(t, hasMultiUpdate, "real-PK ODKU plan should contain MULTI_UPDATE node")

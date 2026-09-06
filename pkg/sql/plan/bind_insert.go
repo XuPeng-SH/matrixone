@@ -2422,22 +2422,6 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 	emitODKUActionRows := onDupAction == plan.Node_UPDATE &&
 		(len(tableDef.Checks) > 0 || odkuNeedFkCheck || len(odkuNotNullColIdxList) > 0)
 	odkuActionValidationApplied := false
-	if useTargetPk {
-		oldSelectTag := selectTag
-		lastNodeID, selectTag, targetPkPos, err = builder.buildOnDupTargetPkResolution(
-			bindCtx, dmlCtx, tableDef, lastNodeID, selectTag, colName2Idx, skipUniqueIdx, selectNode.ProjectList)
-		if err != nil {
-			return 0, err
-		}
-		selectNode = builder.qry.Nodes[lastNodeID]
-
-		// The update expressions (e.g. VALUES(col)) were bound against the original
-		// select tag; the resolution project re-projects every incoming column at
-		// its original position under the new tag, so retarget those references.
-		for _, updateExpr := range updateColExprList {
-			replaceColRefTag(updateExpr, oldSelectTag, selectTag)
-		}
-	}
 	if onDupAction == plan.Node_UPDATE {
 		affectedRowsInputPos = int32(len(selectNode.ProjectList))
 		selectNode.ProjectList = append(selectNode.ProjectList, makePlan2Uint64ConstExprWithType(1))
@@ -2455,6 +2439,27 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 					}
 				}
 			}
+		}
+	}
+	if useTargetPk {
+		oldSelectTag := selectTag
+		// Append action metadata before target resolution so the stateful arbiter's
+		// resolved target remains the final output column. PRE_INSERT_UK emits a
+		// physical batch directly rather than evaluating its Plan.ProjectList; adding
+		// metadata after this node would shift the runtime target away from the column
+		// consumed by the main DEDUP join.
+		lastNodeID, selectTag, targetPkPos, err = builder.buildOnDupTargetPkResolution(
+			bindCtx, dmlCtx, tableDef, lastNodeID, selectTag, colName2Idx, skipUniqueIdx, selectNode.ProjectList)
+		if err != nil {
+			return 0, err
+		}
+		selectNode = builder.qry.Nodes[lastNodeID]
+
+		// The update expressions (e.g. VALUES(col)) were bound against the original
+		// select tag; the resolution project re-projects every incoming column at
+		// its original position under the new tag, so retarget those references.
+		for _, updateExpr := range updateColExprList {
+			replaceColRefTag(updateExpr, oldSelectTag, selectTag)
 		}
 	}
 
