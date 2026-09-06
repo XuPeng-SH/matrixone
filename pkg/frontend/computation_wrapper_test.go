@@ -513,6 +513,16 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 	values := []string{"中中", "中", "中", ".", "X", "中中", "中", "."}
 	cachedPlan, err := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan.Marshal()
 	require.NoError(t, err)
+	typesWithBinary := func(binary ...int) []defines.MysqlType {
+		mysqlTypes := make([]defines.MysqlType, len(values))
+		for i := range mysqlTypes {
+			mysqlTypes[i] = defines.MYSQL_TYPE_VAR_STRING
+		}
+		for _, i := range binary {
+			mysqlTypes[i] = defines.MYSQL_TYPE_LONG_BLOB
+		}
+		return mysqlTypes
+	}
 
 	for _, tc := range []struct {
 		name              string
@@ -522,20 +532,39 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 		wantReplaceBinary bool
 	}{
 		{
-			name: "all text",
-			mysqlTypes: []defines.MysqlType{
-				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING,
-				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING,
-				defines.MYSQL_TYPE_VAR_STRING, defines.MYSQL_TYPE_VAR_STRING},
-			wantInstr: 2, wantReplace: "X",
+			name:       "all text",
+			mysqlTypes: typesWithBinary(),
+			wantInstr:  2, wantReplace: "X",
 		},
 		{
-			name: "all binary rebind",
-			mysqlTypes: []defines.MysqlType{
-				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB,
-				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB,
-				defines.MYSQL_TYPE_LONG_BLOB, defines.MYSQL_TYPE_LONG_BLOB},
-			wantInstr: 4, wantReplace: "XXX", wantReplaceBinary: true,
+			name:       "all binary rebind",
+			mysqlTypes: typesWithBinary(0, 1, 2, 3, 4, 5, 6, 7),
+			wantInstr:  4, wantReplace: "XXX", wantReplaceBinary: true,
+		},
+		{
+			name:       "binary direct instr subject marker with text pattern marker",
+			mysqlTypes: typesWithBinary(0),
+			wantInstr:  4, wantReplace: "X",
+		},
+		{
+			name:       "binary direct instr pattern marker with text subject marker",
+			mysqlTypes: typesWithBinary(1),
+			wantInstr:  4, wantReplace: "X",
+		},
+		{
+			name:       "binary direct replacement marker with text peer markers",
+			mysqlTypes: typesWithBinary(4),
+			wantInstr:  2, wantReplace: "XXX", wantReplaceBinary: true,
+		},
+		{
+			name:       "binary direct outer pattern marker with text nested result",
+			mysqlTypes: typesWithBinary(7),
+			wantInstr:  2, wantReplace: "X",
+		},
+		{
+			name:       "binary nested result with binary direct outer pattern marker",
+			mysqlTypes: typesWithBinary(5, 7),
+			wantInstr:  2, wantReplace: "X",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -589,21 +618,15 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 		})
 	}
 
-	textTypes := make([]defines.MysqlType, len(values))
-	for i := range textTypes {
-		textTypes[i] = defines.MYSQL_TYPE_VAR_STRING
-	}
 	for _, tc := range []struct {
 		name   string
-		binary int
+		binary []int
 	}{
-		{name: "mixed instr operands", binary: 0},
-		{name: "mixed replace operands", binary: 4},
-		{name: "mixed nested outer operands", binary: 7},
+		{name: "binary nested subject result with text outer pattern marker", binary: []int{5}},
+		{name: "binary nested pattern result with text outer pattern marker", binary: []int{6}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mysqlTypes := append([]defines.MysqlType(nil), textTypes...)
-			mysqlTypes[tc.binary] = defines.MYSQL_TYPE_BLOB
+			mysqlTypes := typesWithBinary(tc.binary...)
 			require.NoError(t, proto.ParseExecuteData(
 				execCtx.reqCtx, cw.proc, prepareStmt, buildPacket(mysqlTypes, values), 0))
 
@@ -781,19 +804,31 @@ func TestPreparedRegexpBareNullRemainsDomainlessAtExecuteRebind(t *testing.T) {
 
 func TestPreparedRegexpTypedNullRetainsStaticDomainAtExecuteRebind(t *testing.T) {
 	for i, tc := range []struct {
-		name  string
-		query string
-		value plan2.ParamValue
+		name    string
+		query   string
+		value   plan2.ParamValue
+		wantErr bool
 	}{
 		{
-			name:  "text null with binary pattern",
+			name:  "text null with binary direct marker",
 			query: "select regexp_instr(cast(NULL as char), ?)",
 			value: plan2.ParamValue{Value: "a", IsBinaryString: true, IsBinaryProtocol: true},
 		},
 		{
-			name:  "binary null with text pattern",
-			query: "select regexp_instr(cast(NULL as binary), ?)",
+			name:  "text null with text direct marker",
+			query: "select regexp_instr(cast(NULL as char), ?)",
 			value: plan2.ParamValue{Value: "a", IsBinaryProtocol: true},
+		},
+		{
+			name:    "binary null with text direct marker",
+			query:   "select regexp_instr(cast(NULL as binary), ?)",
+			value:   plan2.ParamValue{Value: "a", IsBinaryProtocol: true},
+			wantErr: true,
+		},
+		{
+			name:  "binary null with binary direct marker",
+			query: "select regexp_instr(cast(NULL as binary), ?)",
+			value: plan2.ParamValue{Value: "a", IsBinaryString: true, IsBinaryProtocol: true},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -805,10 +840,14 @@ func TestPreparedRegexpTypedNullRetainsStaticDomainAtExecuteRebind(t *testing.T)
 
 			_, _, err = plan2.FillValuesOfParamsInPlanWithSpecialization(
 				context.Background(), preparedPlan, []any{tc.value})
-			require.Error(t, err)
-			var moErr *moerr.Error
-			require.ErrorAs(t, err, &moErr)
-			require.Equal(t, uint16(moerr.ER_CHARACTER_SET_MISMATCH), moErr.MySQLCode())
+			if tc.wantErr {
+				require.Error(t, err)
+				var moErr *moerr.Error
+				require.ErrorAs(t, err, &moErr)
+				require.Equal(t, uint16(moerr.ER_CHARACTER_SET_MISMATCH), moErr.MySQLCode())
+			} else {
+				require.NoError(t, err)
+			}
 			after, marshalErr := preparedPlan.Marshal()
 			require.NoError(t, marshalErr)
 			require.Equal(t, cached, after)

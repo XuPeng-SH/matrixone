@@ -160,24 +160,43 @@ func GetFunctionByName(ctx context.Context, name string, args []types.Type) (r F
 	return getFunctionByName(ctx, name, args, nil)
 }
 
-// GetFunctionByNameWithDynamicStringDomains resolves a function while treating
-// the selected argument string domains as execution-time properties. The
-// ordinary argument types remain authoritative for overload selection, casts,
-// and result metadata; only compatibility checks that explicitly support
-// deferred string domains consume the mask.
-func GetFunctionByNameWithDynamicStringDomains(
-	ctx context.Context, name string, args []types.Type, dynamicDomains []bool,
+// StringDomainCheckMode separates an operand's current string domain from the
+// provenance rules that decide whether it participates in regexp charset
+// compatibility. A single boolean cannot represent both PREPARE-time
+// uncertainty and MySQL's execute-time parameter-marker exception.
+type StringDomainCheckMode uint8
+
+const (
+	// StringDomainCheckKnown applies the operand's current text/binary domain.
+	StringDomainCheckKnown StringDomainCheckMode = iota
+	// StringDomainCheckDeferred omits a PREPARE-time runtime-owned domain. The
+	// concrete execution must bind the operand again with a non-deferred mode.
+	StringDomainCheckDeferred
+	// StringDomainCheckParamMarker keeps the marker's current domain for
+	// compatibility with a fixed binary operand, but a binary marker does not
+	// itself trigger MySQL's static-binary restriction.
+	StringDomainCheckParamMarker
+	// StringDomainCheckDomainless omits a bare, untyped NULL literal.
+	StringDomainCheckDomainless
+)
+
+// GetFunctionByNameWithStringDomainCheckModes resolves a function while
+// preserving the provenance needed by regexp charset checks. Ordinary argument
+// types remain authoritative for overload selection, casts, result metadata,
+// and the executor's effective text/binary domain.
+func GetFunctionByNameWithStringDomainCheckModes(
+	ctx context.Context, name string, args []types.Type, modes []StringDomainCheckMode,
 ) (r FuncGetResult, err error) {
-	if len(dynamicDomains) != len(args) {
+	if len(modes) != len(args) {
 		return r, moerr.NewInternalErrorf(
-			ctx, "dynamic string domain count %d does not match argument count %d",
-			len(dynamicDomains), len(args))
+			ctx, "string domain check mode count %d does not match argument count %d",
+			len(modes), len(args))
 	}
-	return getFunctionByName(ctx, name, args, dynamicDomains)
+	return getFunctionByName(ctx, name, args, modes)
 }
 
 func getFunctionByName(
-	ctx context.Context, name string, args []types.Type, dynamicDomains []bool,
+	ctx context.Context, name string, args []types.Type, stringDomainModes []StringDomainCheckMode,
 ) (r FuncGetResult, err error) {
 	r.fid, err = getFunctionIdByName(ctx, name)
 	if err != nil {
@@ -189,8 +208,8 @@ func getFunctionByName(
 	}
 
 	check := f.checkFn(f.Overloads, args)
-	if f.dynamicStringDomainCheckFn != nil && len(dynamicDomains) > 0 {
-		check = f.dynamicStringDomainCheckFn(f.Overloads, args, dynamicDomains)
+	if f.stringDomainCheckFn != nil && len(stringDomainModes) > 0 {
+		check = f.stringDomainCheckFn(f.Overloads, args, stringDomainModes)
 	}
 	switch check.status {
 	case succeedMatched:
@@ -558,10 +577,10 @@ type FuncNew struct {
 	// the required type should be returned at the same time.
 	checkFn func(overloads []overload, inputs []types.Type) checkResult
 
-	// dynamicStringDomainCheckFn is the optional second-stage checker for
-	// functions whose string compatibility can be deferred for parameterized
-	// arguments without changing overload or result-type ownership.
-	dynamicStringDomainCheckFn func(overloads []overload, inputs []types.Type, dynamicDomains []bool) checkResult
+	// stringDomainCheckFn is the optional second-stage checker for functions
+	// whose string compatibility depends on operand provenance as well as the
+	// current text/binary type.
+	stringDomainCheckFn func(overloads []overload, inputs []types.Type, modes []StringDomainCheckMode) checkResult
 
 	// layout was used for `explain SQL`.
 	layout FuncExplainLayout

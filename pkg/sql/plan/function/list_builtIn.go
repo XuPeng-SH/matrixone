@@ -360,6 +360,25 @@ func derivedStringReturnType(parameters []types.Type, sourceIndex int, resultOID
 	return textStringResultType(declaredTextCharacterBound(parameters[sourceIndex]), parameters[sourceIndex].Charset)
 }
 
+// regexpStringReturnType derives the result bound from the subject, while the
+// effective text/binary domain belongs to every semantic string operand. This
+// must match regexpOperandsUseBinary in the executor: a binary pattern or
+// replacement makes SUBSTR/REPLACE byte-oriented even when the subject itself
+// is text.
+func regexpStringReturnType(parameters []types.Type, stringOperands int) types.Type {
+	if len(parameters) == 0 {
+		return types.T_varchar.ToType()
+	}
+	if stringOperands > len(parameters) {
+		stringOperands = len(parameters)
+	}
+	if hasBinaryStringDomain(parameters[:stringOperands]) {
+		return binaryStringResultType(declaredStringByteBound(parameters[0]))
+	}
+	return textStringResultType(
+		declaredTextCharacterBound(parameters[0]), parameters[0].Charset)
+}
+
 // ConvertReturnTypeForBinder derives CONVERT metadata from the source types
 // before the executor's implicit VARCHAR cast is inserted.
 func ConvertReturnTypeForBinder(parameters []types.Type) types.Type {
@@ -2879,11 +2898,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `not_reg_match`
 	{
-		functionId:                 NOT_REG_MATCH,
-		class:                      plan.Function_STRICT,
-		layout:                     COMPARISON_OPERATOR,
-		checkFn:                    regexpStringDomainFixedTypeMatch,
-		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
+		functionId:          NOT_REG_MATCH,
+		class:               plan.Function_STRICT,
+		layout:              COMPARISON_OPERATOR,
+		checkFn:             regexpStringDomainFixedTypeMatch,
+		stringDomainCheckFn: regexpStringDomainTypeMatchWithModes,
 
 		Overloads: []overload{
 			{
@@ -2953,11 +2972,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `reg_match`
 	{
-		functionId:                 REG_MATCH,
-		class:                      plan.Function_STRICT,
-		layout:                     COMPARISON_OPERATOR,
-		checkFn:                    regexpStringDomainFixedTypeMatch,
-		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
+		functionId:          REG_MATCH,
+		class:               plan.Function_STRICT,
+		layout:              COMPARISON_OPERATOR,
+		checkFn:             regexpStringDomainFixedTypeMatch,
+		stringDomainCheckFn: regexpStringDomainTypeMatchWithModes,
 
 		Overloads: []overload{
 			{
@@ -2975,11 +2994,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `regexp_instr`
 	{
-		functionId:                 REGEXP_INSTR,
-		class:                      plan.Function_STRICT,
-		layout:                     STANDARD_FUNCTION,
-		checkFn:                    regexpStringDomainFixedTypeMatch,
-		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
+		functionId:          REGEXP_INSTR,
+		class:               plan.Function_STRICT,
+		layout:              STANDARD_FUNCTION,
+		checkFn:             regexpStringDomainFixedTypeMatch,
+		stringDomainCheckFn: regexpStringDomainTypeMatchWithModes,
 
 		Overloads: []overload{
 			{
@@ -3027,11 +3046,11 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `regexp_like`
 	{
-		functionId:                 REGEXP_LIKE,
-		class:                      plan.Function_STRICT,
-		layout:                     STANDARD_FUNCTION,
-		checkFn:                    regexpStringDomainFixedTypeMatch,
-		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
+		functionId:          REGEXP_LIKE,
+		class:               plan.Function_STRICT,
+		layout:              STANDARD_FUNCTION,
+		checkFn:             regexpStringDomainFixedTypeMatch,
+		stringDomainCheckFn: regexpStringDomainTypeMatchWithModes,
 
 		Overloads: []overload{
 			{
@@ -3059,18 +3078,18 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `regexp_replace`
 	{
-		functionId:                 REGEXP_REPLACE,
-		class:                      plan.Function_STRICT,
-		layout:                     STANDARD_FUNCTION,
-		checkFn:                    regexpReplaceStringDomainFixedTypeMatch,
-		dynamicStringDomainCheckFn: regexpReplaceStringDomainDynamicTypeMatch,
+		functionId:          REGEXP_REPLACE,
+		class:               plan.Function_STRICT,
+		layout:              STANDARD_FUNCTION,
+		checkFn:             regexpReplaceStringDomainFixedTypeMatch,
+		stringDomainCheckFn: regexpReplaceStringDomainTypeMatchWithModes,
 
 		Overloads: []overload{
 			{
 				overloadId: 0,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_varchar},
 				retType: func(parameters []types.Type) types.Type {
-					return derivedStringReturnType(parameters, 0, types.T_varchar)
+					return regexpStringReturnType(parameters, 3)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpReplace
@@ -3080,7 +3099,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 1,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_varchar, types.T_int64},
 				retType: func(parameters []types.Type) types.Type {
-					return derivedStringReturnType(parameters, 0, types.T_varchar)
+					return regexpStringReturnType(parameters, 3)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpReplace
@@ -3090,7 +3109,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 2,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_varchar, types.T_int64, types.T_int64},
 				retType: func(parameters []types.Type) types.Type {
-					return derivedStringReturnType(parameters, 0, types.T_varchar)
+					return regexpStringReturnType(parameters, 3)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpReplace
@@ -3101,18 +3120,18 @@ var supportedStringBuiltIns = []FuncNew{
 
 	// function `regexp_substr`
 	{
-		functionId:                 REGEXP_SUBSTR,
-		class:                      plan.Function_STRICT,
-		layout:                     STANDARD_FUNCTION,
-		checkFn:                    regexpStringDomainFixedTypeMatch,
-		dynamicStringDomainCheckFn: regexpStringDomainDynamicTypeMatch,
+		functionId:          REGEXP_SUBSTR,
+		class:               plan.Function_STRICT,
+		layout:              STANDARD_FUNCTION,
+		checkFn:             regexpStringDomainFixedTypeMatch,
+		stringDomainCheckFn: regexpStringDomainTypeMatchWithModes,
 
 		Overloads: []overload{
 			{
 				overloadId: 0,
 				args:       []types.T{types.T_varchar, types.T_varchar},
 				retType: func(parameters []types.Type) types.Type {
-					return derivedStringReturnType(parameters, 0, types.T_varchar)
+					return regexpStringReturnType(parameters, 2)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpSubstr
@@ -3123,7 +3142,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 1,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_int64},
 				retType: func(parameters []types.Type) types.Type {
-					return derivedStringReturnType(parameters, 0, types.T_varchar)
+					return regexpStringReturnType(parameters, 2)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpSubstr
@@ -3134,7 +3153,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 2,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_int64, types.T_int64},
 				retType: func(parameters []types.Type) types.Type {
-					return derivedStringReturnType(parameters, 0, types.T_varchar)
+					return regexpStringReturnType(parameters, 2)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpSubstr

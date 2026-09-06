@@ -1675,6 +1675,12 @@ func (rule *ResetParamRefRule) preparedExecutionExprType(
 			return preparedType, false, false, nil
 		}
 		argTypes := make([]types.Type, len(exprImpl.F.Args))
+		var stringDomainModes []planfunction.StringDomainCheckMode
+		stringOperands := preparedRegexpStringOperandCount(
+			strings.ToLower(exprImpl.F.Func.GetObjName()), len(exprImpl.F.Args))
+		if stringOperands > 0 {
+			stringDomainModes = make([]planfunction.StringDomainCheckMode, len(exprImpl.F.Args))
+		}
 		for i, arg := range exprImpl.F.Args {
 			currentType, _, childDomainless, childErr := rule.preparedExecutionExprType(arg)
 			if childErr != nil {
@@ -1684,9 +1690,23 @@ func (rule *ResetParamRefRule) preparedExecutionExprType(
 				currentType = makeTypeByPlan2Expr(arg)
 			}
 			argTypes[i] = currentType
+			if i < stringOperands {
+				if childDomainless {
+					stringDomainModes[i] = planfunction.StringDomainCheckDomainless
+				} else if _, directMarker := preparedParamPosition(arg); directMarker {
+					stringDomainModes[i] = planfunction.StringDomainCheckParamMarker
+				}
+			}
 		}
-		resolved, resolveErr := planfunction.GetFunctionByName(
-			rule.ctx, exprImpl.F.Func.GetObjName(), argTypes)
+		var resolved planfunction.FuncGetResult
+		var resolveErr error
+		if stringDomainModes != nil {
+			resolved, resolveErr = planfunction.GetFunctionByNameWithStringDomainCheckModes(
+				rule.ctx, exprImpl.F.Func.GetObjName(), argTypes, stringDomainModes)
+		} else {
+			resolved, resolveErr = planfunction.GetFunctionByName(
+				rule.ctx, exprImpl.F.Func.GetObjName(), argTypes)
+		}
 		if resolveErr != nil {
 			return types.Type{}, false, false, resolveErr
 		}
@@ -1700,15 +1720,15 @@ func (rule *ResetParamRefRule) preparedExecutionExprType(
 	}
 }
 
-func (rule *ResetParamRefRule) resolvePreparedRegexpStringDomains(
+func (rule *ResetParamRefRule) resolvePreparedRegexpStringDomainCheckModes(
 	name string,
 	boundArgs, originalArgs []*plan.Expr,
-) ([]bool, error) {
+) ([]planfunction.StringDomainCheckMode, error) {
 	stringOperands := preparedRegexpStringOperandCount(name, len(boundArgs))
 	if stringOperands == 0 {
 		return nil, nil
 	}
-	domainless := make([]bool, len(boundArgs))
+	modes := make([]planfunction.StringDomainCheckMode, len(boundArgs))
 	for i := 0; i < stringOperands && i < len(originalArgs); i++ {
 		currentType, dynamic, currentDomainless, err :=
 			rule.preparedExecutionExprType(originalArgs[i])
@@ -1716,8 +1736,11 @@ func (rule *ResetParamRefRule) resolvePreparedRegexpStringDomains(
 			return nil, err
 		}
 		if currentDomainless {
-			domainless[i] = true
+			modes[i] = planfunction.StringDomainCheckDomainless
 			continue
+		}
+		if _, directMarker := preparedParamPosition(originalArgs[i]); directMarker {
+			modes[i] = planfunction.StringDomainCheckParamMarker
 		}
 		if !dynamic {
 			continue
@@ -1729,7 +1752,7 @@ func (rule *ResetParamRefRule) resolvePreparedRegexpStringDomains(
 		currentArg.Typ = makePlan2Type(&currentType)
 		boundArgs[i] = &currentArg
 	}
-	return domainless, nil
+	return modes, nil
 }
 
 func (rule *ResetParamRefRule) applyExpr(e *plan.Expr) (*plan.Expr, error) {
@@ -1787,7 +1810,7 @@ func (rule *ResetParamRefRule) applyExpr(e *plan.Expr) (*plan.Expr, error) {
 		// when a nested dynamic result happens to resolve back to the same type.
 		// Type equality alone cannot prove that all current sibling domains are
 		// compatible.
-		regexpDomainsDeferred := preparedRegexpDynamicStringDomains(functionName, originalArgs) != nil
+		regexpDomainsDeferred := preparedRegexpStringDomainCheckModes(functionName, originalArgs) != nil
 		needResetFunction := regexpDomainsDeferred
 		compareArgTypes := regexpDomainsDeferred
 		numericPrefixDependent := false
@@ -2175,7 +2198,7 @@ func (rule *ResetParamRefRule) applyExpr(e *plan.Expr) (*plan.Expr, error) {
 
 		// reset function
 		if needResetFunction {
-			resolvedStringDomains, resolveErr := rule.resolvePreparedRegexpStringDomains(
+			stringDomainModes, resolveErr := rule.resolvePreparedRegexpStringDomainCheckModes(
 				functionName, boundArgs, originalArgs)
 			if resolveErr != nil {
 				return nil, resolveErr
@@ -2184,7 +2207,7 @@ func (rule *ResetParamRefRule) applyExpr(e *plan.Expr) (*plan.Expr, error) {
 				rule.ctx,
 				exprImpl.F.Func.GetObjName(),
 				boundArgs,
-				resolvedStringDomains,
+				stringDomainModes,
 			)
 			if err != nil {
 				return nil, err

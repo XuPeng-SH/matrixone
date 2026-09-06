@@ -14,11 +14,13 @@ limited to behavior MatrixOne can implement independently of the regexp engine:
 
 - SQL text values use UTF-8 code-point positions;
 - BINARY, VARBINARY, BLOB, and runtime binary parameters use byte positions;
-- statically known text and binary regexp operands are rejected with MySQL
-  error 3995;
-- a parameter marker may defer its string-domain check during PREPARE, but all
-  concrete domains are checked again at EXECUTE, including when a marker is
-  nested in a domain-preserving expression;
+- a statically known binary regexp operand cannot be combined with a text
+  operand and is rejected with MySQL error 3995;
+- a direct parameter marker defers its domain at PREPARE and retains MySQL's
+  `PARAM_ITEM` provenance at EXECUTE: a binary marker does not itself trigger
+  3995, but a text marker remains incompatible with a statically binary peer;
+- a parameter nested in a domain-preserving expression is no longer a direct
+  marker. Its current result domain is checked normally at EXECUTE;
 - `ORD` interprets its input in the selected row's effective string domain;
   `REGEXP_SUBSTR` and `REGEXP_REPLACE` also preserve that domain on their
   string result;
@@ -47,6 +49,20 @@ Functions with fixed textual output, such as `HEX`, collapse their input to
 `{text}`. Domain-preserving functions propagate their input set according to
 their documented return-type rule.
 
+Compatibility checking keeps provenance separate from that current domain:
+
+| Check mode | Compatibility meaning |
+|---|---|
+| known | current text participates; current binary is a binary trigger |
+| deferred | PREPARE-time runtime-owned domain is omitted until EXECUTE |
+| direct marker | current text participates; current binary is compatible but does not trigger 3995 |
+| domainless | a bare untyped NULL contributes no domain |
+
+The modes are not a second type system. Ordinary argument types remain the
+source of overload selection, result metadata, and byte/text execution mode.
+They answer only whether that current domain may trigger the regexp charset
+restriction.
+
 `REGEXP_SUBSTR` and `REGEXP_REPLACE` are special only in that their executor
 already derives the result domain from all semantic string operands. Their
 planner transfer function must express the same rule:
@@ -64,16 +80,22 @@ while holding incompatible siblings fixed.
 
 Static regexp validation compares every singleton operand. Runtime-owned
 operands are deferred, but known operands are still compared with one another.
-This preserves early 3995 errors without rejecting a statement whose legal
-domain is determined only at EXECUTE time. The defer mask is PREPARE-only:
-execute-time rebinding supplies an explicit resolved mask, so cached ParamRefs
-cannot cause a second deferral after their current values and domains are known.
-A bare NULL literal contributes no domain. A prepared marker whose current
-value is NULL retains its PREPARE-time domain, matching MySQL's parameter
-contract instead of silently bypassing a text/binary mismatch. A NULL-valued
-function result likewise retains its declared domain; it is not equivalent to
-a bare NULL literal. A failed execution leaves the cached plan unchanged and
-reusable.
+At EXECUTE, the four-mode table is applied at every nested regexp boundary; a
+nested function must not accidentally re-run the ordinary static checker and
+erase the direct-marker exception of its own children. A known binary operand
+is incompatible with any participating text operand. A binary direct marker is
+not a trigger, so two differently typed direct markers are legal and select
+binary execution if either current value is binary. This preserves early 3995
+errors without rejecting valid `PARAM_ITEM` combinations.
+
+The defer mode is PREPARE-only: execute-time rebinding supplies an explicit
+resolved mode vector, so cached ParamRefs cannot defer a second time after the
+current values and domains are known. A bare NULL literal contributes no
+domain. A prepared marker whose current value is NULL retains its PREPARE-time
+domain, matching MySQL's parameter contract instead of silently bypassing a
+text/binary mismatch. A NULL-valued function result likewise retains its
+declared domain; it is not equivalent to a bare NULL literal. A failed
+execution leaves the cached plan unchanged and reusable.
 
 ### Position and anchor policies
 
@@ -103,15 +125,17 @@ positive `pos` is accepted. A zero-width anchor match is reported at that
 requested position, while a consuming pattern or a later occurrence returns
 zero. SUBSTR and REPLACE retain their ordinary `pos <= length` validation.
 
-An empty pattern is not treated as a valid zero-width regexp. All predicate,
-INSTR, SUBSTR, and REPLACE variants return error 3685 for a non-NULL empty
-pattern, including when the subject, replacement, occurrence, or position is
-NULL or otherwise invalid. REGEXP_LIKE still returns NULL first when its
-`match_type` itself is NULL, matching MySQL's argument semantics.
+A present pattern is validated before a later NULL or range shortcut can
+determine the result. This includes both the special empty-pattern error 3685
+and ordinary malformed-pattern compilation failures for every predicate,
+INSTR, SUBSTR, and REPLACE arity. A present REGEXP_LIKE `match_type` is likewise
+validated before a NULL subject or pattern. REGEXP_LIKE still returns NULL
+first when `match_type` itself is NULL, matching MySQL's argument semantics.
 
 ## Data flow and ownership
 
-1. The binder records which regexp operands have a runtime-owned domain.
+1. The binder records deferred regexp operands at PREPARE and reconstructs the
+   known/direct-marker/domainless modes at every function boundary at EXECUTE.
 2. Execute-time rebinding replaces parameters in a copied plan. Materialized
    parameters retain their execute-time binary type even when a different
    sibling expression triggered specialization, so `ORD(?)` and other string
@@ -215,12 +239,12 @@ RE2 encoding is retained.
 |---|---|---|
 | INSTR suffix anchors | direct matcher tests for `^`, multiline `^`, `\\b`, `$` | BVT SQL at `pos > 1` |
 | SUBSTR/REPLACE original anchors | start-aware iterator tests | existing BVT positional cases |
-| nested dynamic result domain | binder accepts correlated runtime domains and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse |
+| nested dynamic result domain | binder accepts correlated runtime domains, propagates binary from every semantic operand, and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse |
 | static mismatch | function resolver returns 3995 for known mixed operands | existing BVT matrix |
-| execute-time mismatch | resolved defer mask rejects mixed COM_STMT/SQL EXECUTE domains without mutating the cached plan | binary/text/binary reuse with an intervening 3995 |
+| execute-time marker semantics | exhaustive known/deferred/direct-marker/domainless matrix | mixed direct markers, fixed-binary controls, nested-result controls, and cached-plan reuse |
 | byte positions/results | binary vectors without legacy `SetIsBin` | BINARY/VARBINARY/BLOB BVT |
 | binary match flags | ASCII `i`, rightmost `ci`/`ic`, and non-ASCII byte controls | REGEXP_LIKE BVT compared with MySQL 8.4 |
-| empty pattern | every arity and NULL/invalid-position precedence returns 3685 | public SQL for LIKE/INSTR/SUBSTR/REPLACE |
+| pattern and match-type precedence | empty and malformed patterns across every arity and later NULL boundary; invalid/present/NULL match types | public SQL for LIKE/INSTR/SUBSTR/REPLACE |
 | empty INSTR subject | arbitrary positive position, anchor/no-match/second-occurrence and binary controls | public SQL at `pos = 5` |
 | zero-width sequence/progress | adjacent nonempty/empty, anchor, boundary, empty-subject, and cache-bound unit tests | SQL results compared with MySQL 8.4 |
 | hot-path cost | allocation benchmarks for ASCII, high-byte, and near-end positions | performance evidence, not BVT timing assertions |

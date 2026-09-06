@@ -9,6 +9,7 @@ SELECT REGEXP_INSTR('', '^$', 5) AS empty_subject_late_anchor,
        REGEXP_INSTR(CAST(_binary'' AS VARBINARY(1)), CAST(_binary'^$' AS VARBINARY(2)), 5, 1, 1) AS empty_binary_late_anchor;
 SELECT REGEXP_INSTR(NULL, '');
 SELECT REGEXP_INSTR('abc', '', 0);
+SELECT REGEXP_INSTR(NULL, '*');
 
 SELECT REGEXP_INSTR('Cat', 'at') Result;
 SELECT REGEXP_INSTR('Cat', '^at') Result;
@@ -174,6 +175,16 @@ EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_sub
 SET @regexp_subject = CAST(_binary'中中' AS BLOB);
 EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_subject;
 DEALLOCATE PREPARE regexp_domain_rebind;
+
+# A direct PARAM_ITEM's current binary domain selects byte execution, but does
+# not by itself trigger the static-binary charset restriction against text.
+PREPARE regexp_marker_static_text FROM
+    'SELECT REGEXP_INSTR(?, ''b'') AS marker_static_text';
+SET @regexp_marker_subject = CAST(_binary'abc' AS VARBINARY(3));
+EXECUTE regexp_marker_static_text USING @regexp_marker_subject;
+SET @regexp_marker_subject = 'abc';
+EXECUTE regexp_marker_static_text USING @regexp_marker_subject;
+DEALLOCATE PREPARE regexp_marker_static_text;
 
 # A nested domain-preserving REGEXP expression can depend on several prepared
 # parameters jointly. PREPARE must not reject the legal binary/binary state or

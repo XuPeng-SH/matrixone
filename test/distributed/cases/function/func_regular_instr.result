@@ -23,6 +23,8 @@ SELECT REGEXP_INSTR(NULL, '');
 Illegal argument to a regular expression.
 SELECT REGEXP_INSTR('abc', '', 0);
 Illegal argument to a regular expression.
+SELECT REGEXP_INSTR(NULL, '*');
+invalid argument regexp_instr have invalid regexp pattern arg, bad value [*]
 SELECT REGEXP_INSTR('Cat', 'at') Result;
 result
 2
@@ -301,6 +303,17 @@ EXECUTE regexp_domain_rebind USING @regexp_subject, @regexp_subject, @regexp_sub
 ord(?)    regexp_instr(?, cast(_binary'中' as varbinary(3)), 2)    ord(regexp_substr(?, cast(_binary'中' as varbinary(3)), 2))
 228    4    228
 DEALLOCATE PREPARE regexp_domain_rebind;
+PREPARE regexp_marker_static_text FROM
+'SELECT REGEXP_INSTR(?, ''b'') AS marker_static_text';
+SET @regexp_marker_subject = CAST(_binary'abc' AS VARBINARY(3));
+EXECUTE regexp_marker_static_text USING @regexp_marker_subject;
+marker_static_text
+2
+SET @regexp_marker_subject = 'abc';
+EXECUTE regexp_marker_static_text USING @regexp_marker_subject;
+marker_static_text
+2
+DEALLOCATE PREPARE regexp_marker_static_text;
 PREPARE regexp_nested_domain_rebind FROM
 'SELECT ORD(REGEXP_SUBSTR(?, ?)), REGEXP_INSTR(REGEXP_SUBSTR(?, ?), CAST(_binary''.'' AS VARBINARY(1)), 1)';
 SET @regexp_nested_subject = CAST(_binary'中中' AS VARBINARY(6));

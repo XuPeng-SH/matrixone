@@ -422,13 +422,41 @@ func (op *opBuiltInRegexp) builtInRegexpPredicate(
 		if len(parameters) == 3 {
 			matchType, matchTypeNull = p3.GetStrValue(i)
 		}
-		if patternNull || matchTypeNull {
+		if matchTypeNull {
 			if err := rs.Append(false, true); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := validateRegexpPattern(functionUtil.QuickBytesToStr(pattern)); err != nil {
+		matchTypeString := functionUtil.QuickBytesToStr(matchType)
+		pureMatchType := ""
+		if like {
+			// MySQL validates a present match_type before a NULL pattern or
+			// subject can determine the row result.
+			var err error
+			pureMatchType, err = getPureMatchType(matchTypeString)
+			if err != nil {
+				return err
+			}
+		}
+		if patternNull {
+			if err := rs.Append(false, true); err != nil {
+				return err
+			}
+			continue
+		}
+
+		patternString := functionUtil.QuickBytesToStr(pattern)
+		binary := regexpOperandsUseBinary(parameters, int(i), 2)
+		var reg *regexp.Regexp
+		var err error
+		if like {
+			reg, err = op.regMap.getRegularLikeMatcherForPureMatchTypeWithMode(
+				patternString, pureMatchType, binary)
+		} else {
+			reg, err = op.regMap.getRegularMatcherForMatchWithMode(patternString, binary)
+		}
+		if err != nil {
 			return err
 		}
 		if subjectNull {
@@ -438,22 +466,7 @@ func (op *opBuiltInRegexp) builtInRegexpPredicate(
 			continue
 		}
 
-		binary := regexpOperandsUseBinary(parameters, int(i), 2)
-		var match bool
-		var err error
-		if like {
-			match, err = op.regMap.regularLikeWithMode(
-				functionUtil.QuickBytesToStr(pattern),
-				functionUtil.QuickBytesToStr(subject),
-				functionUtil.QuickBytesToStr(matchType), binary)
-		} else {
-			match, err = op.regMap.regularMatchWithMode(
-				functionUtil.QuickBytesToStr(pattern),
-				functionUtil.QuickBytesToStr(subject), binary)
-		}
-		if err != nil {
-			return err
-		}
+		match := regexpMatchCompiled(reg, functionUtil.QuickBytesToStr(subject), binary)
 		if negate {
 			match = !match
 		}
@@ -484,7 +497,11 @@ func (op *opBuiltInRegexp) builtInRegexpSubstr(parameters []*vector.Vector, resu
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 2),
+				"regexp_substr", null1,
+			); err != nil {
 				return err
 			} else if null1 {
 				if err := rs.AppendBytes(nil, true); err != nil {
@@ -524,7 +541,11 @@ func (op *opBuiltInRegexp) builtInRegexpSubstr(parameters []*vector.Vector, resu
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 2),
+				"regexp_substr", null1 || null3,
+			); err != nil {
 				return err
 			} else if null1 || null3 {
 				if err := rs.AppendBytes(nil, true); err != nil {
@@ -566,7 +587,11 @@ func (op *opBuiltInRegexp) builtInRegexpSubstr(parameters []*vector.Vector, resu
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 2),
+				"regexp_substr", null1 || null3 || null4,
+			); err != nil {
 				return err
 			} else if null1 || null3 || null4 {
 				if err := rs.AppendBytes(nil, true); err != nil {
@@ -617,7 +642,11 @@ func (op *opBuiltInRegexp) builtInRegexpInstr(parameters []*vector.Vector, resul
 				}
 				continue
 			}
-			if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 2),
+				"regexp_instr", null1,
+			); err != nil {
 				return err
 			}
 			if null1 {
@@ -651,7 +680,11 @@ func (op *opBuiltInRegexp) builtInRegexpInstr(parameters []*vector.Vector, resul
 				if err := rs.Append(0, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 2),
+				"regexp_instr", null1 || null3,
+			); err != nil {
 				return err
 			} else if null1 || null3 {
 				if err := rs.Append(0, true); err != nil {
@@ -688,7 +721,11 @@ func (op *opBuiltInRegexp) builtInRegexpInstr(parameters []*vector.Vector, resul
 				if err := rs.Append(0, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 2),
+				"regexp_instr", null1 || null3 || null4,
+			); err != nil {
 				return err
 			} else if null1 || null3 || null4 {
 				if err := rs.Append(0, true); err != nil {
@@ -728,7 +765,11 @@ func (op *opBuiltInRegexp) builtInRegexpInstr(parameters []*vector.Vector, resul
 				if err := rs.Append(0, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 2),
+				"regexp_instr", null1 || null3 || null4 || null5,
+			); err != nil {
 				return err
 			} else if null1 || null3 || null4 || null5 {
 				if err := rs.Append(0, true); err != nil {
@@ -776,7 +817,11 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 3),
+				"regexp_replace", null1 || null3,
+			); err != nil {
 				return err
 			} else if null1 || null3 {
 				if err := rs.AppendBytes(nil, true); err != nil {
@@ -814,7 +859,11 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 3),
+				"regexp_replace", null1 || null3 || null4,
+			); err != nil {
 				return err
 			} else if null1 || null3 || null4 {
 				if err := rs.AppendBytes(nil, true); err != nil {
@@ -854,7 +903,11 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 				if err := rs.AppendBytes(nil, true); err != nil {
 					return err
 				}
-			} else if err := validateRegexpPattern(functionUtil.QuickBytesToStr(v2)); err != nil {
+			} else if err := op.regMap.validateRegexpBeforeNullableResult(
+				functionUtil.QuickBytesToStr(v2),
+				regexpOperandsUseBinary(parameters, int(i), 3),
+				"regexp_replace", null1 || null3 || null4 || null5,
+			); err != nil {
 				return err
 			} else if null1 || null3 || null4 || null5 {
 				if err := rs.AppendBytes(nil, true); err != nil {
@@ -1025,10 +1078,7 @@ func regexpSyntaxMayMatchEmpty(expr *syntax.Regexp) bool {
 }
 
 func (rs *regexpSet) getRegularMatcherForMatchWithMode(pat string, binary bool) (*regexp.Regexp, error) {
-	if err := validateRegexpPattern(pat); err != nil {
-		return nil, err
-	}
-	return rs.getRegularMatcherWithMode(pat, binary)
+	return rs.getCompiledRegexpWithMode(pat, binary, "")
 }
 
 func validateRegexpPattern(pat string) error {
@@ -1036,6 +1086,48 @@ func validateRegexpPattern(pat string) error {
 		return moerr.NewRegexpIllegalArgumentNoCtx()
 	}
 	return nil
+}
+
+// getCompiledRegexpWithMode is the shared pattern-validation boundary for
+// regexp functions that need only the compiled matcher. Compilation must
+// happen before a later NULL or range shortcut can determine the row result.
+func (rs *regexpSet) getCompiledRegexpWithMode(
+	pat string, binary bool, functionName string,
+) (*regexp.Regexp, error) {
+	if err := validateRegexpPattern(pat); err != nil {
+		return nil, err
+	}
+	reg, err := rs.getRegularMatcherWithMode(pat, binary)
+	if err == nil {
+		return reg, nil
+	}
+	return nil, regexpCompileError(functionName, pat, err)
+}
+
+func regexpCompileError(functionName, pat string, err error) error {
+	if functionName == "regexp_instr" || functionName == "regexp_replace" {
+		return moerr.NewInvalidArgNoCtx(
+			functionName+" have invalid regexp pattern arg", "["+pat+"]")
+	}
+	return err
+}
+
+func (rs *regexpSet) validateCompiledRegexpWithMode(
+	pat string, binary bool, functionName string,
+) error {
+	_, err := rs.getCompiledRegexpWithMode(pat, binary, functionName)
+	return err
+}
+
+func (rs *regexpSet) validateRegexpBeforeNullableResult(
+	pat string, binary bool, functionName string, laterArgumentIsNull bool,
+) error {
+	if laterArgumentIsNull {
+		return rs.validateCompiledRegexpWithMode(pat, binary, functionName)
+	}
+	// The non-NULL execution path compiles exactly once in regular*WithMode.
+	// Retain the cheap empty-pattern precedence check here.
+	return validateRegexpPattern(pat)
 }
 
 func (rs *regexpSet) regularMatchWithMode(pat, str string, binary bool) (bool, error) {
@@ -1128,7 +1220,8 @@ func (rs *regexpSet) regularSubstr(pat string, str string, pos, occurrence int64
 }
 
 func (rs *regexpSet) regularSubstrWithMode(pat string, str string, pos, occurrence int64, subjectIsBinary bool) (match bool, substr string, err error) {
-	if err = validateRegexpPattern(pat); err != nil {
+	reg, err := rs.getCompiledRegexpWithMode(pat, subjectIsBinary, "regexp_substr")
+	if err != nil {
 		return false, "", err
 	}
 	// check position
@@ -1140,11 +1233,6 @@ func (rs *regexpSet) regularSubstrWithMode(pat string, str string, pos, occurren
 	if occurrence < 1 {
 		return false, "", moerr.NewInvalidInputNoCtxf("regexp_substr have Index out of bounds in regular expression search, return occurrence %d", occurrence)
 	}
-	reg, err := rs.getRegularMatcherWithMode(pat, subjectIsBinary)
-	if err != nil {
-		return false, "", err
-	}
-
 	selected, found, err := rs.regexpNthMatchAtOrAfter(
 		reg, pat, str, startByte, subjectIsBinary, occurrence)
 	if err != nil {
@@ -1164,6 +1252,10 @@ func (rs *regexpSet) regularReplaceWithMode(pat string, str string, repl string,
 	if err = validateRegexpPattern(pat); err != nil {
 		return "", err
 	}
+	reg, mayMatchEmpty, err := rs.getRegularMatcherInfoWithMode(pat, subjectIsBinary)
+	if err != nil {
+		return "", regexpCompileError("regexp_replace", pat, err)
+	}
 	// check position
 	startByte, ok := regexpSearchStartByte(str, pos, subjectIsBinary)
 	if !ok {
@@ -1174,11 +1266,6 @@ func (rs *regexpSet) regularReplaceWithMode(pat string, str string, repl string,
 		return "", moerr.NewInvalidInputNoCtxf("regexp_replace have Index out of bounds in regular expression search, return occurrence %d", occurrence)
 	}
 
-	reg, mayMatchEmpty, err := rs.getRegularMatcherInfoWithMode(pat, subjectIsBinary)
-	if err != nil {
-		pat = "[" + pat + "]"
-		return "", moerr.NewInvalidArgNoCtx("regexp_replace have invalid regexp pattern arg", pat)
-	}
 	// MySQL returns an empty subject unchanged, even for a regexp such as ^$
 	// that can match an empty string. Compile first so malformed patterns still
 	// report their error instead of being hidden by this result shortcut.
@@ -1216,7 +1303,8 @@ func (rs *regexpSet) regularInstr(pat string, str string, pos, occurrence int64,
 }
 
 func (rs *regexpSet) regularInstrWithMode(pat string, str string, pos, occurrence int64, retOption int8, subjectIsBinary bool) (index int64, err error) {
-	if err = validateRegexpPattern(pat); err != nil {
+	reg, err := rs.getCompiledRegexpWithMode(pat, subjectIsBinary, "regexp_instr")
+	if err != nil {
 		return 0, err
 	}
 	// check position
@@ -1234,12 +1322,6 @@ func (rs *regexpSet) regularInstrWithMode(pat string, str string, pos, occurrenc
 	// check retOption
 	if retOption < 0 || retOption > 1 {
 		return 0, moerr.NewInvalidInputNoCtxf("regexp_instr have Index out of bounds in regular expression search, return option %d", retOption)
-	}
-
-	reg, err := rs.getRegularMatcherWithMode(pat, subjectIsBinary)
-	if err != nil {
-		pat = "[" + pat + "]"
-		return 0, moerr.NewInvalidArgNoCtx("regexp_instr have invalid regexp pattern arg", pat)
 	}
 
 	// MySQL REGEXP_INSTR rebases its matcher subject at pos. This is
@@ -1693,26 +1775,39 @@ func (rs *regexpSet) regularLike(pat string, str string, matchType string) (bool
 	return rs.regularLikeWithMode(pat, str, matchType, false)
 }
 
-func (rs *regexpSet) regularLikeWithMode(pat string, str string, matchType string, binary bool) (bool, error) {
+func (rs *regexpSet) getRegularLikeMatcherWithMode(
+	pat string, matchType string, binary bool,
+) (*regexp.Regexp, error) {
 	mt, err := getPureMatchType(matchType)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if err = validateRegexpPattern(pat); err != nil {
-		return false, err
-	}
-	rule := fmt.Sprintf("(?%s)%s", mt, pat)
+	return rs.getRegularLikeMatcherForPureMatchTypeWithMode(pat, mt, binary)
+}
 
-	reg, err := rs.getRegularMatcherWithMode(rule, binary)
-	if err != nil {
-		return false, err
+func (rs *regexpSet) getRegularLikeMatcherForPureMatchTypeWithMode(
+	pat string, pureMatchType string, binary bool,
+) (*regexp.Regexp, error) {
+	if err := validateRegexpPattern(pat); err != nil {
+		return nil, err
 	}
+	rule := fmt.Sprintf("(?%s)%s", pureMatchType, pat)
+	return rs.getRegularMatcherWithMode(rule, binary)
+}
+
+func regexpMatchCompiled(reg *regexp.Regexp, str string, binary bool) bool {
 	if binary {
 		str, _ = encodeBinaryRegexpBytes(str, 0)
 	}
+	return reg.MatchString(str)
+}
 
-	match := reg.MatchString(str)
-	return match, nil
+func (rs *regexpSet) regularLikeWithMode(pat string, str string, matchType string, binary bool) (bool, error) {
+	reg, err := rs.getRegularLikeMatcherWithMode(pat, matchType, binary)
+	if err != nil {
+		return false, err
+	}
+	return regexpMatchCompiled(reg, str, binary), nil
 }
 
 // Support four arguments:

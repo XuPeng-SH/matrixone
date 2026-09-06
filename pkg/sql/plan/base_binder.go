@@ -4433,17 +4433,19 @@ func bindMixedInListComparison(
 	return BindFuncExprImplByPlanExpr(ctx, operator, operands)
 }
 
-// preparedRegexpDynamicStringDomains identifies operands whose string domain
+// preparedRegexpStringDomainCheckModes identifies operands whose string domain
 // is owned by the current EXECUTE rather than by the prepared plan. Keep this
 // expression-aware: parameter markers are represented as TEXT while cached,
 // so their Type alone cannot distinguish them from a statically text value.
-func preparedRegexpDynamicStringDomains(name string, args []*Expr) []bool {
+func preparedRegexpStringDomainCheckModes(
+	name string, args []*Expr,
+) []function.StringDomainCheckMode {
 	stringOperands := preparedRegexpStringOperandCount(name, len(args))
 	if stringOperands == 0 {
 		return nil
 	}
 
-	var dynamic []bool
+	var modes []function.StringDomainCheckMode
 	for i := 0; i < stringOperands; i++ {
 		arg := args[i]
 		if arg == nil || !preparedExprContainsParam(arg) || isExplicitPreparedCast(arg) {
@@ -4454,12 +4456,12 @@ func preparedRegexpDynamicStringDomains(name string, args []*Expr) []bool {
 		if !dependsOnRuntimeDomain {
 			continue
 		}
-		if dynamic == nil {
-			dynamic = make([]bool, len(args))
+		if modes == nil {
+			modes = make([]function.StringDomainCheckMode, len(args))
 		}
-		dynamic[i] = true
+		modes[i] = function.StringDomainCheckDeferred
 	}
-	return dynamic
+	return modes
 }
 
 func preparedRegexpStringOperandCount(name string, arity int) int {
@@ -4594,17 +4596,17 @@ func bindPreparedFuncExprImplByPlanExpr(
 	ctx context.Context,
 	name string,
 	args []*Expr,
-	resolvedStringDomains []bool,
+	stringDomainModes []function.StringDomainCheckMode,
 ) (*plan.Expr, error) {
-	if resolvedStringDomains == nil && preparedRegexpStringOperandCount(name, len(args)) > 0 {
+	if stringDomainModes == nil && preparedRegexpStringOperandCount(name, len(args)) > 0 {
 		// PREPARE may defer compatibility for parameter-owned domains, but this
 		// path runs only after the current EXECUTE values have been bound. An
-		// explicit mask prevents cached ParamRefs from deferring the check again;
-		// callers mark only bare untyped-NULL operands as domainless.
-		resolvedStringDomains = make([]bool, len(args))
+		// explicit mode vector prevents cached ParamRefs from deferring the check
+		// again and preserves direct-marker/domainless provenance separately.
+		stringDomainModes = make([]function.StringDomainCheckMode, len(args))
 	}
 	return bindFuncExprImplByPlanExpr(
-		ctx, name, args, true, resolvedStringDomains)
+		ctx, name, args, true, stringDomainModes)
 }
 
 func bindFuncExprImplByPlanExpr(
@@ -4612,7 +4614,7 @@ func bindFuncExprImplByPlanExpr(
 	name string,
 	args []*Expr,
 	descendFunctions bool,
-	dynamicStringDomains []bool,
+	stringDomainModes []function.StringDomainCheckMode,
 ) (*plan.Expr, error) {
 	var err error
 	rejectIntervalArgs := rejectBoundIntervalFunctionArgs
@@ -5141,12 +5143,12 @@ func bindFuncExprImplByPlanExpr(
 
 	// get function definition
 	var fGet function.FuncGetResult
-	if dynamicStringDomains == nil {
-		dynamicStringDomains = preparedRegexpDynamicStringDomains(name, args)
+	if stringDomainModes == nil {
+		stringDomainModes = preparedRegexpStringDomainCheckModes(name, args)
 	}
-	if dynamicStringDomains != nil {
-		fGet, err = function.GetFunctionByNameWithDynamicStringDomains(
-			ctx, name, argsType, dynamicStringDomains)
+	if stringDomainModes != nil {
+		fGet, err = function.GetFunctionByNameWithStringDomainCheckModes(
+			ctx, name, argsType, stringDomainModes)
 	} else {
 		fGet, err = function.GetFunctionByName(ctx, name, argsType)
 	}

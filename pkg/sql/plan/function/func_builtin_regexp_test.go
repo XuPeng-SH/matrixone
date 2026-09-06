@@ -755,36 +755,184 @@ func TestRegexpFunctionsRejectStaticMixedStringDomains(t *testing.T) {
 	}
 }
 
-func TestRegexpFunctionsDeferOnlyDynamicStringDomains(t *testing.T) {
+func TestRegexpFunctionsHonorStringDomainCheckModes(t *testing.T) {
 	ctx := context.Background()
 	text := types.T_text.ToType()
 	binary := types.T_varbinary.ToType()
 
-	resolved, err := GetFunctionByNameWithDynamicStringDomains(
-		ctx, "regexp_substr", []types.Type{text, binary}, []bool{true, false})
+	resolved, err := GetFunctionByNameWithStringDomainCheckModes(
+		ctx, "regexp_substr", []types.Type{text, binary},
+		[]StringDomainCheckMode{StringDomainCheckDeferred, StringDomainCheckKnown})
 	require.NoError(t, err)
 	_, needsCast := resolved.ShouldDoImplicitTypeCast()
 	require.False(t, needsCast)
-	require.True(t, resolved.GetReturnType().Eq(text),
-		"deferred validation must not change prepared result metadata")
+	require.Equal(t, types.StringDomainBinary, types.StaticStringDomain(resolved.GetReturnType()),
+		"a fixed binary operand makes binary the only legal result domain")
 
-	_, err = GetFunctionByNameWithDynamicStringDomains(
-		ctx, "regexp_replace", []types.Type{text, text, binary}, []bool{true, false, false})
+	_, err = GetFunctionByNameWithStringDomainCheckModes(
+		ctx, "regexp_replace", []types.Type{text, text, binary},
+		[]StringDomainCheckMode{StringDomainCheckDeferred, StringDomainCheckKnown, StringDomainCheckKnown})
 	require.Error(t, err, "known pattern and replacement domains must remain compatible")
 	require.True(t, moerr.IsMoErrCode(err, moerr.ErrCharacterSetMismatch))
 
-	_, err = GetFunctionByNameWithDynamicStringDomains(
-		ctx, "regexp_replace", []types.Type{text, binary, text}, []bool{true, true, true})
+	_, err = GetFunctionByNameWithStringDomainCheckModes(
+		ctx, "regexp_replace", []types.Type{text, binary, text},
+		[]StringDomainCheckMode{StringDomainCheckDeferred, StringDomainCheckDeferred, StringDomainCheckDeferred})
 	require.NoError(t, err)
 
-	_, err = GetFunctionByNameWithDynamicStringDomains(
-		ctx, "regexp_instr", []types.Type{text, binary}, []bool{true})
+	_, err = GetFunctionByNameWithStringDomainCheckModes(
+		ctx, "regexp_instr", []types.Type{text, binary},
+		[]StringDomainCheckMode{StringDomainCheckDeferred})
 	require.Error(t, err, "a partial mask would silently assign ownership to the wrong argument")
 
-	_, err = GetFunctionByNameWithDynamicStringDomains(
-		ctx, "regexp_instr", []types.Type{text, binary}, []bool{false, false})
+	_, err = GetFunctionByNameWithStringDomainCheckModes(
+		ctx, "regexp_instr", []types.Type{text, binary},
+		[]StringDomainCheckMode{StringDomainCheckKnown, StringDomainCheckKnown})
 	require.Error(t, err, "an execute-time resolved mask must validate every concrete domain")
 	require.True(t, moerr.IsMoErrCode(err, moerr.ErrCharacterSetMismatch))
+
+	for _, tc := range []struct {
+		name      string
+		args      []types.Type
+		modes     []StringDomainCheckMode
+		wantError bool
+	}{
+		{
+			name: "binary marker does not trigger against fixed text",
+			args: []types.Type{binary, text},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckParamMarker, StringDomainCheckKnown,
+			},
+		},
+		{
+			name: "text marker remains incompatible with fixed binary",
+			args: []types.Type{text, binary},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckParamMarker, StringDomainCheckKnown,
+			},
+			wantError: true,
+		},
+		{
+			name: "binary marker remains compatible with fixed binary",
+			args: []types.Type{binary, binary},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckParamMarker, StringDomainCheckKnown,
+			},
+		},
+		{
+			name: "mixed marker domains do not create a static binary trigger",
+			args: []types.Type{binary, text},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckParamMarker, StringDomainCheckParamMarker,
+			},
+		},
+		{
+			name: "nested runtime binary still triggers against fixed text",
+			args: []types.Type{binary, text},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckKnown, StringDomainCheckKnown,
+			},
+			wantError: true,
+		},
+		{
+			name: "bare null contributes no domain",
+			args: []types.Type{text, binary},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckDomainless, StringDomainCheckKnown,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := GetFunctionByNameWithStringDomainCheckModes(
+				ctx, "regexp_instr", tc.args, tc.modes)
+			if tc.wantError {
+				require.Error(t, err)
+				require.True(t, moerr.IsMoErrCode(err, moerr.ErrCharacterSetMismatch))
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		fn    string
+		args  []types.Type
+		modes []StringDomainCheckMode
+	}{
+		{
+			name: "substr binary pattern marker owns result domain",
+			fn:   "regexp_substr",
+			args: []types.Type{types.New(types.T_varchar, 10, 0), binary},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckParamMarker, StringDomainCheckParamMarker,
+			},
+		},
+		{
+			name: "replace binary replacement marker owns result domain",
+			fn:   "regexp_replace",
+			args: []types.Type{text, text, binary},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckParamMarker, StringDomainCheckParamMarker, StringDomainCheckParamMarker,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved, err := GetFunctionByNameWithStringDomainCheckModes(
+				ctx, tc.fn, tc.args, tc.modes)
+			require.NoError(t, err)
+			require.Equal(t, types.StringDomainBinary,
+				types.StaticStringDomain(resolved.GetReturnType()))
+		})
+	}
+}
+
+func TestRegexpStringDomainCheckModeMatrix(t *testing.T) {
+	type operandState struct {
+		name    string
+		typ     types.Type
+		mode    StringDomainCheckMode
+		text    bool
+		trigger bool
+	}
+	text := types.T_varchar.ToType()
+	binary := types.T_varbinary.ToType()
+	states := []operandState{
+		{name: "known_text", typ: text, mode: StringDomainCheckKnown, text: true},
+		{name: "known_binary", typ: binary, mode: StringDomainCheckKnown, trigger: true},
+		{name: "marker_text", typ: text, mode: StringDomainCheckParamMarker, text: true},
+		{name: "marker_binary", typ: binary, mode: StringDomainCheckParamMarker},
+		{name: "deferred_text", typ: text, mode: StringDomainCheckDeferred},
+		{name: "deferred_binary", typ: binary, mode: StringDomainCheckDeferred},
+		{name: "domainless_text_shape", typ: text, mode: StringDomainCheckDomainless},
+		{name: "domainless_binary_shape", typ: binary, mode: StringDomainCheckDomainless},
+	}
+
+	for _, left := range states {
+		for _, middle := range states {
+			for _, right := range states {
+				operands := []operandState{left, middle, right}
+				hasText, hasBinaryTrigger := false, false
+				args := make([]types.Type, len(operands))
+				modes := make([]StringDomainCheckMode, len(operands))
+				for i, operand := range operands {
+					args[i], modes[i] = operand.typ, operand.mode
+					hasText = hasText || operand.text
+					hasBinaryTrigger = hasBinaryTrigger || operand.trigger
+				}
+
+				_, err := GetFunctionByNameWithStringDomainCheckModes(
+					context.Background(), "regexp_replace", args, modes)
+				wantError := hasText && hasBinaryTrigger
+				if wantError {
+					require.Error(t, err, "%s/%s/%s", left.name, middle.name, right.name)
+					require.True(t, moerr.IsMoErrCode(err, moerr.ErrCharacterSetMismatch), err)
+				} else {
+					require.NoError(t, err, "%s/%s/%s", left.name, middle.name, right.name)
+				}
+			}
+		}
+	}
 }
 
 func BenchmarkRegexpReplaceModes(b *testing.B) {
@@ -1109,6 +1257,62 @@ func Test_BuiltIn_RegexpValueFunctionsRejectEmptyPattern(t *testing.T) {
 		require.Error(t, err)
 		require.True(t, moerr.IsMoErrCode(err, moerr.ErrRegexpIllegalArgument), err)
 	}
+}
+
+func Test_BuiltIn_RegexpValidatesPresentArgumentsBeforeNullableResult(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	text := types.T_varchar.ToType()
+	int64Type := types.T_int64.ToType()
+	int8Type := types.T_int8.ToType()
+	nullText := NewFunctionTestInput(text, []string{""}, []bool{true})
+	invalidPattern := NewFunctionTestInput(text, []string{"["}, nil)
+	validPattern := NewFunctionTestInput(text, []string{"a"}, nil)
+	validText := NewFunctionTestInput(text, []string{"a"}, nil)
+	invalidMatchType := NewFunctionTestInput(text, []string{"z"}, nil)
+	validMatchType := NewFunctionTestInput(text, []string{"c"}, nil)
+	nullInt64 := NewFunctionTestInput(int64Type, []int64{0}, []bool{true})
+	nullInt8 := NewFunctionTestInput(int8Type, []int8{0}, []bool{true})
+
+	for _, tc := range []struct {
+		name       string
+		fn         fEvalFn
+		inputs     []FunctionTestInput
+		resultType types.Type
+	}{
+		{name: "regexp_operator_null_subject", fn: newOpBuiltInRegexp().builtInRegMatch, inputs: []FunctionTestInput{nullText, invalidPattern}, resultType: types.T_bool.ToType()},
+		{name: "not_regexp_null_subject", fn: newOpBuiltInRegexp().builtInNotRegMatch, inputs: []FunctionTestInput{nullText, invalidPattern}, resultType: types.T_bool.ToType()},
+		{name: "regexp_like_null_subject", fn: newOpBuiltInRegexp().builtInRegexpLike, inputs: []FunctionTestInput{nullText, invalidPattern, validMatchType}, resultType: types.T_bool.ToType()},
+		{name: "regexp_like_invalid_match_type_before_null_subject", fn: newOpBuiltInRegexp().builtInRegexpLike, inputs: []FunctionTestInput{nullText, validPattern, invalidMatchType}, resultType: types.T_bool.ToType()},
+		{name: "regexp_like_invalid_match_type_before_null_pattern", fn: newOpBuiltInRegexp().builtInRegexpLike, inputs: []FunctionTestInput{validText, nullText, invalidMatchType}, resultType: types.T_bool.ToType()},
+		{name: "instr_2_null_subject", fn: newOpBuiltInRegexp().builtInRegexpInstr, inputs: []FunctionTestInput{nullText, invalidPattern}, resultType: int64Type},
+		{name: "instr_3_null_position", fn: newOpBuiltInRegexp().builtInRegexpInstr, inputs: []FunctionTestInput{validText, invalidPattern, nullInt64}, resultType: int64Type},
+		{name: "instr_4_null_occurrence", fn: newOpBuiltInRegexp().builtInRegexpInstr, inputs: []FunctionTestInput{validText, invalidPattern, NewFunctionTestInput(int64Type, []int64{1}, nil), nullInt64}, resultType: int64Type},
+		{name: "instr_5_null_result_option", fn: newOpBuiltInRegexp().builtInRegexpInstr, inputs: []FunctionTestInput{validText, invalidPattern, NewFunctionTestInput(int64Type, []int64{1}, nil), NewFunctionTestInput(int64Type, []int64{1}, nil), nullInt8}, resultType: int64Type},
+		{name: "substr_2_null_subject", fn: newOpBuiltInRegexp().builtInRegexpSubstr, inputs: []FunctionTestInput{nullText, invalidPattern}, resultType: text},
+		{name: "substr_3_null_position", fn: newOpBuiltInRegexp().builtInRegexpSubstr, inputs: []FunctionTestInput{validText, invalidPattern, nullInt64}, resultType: text},
+		{name: "substr_4_null_occurrence", fn: newOpBuiltInRegexp().builtInRegexpSubstr, inputs: []FunctionTestInput{validText, invalidPattern, NewFunctionTestInput(int64Type, []int64{1}, nil), nullInt64}, resultType: text},
+		{name: "replace_3_null_replacement", fn: newOpBuiltInRegexp().builtInRegexpReplace, inputs: []FunctionTestInput{validText, invalidPattern, nullText}, resultType: text},
+		{name: "replace_4_null_position", fn: newOpBuiltInRegexp().builtInRegexpReplace, inputs: []FunctionTestInput{validText, invalidPattern, validText, nullInt64}, resultType: text},
+		{name: "replace_5_null_occurrence", fn: newOpBuiltInRegexp().builtInRegexpReplace, inputs: []FunctionTestInput{validText, invalidPattern, validText, NewFunctionTestInput(int64Type, []int64{1}, nil), nullInt64}, resultType: text},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tcc := NewFunctionTestCase(
+				proc, tc.inputs, NewFunctionTestResult(tc.resultType, true, nil, nil), tc.fn)
+			require.NoError(t, tcc.result.PreExtendAndReset(tcc.fnLength))
+			_, err := tcc.DebugRun()
+			require.Error(t, err)
+		})
+	}
+
+	nullMatchType := NewFunctionTestInput(text, []string{""}, []bool{true})
+	control := NewFunctionTestCase(
+		proc,
+		[]FunctionTestInput{nullText, invalidPattern, nullMatchType},
+		NewFunctionTestResult(types.T_bool.ToType(), false, []bool{false}, []bool{true}),
+		newOpBuiltInRegexp().builtInRegexpLike,
+	)
+	ok, info := control.Run()
+	require.True(t, ok, info, "a NULL match_type remains the earlier NULL result boundary")
 }
 
 func Test_BuiltIn_RegexpLikeRejectsEmptyPattern(t *testing.T) {

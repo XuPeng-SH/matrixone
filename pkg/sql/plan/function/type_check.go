@@ -233,10 +233,10 @@ func regexpStringDomainFixedTypeMatch(overloads []overload, inputs []types.Type)
 	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 2, nil)
 }
 
-func regexpStringDomainDynamicTypeMatch(
-	overloads []overload, inputs []types.Type, dynamicDomains []bool,
+func regexpStringDomainTypeMatchWithModes(
+	overloads []overload, inputs []types.Type, modes []StringDomainCheckMode,
 ) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 2, dynamicDomains)
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 2, modes)
 }
 
 // regexpReplaceStringDomainFixedTypeMatch includes the replacement string in
@@ -245,27 +245,31 @@ func regexpReplaceStringDomainFixedTypeMatch(overloads []overload, inputs []type
 	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 3, nil)
 }
 
-func regexpReplaceStringDomainDynamicTypeMatch(
-	overloads []overload, inputs []types.Type, dynamicDomains []bool,
+func regexpReplaceStringDomainTypeMatchWithModes(
+	overloads []overload, inputs []types.Type, modes []StringDomainCheckMode,
 ) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 3, dynamicDomains)
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 3, modes)
 }
 
 func regexpStringDomainFixedTypeMatchN(
-	overloads []overload, inputs []types.Type, stringOperands int, dynamicDomains []bool,
+	overloads []overload, inputs []types.Type, stringOperands int, modes []StringDomainCheckMode,
 ) checkResult {
 	matched := stringDomainFixedTypeMatch(overloads, inputs)
 	if matched.status != succeedMatched && matched.status != succeedWithCast {
 		return matched
 	}
 
-	var firstType types.Type
-	firstDomain := types.StringDomainNone
+	var firstText, firstBinaryTrigger types.Type
+	hasText, hasBinaryTrigger := false, false
 	if stringOperands > len(inputs) {
 		stringOperands = len(inputs)
 	}
 	for i := 0; i < stringOperands; i++ {
-		if i < len(dynamicDomains) && dynamicDomains[i] {
+		mode := StringDomainCheckKnown
+		if i < len(modes) {
+			mode = modes[i]
+		}
+		if mode == StringDomainCheckDeferred || mode == StringDomainCheckDomainless {
 			continue
 		}
 		domain := types.StaticStringDomain(inputs[i])
@@ -275,13 +279,35 @@ func regexpStringDomainFixedTypeMatchN(
 			// regexp-compatible through the ordinary string conversion path.
 			continue
 		}
-		if firstDomain == types.StringDomainNone {
-			firstType, firstDomain = inputs[i], domain
+		switch domain {
+		case types.StringDomainText:
+			if hasBinaryTrigger {
+				return newCheckResultWithCharacterSetMismatch(
+					regexpCharsetName(firstBinaryTrigger), regexpCharsetName(inputs[i]))
+			}
+			if !hasText {
+				firstText, hasText = inputs[i], true
+			}
+		case types.StringDomainBinary:
+			// MySQL excludes a direct PARAM_ITEM from is_binary_string().
+			// Its current binary domain still remains compatible with another
+			// binary operand, but it cannot make a fixed text operand illegal.
+			if mode == StringDomainCheckParamMarker {
+				continue
+			}
+			if hasText {
+				return newCheckResultWithCharacterSetMismatch(
+					regexpCharsetName(firstText), regexpCharsetName(inputs[i]))
+			}
+			if !hasBinaryTrigger {
+				firstBinaryTrigger, hasBinaryTrigger = inputs[i], true
+			}
+		default:
 			continue
 		}
-		if domain != firstDomain {
+		if hasText && hasBinaryTrigger {
 			return newCheckResultWithCharacterSetMismatch(
-				regexpCharsetName(firstType), regexpCharsetName(inputs[i]))
+				regexpCharsetName(firstText), regexpCharsetName(firstBinaryTrigger))
 		}
 	}
 	return matched
