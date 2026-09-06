@@ -4814,34 +4814,104 @@ type ParamValue struct {
 // infer numbers from text: consumers such as BIT_COUNT distinguish the binary
 // bytes "64" from the integer 64.
 func PreparedParamValueHasNumericRuntime(value any) bool {
+	_, ok := PreparedParamValueNumericReprepareType(value)
+	return ok
+}
+
+// PreparedParamValueNumericReprepareType returns the canonical numeric type that
+// a prepared marker owns after a MySQL-style reprepare. It deliberately does
+// not infer numbers from untyped text: consumers such as BIT_COUNT distinguish
+// the binary bytes "64" from the integer 64.
+//
+// This is a parameter category, not the source's physical width. MySQL
+// normalizes every integer to LONGLONG, every floating-point value to DOUBLE,
+// and DECIMAL to the maximum parameter precision. Retaining TINYINT or
+// DECIMAL(3,1), for example, would incorrectly constrain a later string value.
+func PreparedParamValueNumericReprepareType(value any) (types.Type, bool) {
 	if param, ok := value.(ParamValue); ok {
 		if param.Value == nil {
-			return false
+			return types.Type{}, false
 		}
 		if param.HasRuntimeType && preparedRuntimeTypeIsNumeric(param.RuntimeType) {
-			return true
+			return preparedNumericReprepareType(param.RuntimeType)
 		}
 		if param.HasSourceType && preparedRuntimeTypeIsNumeric(param.SourceType) {
-			return true
+			return preparedNumericReprepareType(param.SourceType)
 		}
-		if param.PrepareParamKind == vector.PrepareParamInteger ||
-			param.PrepareParamKind == vector.PrepareParamFloat ||
-			param.PrepareParamKind == vector.PrepareParamDecimal ||
-			param.PrepareParamKind == vector.PrepareParamBoolean {
-			return true
+		switch param.PrepareParamKind {
+		case vector.PrepareParamInteger:
+			if typ, ok := PreparedRuntimeTypeFromString(strings.TrimSpace(fmt.Sprint(param.Value))); ok && typ.Oid.IsInteger() {
+				return preparedNumericReprepareType(typ)
+			}
+			// Preserve the protocol domain even for an internally malformed value;
+			// materialization remains responsible for returning the existing error.
+			return types.T_int64.ToType(), true
+		case vector.PrepareParamFloat:
+			return types.T_float64.ToType(), true
+		case vector.PrepareParamDecimal:
+			return mysqlPreparedDecimalReprepareType(), true
+		case vector.PrepareParamBoolean:
+			return types.T_int64.ToType(), true
 		}
-		return PreparedParamValueHasNumericRuntime(param.Value)
+		return PreparedParamValueNumericReprepareType(param.Value)
 	}
+	var source types.Type
 	switch value.(type) {
-	case bool,
-		int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64, types.MoYear,
-		types.Decimal64, types.Decimal128, types.Decimal256:
-		return true
+	case bool:
+		source = types.T_bool.ToType()
+	case int, int64:
+		source = types.T_int64.ToType()
+	case int8:
+		source = types.T_int8.ToType()
+	case int16:
+		source = types.T_int16.ToType()
+	case int32:
+		source = types.T_int32.ToType()
+	case uint, uint64:
+		source = types.T_uint64.ToType()
+	case uint8:
+		source = types.T_uint8.ToType()
+	case uint16:
+		source = types.T_uint16.ToType()
+	case uint32:
+		source = types.T_uint32.ToType()
+	case float32:
+		source = types.T_float32.ToType()
+	case float64:
+		source = types.T_float64.ToType()
+	case types.MoYear:
+		source = types.T_year.ToType()
+	case types.Decimal64:
+		source = types.T_decimal64.ToType()
+	case types.Decimal128:
+		source = types.T_decimal128.ToType()
+	case types.Decimal256:
+		source = types.T_decimal256.ToType()
 	default:
-		return false
+		return types.Type{}, false
 	}
+	return preparedNumericReprepareType(source)
+}
+
+func preparedNumericReprepareType(source types.Type) (types.Type, bool) {
+	switch {
+	case source.Oid.IsUnsignedInt(), source.Oid == types.T_bit:
+		return types.T_uint64.ToType(), true
+	case source.Oid.IsSignedInt(), source.Oid == types.T_bool, source.Oid == types.T_year:
+		return types.T_int64.ToType(), true
+	case source.Oid == types.T_float32, source.Oid == types.T_float64:
+		return types.T_float64.ToType(), true
+	case source.IsDecimal():
+		return mysqlPreparedDecimalReprepareType(), true
+	default:
+		return types.Type{}, false
+	}
+}
+
+func mysqlPreparedDecimalReprepareType() types.Type {
+	// MySQL's DECIMAL_MAX_PRECISION and DECIMAL_MAX_SCALE. DECIMAL256 is
+	// MatrixOne's physical carrier for that logical parameter envelope.
+	return types.New(types.T_decimal256, 65, 30)
 }
 
 func preparedRuntimeTypeIsNumeric(typ types.Type) bool {

@@ -374,9 +374,15 @@ type PrepareStmt struct {
 	// rescanning the full plan for every EXECUTE.
 	numericOverloadParamPositions []int32
 	// bitCountOverloadParamPositions owns BIT_COUNT's asymmetric prepared
-	// contract: text/BLOB packets keep the binary-string default, while actual
-	// numeric runtime values rebind the overload.
+	// contract. Each marker starts with the binary-string default; after an
+	// actual numeric value reparses the statement, later text/BLOB values keep
+	// that marker's canonical numeric parameter category, matching MySQL's
+	// one-way parameter-type evolution without retaining source-width limits.
 	bitCountOverloadParamPositions []int32
+	// bitCountNumericParamTypes is bounded by the statement parameter count and
+	// belongs to the current prepared-plan generation. A zero entry means that
+	// the corresponding BIT_COUNT marker has not observed a numeric value.
+	bitCountNumericParamTypes []types.Type
 	// runtimePlan/runtimeCompile form a one-entry bounded cache keyed by the
 	// stable parameter semantic category. The cached runtime plan retains
 	// ParamRefs, so equivalent values reuse the compile without embedding the

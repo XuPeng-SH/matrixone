@@ -1849,7 +1849,7 @@ func TestPreparedNumericOverloadSpecializationReusesRuntimeCategory(t *testing.T
 	floatParams.Free(cw.proc.Mp())
 }
 
-func TestPreparedBitCountSpecializesOnlyNumericProtocolValues(t *testing.T) {
+func TestPreparedBitCountPreservesRepreparedNumericProtocolType(t *testing.T) {
 	ses, prepareStmt, cw, execCtx := newPreparedExecuteEnvForSQL(t, 217, "select bit_count(?)")
 	defer func() {
 		cw.proc.SetPrepareParams(nil)
@@ -1867,6 +1867,17 @@ func TestPreparedBitCountSpecializesOnlyNumericProtocolValues(t *testing.T) {
 			return nil
 		}))
 		return found
+	}
+	evalBitCount := func(queryPlan *plan.Plan) uint64 {
+		projectNode := queryPlan.GetQuery().Nodes[queryPlan.GetQuery().Steps[len(queryPlan.GetQuery().Steps)-1]]
+		executor, execErr := colexec.NewExpressionExecutor(cw.proc, projectNode.ProjectList[0])
+		require.NoError(t, execErr)
+		defer executor.Free()
+		input := batch.New(nil)
+		input.SetRowCount(1)
+		result, evalErr := executor.Eval(cw.proc, []*batch.Batch{input}, nil)
+		require.NoError(t, evalErr)
+		return vector.GetFixedAtNoTypeCheck[uint64](result, 0)
 	}
 
 	install := func(value string, mysqlType defines.MysqlType, kind vector.PrepareParamKind) *vector.Vector {
@@ -1887,7 +1898,7 @@ func TestPreparedBitCountSpecializesOnlyNumericProtocolValues(t *testing.T) {
 	require.Equal(t, int32(types.T_varbinary), fn.GetF().Args[0].Typ.Id)
 
 	cw.proc.SetPrepareParams(nil)
-	integerParams := install("64", defines.MYSQL_TYPE_LONGLONG, vector.PrepareParamInteger)
+	integerParams := install("127", defines.MYSQL_TYPE_TINY, vector.PrepareParamInteger)
 	stringParams.Free(cw.proc.Mp())
 	_, integerPlan, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
 	require.NoError(t, err)
@@ -1897,13 +1908,206 @@ func TestPreparedBitCountSpecializesOnlyNumericProtocolValues(t *testing.T) {
 	require.Equal(t, int32(types.T_int64), fn.GetF().Args[0].Typ.Id)
 
 	cw.proc.SetPrepareParams(nil)
-	blobParams := install("64", defines.MYSQL_TYPE_BLOB, vector.PrepareParamNone)
+	blobParams := install("128", defines.MYSQL_TYPE_BLOB, vector.PrepareParamNone)
 	integerParams.Free(cw.proc.Mp())
 	_, blobPlan, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
 	require.NoError(t, err)
-	require.Same(t, preparePlan, blobPlan)
+	require.NotSame(t, preparePlan, blobPlan)
+	fn = findBitCount(blobPlan)
+	require.NotNil(t, fn)
+	require.Equal(t, int32(types.T_int64), fn.GetF().Args[0].Typ.Id,
+		"numeric-to-BLOB must retain MySQL's widened integer parameter category")
+	require.Equal(t, uint64(1), evalBitCount(blobPlan),
+		"the later value must not overflow the source TINYINT width")
+
 	cw.proc.SetPrepareParams(nil)
+	decimalParams := install("64.5", defines.MYSQL_TYPE_NEWDECIMAL, vector.PrepareParamDecimal)
 	blobParams.Free(cw.proc.Mp())
+	_, decimalPlan, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
+	require.NoError(t, err)
+	fn = findBitCount(decimalPlan)
+	require.NotNil(t, fn)
+	require.Equal(t, int32(types.T_decimal256), fn.GetF().Args[0].Typ.Id)
+	require.Equal(t, int32(65), fn.GetF().Args[0].Typ.Width)
+	require.Equal(t, int32(30), fn.GetF().Args[0].Typ.Scale)
+
+	cw.proc.SetPrepareParams(nil)
+	expandedDecimalParams := install("1000", defines.MYSQL_TYPE_BLOB, vector.PrepareParamNone)
+	decimalParams.Free(cw.proc.Mp())
+	_, expandedDecimalPlan, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
+	require.NoError(t, err)
+	fn = findBitCount(expandedDecimalPlan)
+	require.NotNil(t, fn)
+	require.Equal(t, int32(types.T_decimal256), fn.GetF().Args[0].Typ.Id)
+	require.Equal(t, int32(65), fn.GetF().Args[0].Typ.Width)
+	require.Equal(t, int32(30), fn.GetF().Args[0].Typ.Scale)
+	require.Equal(t, uint64(6), evalBitCount(expandedDecimalPlan),
+		"the later value must not retain the first DECIMAL(3,1) envelope")
+	cw.proc.SetPrepareParams(nil)
+	expandedDecimalParams.Free(cw.proc.Mp())
+}
+
+func TestPreparedBitCountNumericRuntimeTypesArePerPosition(t *testing.T) {
+	prepareStmt := &PrepareStmt{bitCountOverloadParamPositions: []int32{0, 1}}
+	decimalType := types.New(types.T_decimal128, 5, 1)
+	wideDecimalType := types.New(types.T_decimal256, 65, 30)
+
+	values := []any{
+		plan2.ParamValue{Value: "64", RuntimeType: types.T_int32.ToType(), HasRuntimeType: true},
+		plan2.ParamValue{Value: "64", SourceType: types.T_varbinary.ToType(), HasSourceType: true},
+	}
+	require.True(t, prepareStmt.applyBitCountNumericRuntimeTypes(values))
+	require.Equal(t, types.T_int64, prepareStmt.bitCountNumericParamTypes[0].Oid)
+	require.Equal(t, types.T_int64, values[0].(plan2.ParamValue).RuntimeType.Oid)
+	require.Equal(t, types.T_any, prepareStmt.bitCountNumericParamTypes[1].Oid)
+
+	values = []any{
+		plan2.ParamValue{Value: "7", SourceType: types.T_varchar.ToType(), HasSourceType: true},
+		plan2.ParamValue{Value: "64.5", SourceType: decimalType, HasSourceType: true},
+	}
+	require.True(t, prepareStmt.applyBitCountNumericRuntimeTypes(values))
+	require.Equal(t, types.T_int64, values[0].(plan2.ParamValue).RuntimeType.Oid)
+	require.Equal(t, wideDecimalType, prepareStmt.bitCountNumericParamTypes[1])
+
+	values = []any{
+		plan2.ParamValue{},
+		plan2.ParamValue{Value: "64", SourceType: types.T_varbinary.ToType(), HasSourceType: true},
+	}
+	require.True(t, prepareStmt.applyBitCountNumericRuntimeTypes(values))
+	require.False(t, values[0].(plan2.ParamValue).HasRuntimeType,
+		"NULL must not need specialization for its current execution")
+	require.Equal(t, wideDecimalType, values[1].(plan2.ParamValue).RuntimeType)
+	require.Equal(t, types.T_int64, prepareStmt.bitCountNumericParamTypes[0].Oid,
+		"NULL must not clear the position's remembered numeric type")
+
+	values = []any{
+		plan2.ParamValue{Value: "8", SourceType: types.T_varbinary.ToType(), HasSourceType: true},
+		plan2.ParamValue{},
+	}
+	require.True(t, prepareStmt.applyBitCountNumericRuntimeTypes(values))
+	require.Equal(t, types.T_int64, values[0].(plan2.ParamValue).RuntimeType.Oid)
+
+	values = []any{
+		plan2.ParamValue{Value: "8.5", RuntimeType: decimalType, HasRuntimeType: true},
+		plan2.ParamValue{},
+	}
+	require.True(t, prepareStmt.applyBitCountNumericRuntimeTypes(values))
+	require.Equal(t, wideDecimalType, prepareStmt.bitCountNumericParamTypes[0],
+		"a newer numeric domain must replace the preceding one")
+	values[0] = plan2.ParamValue{Value: "8", SourceType: types.T_varbinary.ToType(), HasSourceType: true}
+	require.True(t, prepareStmt.applyBitCountNumericRuntimeTypes(values))
+	require.Equal(t, wideDecimalType, values[0].(plan2.ParamValue).RuntimeType)
+}
+
+func TestPreparedBitCountNumericRuntimeTypesUseReprepareCategories(t *testing.T) {
+	prepareStmt := &PrepareStmt{bitCountOverloadParamPositions: []int32{0}}
+
+	for _, test := range []struct {
+		name  string
+		first plan2.ParamValue
+		later string
+		want  types.Type
+	}{
+		{
+			name:  "tiny then value outside tiny range",
+			first: plan2.ParamValue{Value: "127", RuntimeType: types.T_int8.ToType(), HasRuntimeType: true},
+			later: "128",
+			want:  types.T_int64.ToType(),
+		},
+		{
+			name:  "unsigned tiny preserves unsigned category",
+			first: plan2.ParamValue{Value: "255", RuntimeType: types.T_uint8.ToType(), HasRuntimeType: true},
+			later: "256",
+			want:  types.T_uint64.ToType(),
+		},
+		{
+			name:  "boolean follows mysql integer parameter semantics",
+			first: plan2.ParamValue{Value: "1", RuntimeType: types.T_bool.ToType(), HasRuntimeType: true},
+			later: "3",
+			want:  types.T_int64.ToType(),
+		},
+		{
+			name:  "float widens to double",
+			first: plan2.ParamValue{Value: "1.5", RuntimeType: types.T_float32.ToType(), HasRuntimeType: true},
+			later: "3.4028236e38",
+			want:  types.T_float64.ToType(),
+		},
+		{
+			name:  "decimal does not retain first value precision",
+			first: plan2.ParamValue{Value: "64.5", RuntimeType: types.New(types.T_decimal64, 3, 1), HasRuntimeType: true},
+			later: "1000",
+			want:  types.New(types.T_decimal256, 65, 30),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			values := []any{test.first}
+			require.True(t, prepareStmt.applyBitCountNumericRuntimeTypes(values))
+			require.Equal(t, test.want, prepareStmt.bitCountNumericParamTypes[0])
+			require.Equal(t, test.want, values[0].(plan2.ParamValue).RuntimeType)
+
+			values[0] = plan2.ParamValue{
+				Value: test.later, SourceType: types.T_varchar.ToType(), HasSourceType: true,
+			}
+			require.True(t, prepareStmt.applyBitCountNumericRuntimeTypes(values))
+			require.Equal(t, test.want, values[0].(plan2.ParamValue).RuntimeType)
+		})
+	}
+}
+
+func TestPreparedBitCountStateAdvancesAlongsideOtherNumericOverloads(t *testing.T) {
+	ses, prepareStmt, cw, execCtx := newPreparedExecuteEnvForSQL(
+		t, 218, "select abs(?), bit_count(?)")
+	defer func() {
+		cw.proc.SetPrepareParams(nil)
+		prepareStmt.Close()
+	}()
+	preparePlan := prepareStmt.PreparePlan.GetDcl().GetPrepare().Plan
+	prepareStmt.numericOverloadParamPositions = plan2.PreparedPlanNumericFallbackParamPositions(preparePlan)
+	require.Equal(t, []int32{0}, prepareStmt.numericOverloadParamPositions)
+	require.Equal(t, []int32{1}, prepareStmt.bitCountOverloadParamPositions)
+
+	install := func(absValue, bitCountValue string, bitCountType defines.MysqlType) *vector.Vector {
+		params := vector.NewVec(types.T_text.ToType())
+		require.NoError(t, vector.AppendBytes(params, []byte(absValue), false, cw.proc.Mp()))
+		require.NoError(t, vector.AppendBytes(params, []byte(bitCountValue), false, cw.proc.Mp()))
+		params.SetPrepareParamKinds([]vector.PrepareParamKind{
+			vector.PrepareParamInteger, vector.PrepareParamInteger,
+		})
+		prepareStmt.params = params
+		prepareStmt.ParamTypes = []byte{
+			byte(defines.MYSQL_TYPE_LONGLONG), 0, byte(bitCountType), 0,
+		}
+		return params
+	}
+
+	firstParams := install("-1", "127", defines.MYSQL_TYPE_TINY)
+	_, _, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
+	require.NoError(t, err)
+	require.Equal(t, types.T_int64, prepareStmt.bitCountNumericParamTypes[1].Oid,
+		"ABS specialization must not short-circuit BIT_COUNT's independent state transition")
+
+	cw.proc.SetPrepareParams(nil)
+	secondParams := install("-2", "128", defines.MYSQL_TYPE_BLOB)
+	firstParams.Free(cw.proc.Mp())
+	_, secondPlan, _, _, _, err := initExecuteStmtParam(execCtx, ses, cw, nil, prepareStmt.Name)
+	require.NoError(t, err)
+	projectNode := secondPlan.GetQuery().Nodes[secondPlan.GetQuery().Steps[len(secondPlan.GetQuery().Steps)-1]]
+	require.Len(t, projectNode.ProjectList, 2)
+	bitCount := projectNode.ProjectList[1].GetF()
+	require.NotNil(t, bitCount)
+	require.Equal(t, int32(types.T_int64), bitCount.Args[0].Typ.Id)
+
+	executor, execErr := colexec.NewExpressionExecutor(cw.proc, projectNode.ProjectList[1])
+	require.NoError(t, execErr)
+	defer executor.Free()
+	input := batch.New(nil)
+	input.SetRowCount(1)
+	result, evalErr := executor.Eval(cw.proc, []*batch.Batch{input}, nil)
+	require.NoError(t, evalErr)
+	require.Equal(t, uint64(1), vector.GetFixedAtNoTypeCheck[uint64](result, 0))
+
+	cw.proc.SetPrepareParams(nil)
+	secondParams.Free(cw.proc.Mp())
 }
 
 func TestPreparedExplicitDoubleAbsReusesOriginalCachedCompile(t *testing.T) {

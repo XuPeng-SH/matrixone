@@ -106,6 +106,24 @@ Metadata slices are bounded by statement parameter count and are cleared before
 reuse. The prepared statement/session remains their owner. No new goroutine,
 wait, retry, or external resource is introduced.
 
+### Prepared `BIT_COUNT` type evolution
+
+`BIT_COUNT(?)` has a separate asymmetric contract. An unresolved marker begins
+in the binary-string overload. The first numeric value reparses that marker and
+records MySQL's canonical parameter category: signed or unsigned `LONGLONG`,
+`DOUBLE`, or `DECIMAL(65,30)`. Later text or BLOB values use that category until
+a newer numeric execution changes it. The source's physical width and decimal
+precision are deliberately not retained, because they must not constrain a
+later string after reprepare. NULL neither requires a specialized plan for its
+own execution nor clears the recorded type. Multiple markers evolve independently.
+
+The state is owned by `PrepareStmt`, bounded by the statement parameter count,
+and cleared when metadata rebuilds the prepared-plan generation. It is not part
+of the reusable plan: execute-time rebinding still copies the immutable prepared
+plan and restores typed runtime literals to parameter references before caching
+the specialized compile. Explicit casts remain fixed type boundaries and do not
+participate in this evolution.
+
 ## Binary matching representation
 
 Go RE2 has no byte-mode switch. Binary execution maps each non-ASCII byte to a

@@ -1293,6 +1293,10 @@ func initExecuteStmtParamWithResolverInSession(
 			newPreparePlan.Plan)
 		prepareStmt.bitCountOverloadParamPositions = plan2.PreparedPlanBitCountFallbackParamPositions(
 			newPreparePlan.Plan)
+		// Parameter type evolution belongs to one prepared-plan generation. The
+		// rebuilt plan has resolved against fresh metadata and must not inherit a
+		// numeric BIT_COUNT category selected by the preceding generation.
+		prepareStmt.bitCountNumericParamTypes = nil
 		prepareStmt.refreshFixedIntegerParamPositions(newPreparePlan.Plan)
 		prepareStmt.ColDefData = newColDefData
 		if execCtx.input != nil && execCtx.input.isBinaryProtExecute {
@@ -1381,8 +1385,9 @@ func initExecuteStmtParamWithResolverInSession(
 	runtimeNumericPrefixCandidate := false
 	// The planner records deferred overloads explicitly on the prepared plan.
 	// Carry this bounded metadata into execution instead of walking every
-	// expression tree for each EXECUTE. ABS always rebinds; BIT_COUNT keeps its
-	// binary-string default unless the current runtime domain is numeric.
+	// expression tree for each EXECUTE. ABS always rebinds; BIT_COUNT starts in
+	// the binary-string default and keeps the last canonical numeric parameter
+	// category it observes.
 	deferredNumericOverloadCandidate := len(prepareStmt.numericOverloadParamPositions) > 0
 	deferredBitCountOverloadCandidate := len(prepareStmt.bitCountOverloadParamPositions) > 0
 	runtimeNumericOverloadCandidate := deferredNumericOverloadCandidate &&
@@ -1488,9 +1493,12 @@ func initExecuteStmtParamWithResolverInSession(
 			if err != nil {
 				return nil, nil, nil, originSQL, false, err
 			}
+			// Do not put this state transition on the right side of ||. A statement
+			// may also contain ABS(?), which already makes the left side true but
+			// must not prevent BIT_COUNT's independent marker state from advancing.
+			bitCountNumericOverloadCandidate := prepareStmt.applyBitCountNumericRuntimeTypes(cwft.paramVals)
 			runtimeNumericOverloadCandidate = runtimeNumericOverloadCandidate ||
-				preparedParamValuesHaveNumericRuntimeAtPositions(
-					cwft.paramVals, prepareStmt.bitCountOverloadParamPositions)
+				bitCountNumericOverloadCandidate
 			if runtimeDirectResultCandidate {
 				if err = applyBinaryDirectResultDecimalTypes(
 					reqCtx, cwft.paramVals, prepareStmt.ParamTypes, runtimeDirectResultPositions); err != nil {
@@ -1537,9 +1545,9 @@ func initExecuteStmtParamWithResolverInSession(
 			cwft.proc.SetOwnedPrepareParamsWithMeta(params, paramIsBin, paramKinds, paramBinaryString)
 		}
 		cwft.paramVals = paramVals
+		bitCountNumericOverloadCandidate := prepareStmt.applyBitCountNumericRuntimeTypes(cwft.paramVals)
 		runtimeNumericOverloadCandidate = runtimeNumericOverloadCandidate ||
-			preparedParamValuesHaveNumericRuntimeAtPositions(
-				cwft.paramVals, prepareStmt.bitCountOverloadParamPositions)
+			bitCountNumericOverloadCandidate
 	} else {
 		if numParams > 0 {
 			return nil, nil, nil, originSQL, false, moerr.NewInvalidInput(reqCtx, "Incorrect arguments to EXECUTE")
@@ -2268,16 +2276,54 @@ func preparedParamValues(proc *process.Process, paramTypes []byte) ([]any, error
 	return values, nil
 }
 
-func preparedParamValuesHaveNumericRuntimeAtPositions(values []any, positions []int32) bool {
+func (prepareStmt *PrepareStmt) applyBitCountNumericRuntimeTypes(values []any) bool {
+	positions := prepareStmt.bitCountOverloadParamPositions
+	if len(positions) == 0 {
+		prepareStmt.bitCountNumericParamTypes = nil
+		return false
+	}
+	if len(prepareStmt.bitCountNumericParamTypes) != len(values) {
+		prepareStmt.bitCountNumericParamTypes = make([]types.Type, len(values))
+	}
+
+	numeric := false
 	for _, position := range positions {
 		if position < 0 || int(position) >= len(values) {
 			continue
 		}
-		if plan2.PreparedParamValueHasNumericRuntime(values[position]) {
-			return true
+		index := int(position)
+		if runtimeType, ok := plan2.PreparedParamValueNumericReprepareType(values[index]); ok {
+			prepareStmt.bitCountNumericParamTypes[index] = runtimeType
+			// The execution that triggers reprepare already runs under the canonical
+			// parameter category. Rewrite it together with the latch so planning,
+			// cache identity, and later string executions cannot observe different
+			// sides of the same state transition.
+			if paramValue, ok := values[index].(plan2.ParamValue); ok {
+				paramValue.RuntimeType = runtimeType
+				paramValue.HasRuntimeType = true
+				values[index] = paramValue
+			}
+			numeric = true
+			continue
 		}
+
+		// NULL has no runtime type and must not clear the marker's last numeric
+		// type. It does not need specialization for this execution, because both
+		// overloads return NULL. A later non-NULL value will reuse the latch.
+		paramValue, ok := values[index].(plan2.ParamValue)
+		if !ok || paramValue.Value == nil {
+			continue
+		}
+		rememberedType := prepareStmt.bitCountNumericParamTypes[index]
+		if rememberedType.Oid == types.T_any {
+			continue
+		}
+		paramValue.RuntimeType = rememberedType
+		paramValue.HasRuntimeType = true
+		values[index] = paramValue
+		numeric = true
 	}
-	return false
+	return numeric
 }
 
 func binaryProtocolRuntimeParamTypes(paramTypes []byte, params *vector.Vector) []types.Type {
