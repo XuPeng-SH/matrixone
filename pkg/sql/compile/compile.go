@@ -7644,12 +7644,15 @@ func (c *Compile) compileMultiUpdate(node *plan.Node, ss []*Scope) ([]*Scope, er
 
 func (c *Compile) compilePreInsertUk(node *plan.Node, ss []*Scope) []*Scope {
 	currentFirstFlag := c.anal.isFirst
-	if (node.PreInsertUkCtx.GetInsertIgnoreMultiDedup() ||
-		node.PreInsertUkCtx.GetOdkuTargetArbitration()) &&
-		(len(ss) > 1 || ss[0].NodeInfo.Mcpu > 1) {
+	if node.PreInsertUkCtx.GetInsertIgnoreMultiDedup() ||
+		node.PreInsertUkCtx.GetOdkuTargetArbitration() {
 		// Ordered multi-key arbitration is row-global: partitioning by one key
-		// cannot observe conflicts on the other keys. Merge candidate streams before
-		// the stateful arbiter; ordinary index PRE_INSERT_UK stays parallel.
+		// cannot observe conflicts on the other keys. Always introduce an explicit
+		// singleton pipeline boundary before the stateful arbiter. A scope with
+		// Mcpu==0 can still contain a source whose physical pipeline fans out later
+		// (notably INSERT ... SELECT), so compile-time scope counts are not a safe
+		// proof that the operator will have one statement-global instance. Ordinary
+		// index PRE_INSERT_UK stays parallel.
 		ss = []*Scope{c.newMergeScope(ss)}
 	}
 	for i := range ss {

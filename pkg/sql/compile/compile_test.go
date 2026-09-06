@@ -2722,6 +2722,24 @@ func TestCompilePreInsertUkMergesParallelOrderedArbitrationInput(t *testing.T) {
 	}
 }
 
+func TestCompilePreInsertUkSerializesUnknownDOPOrderedInput(t *testing.T) {
+	c := NewMockCompile(t)
+	c.anal = &AnalyzeModule{}
+	input := newScope(Normal)
+	input.NodeInfo = engine.Node{Addr: "127.0.0.1:18000", Mcpu: 0}
+	input.Proc = c.proc.NewNoContextChildProc(0)
+	input.setRootOperator(colexec.NewMockOperator())
+
+	result := c.compilePreInsertUk(&plan.Node{PreInsertUkCtx: &plan.PreInsertUkCtx{
+		OdkuTargetArbitration: true,
+	}}, []*Scope{input})
+
+	require.Len(t, result, 1)
+	require.NotSame(t, input, result[0])
+	require.Equal(t, 1, result[0].NodeInfo.Mcpu)
+	require.Contains(t, result[0].PreScopes, input)
+}
+
 func newShuffleGroupTestNodes(dop int32) (*plan.Node, []*plan.Node) {
 	col := &plan.Expr{
 		Typ: plan.Type{Id: int32(types.T_int64)},
