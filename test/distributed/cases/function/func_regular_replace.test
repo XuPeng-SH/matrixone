@@ -70,3 +70,18 @@ SELECT REGEXP_INSTR('abc', 'a*', 1, 2, 0) AS after_nonempty,
 # Binary subjects interpret pos as a byte offset.
 SELECT HEX(REGEXP_REPLACE(CAST(_binary'中中' AS BINARY(6)), CAST(_binary'中' AS BINARY(3)), _binary'X', 2, 1)) AS binary_replace,
        HEX(REGEXP_REPLACE(CAST(_binary'中中' AS VARBINARY(6)), CAST(_binary'中' AS VARBINARY(3)), _binary'X', 2, 1)) AS varbinary_replace;
+
+# A direct binary replacement marker participates in compatibility without
+# selecting byte matching. Its bytes are converted from MySQL's binary
+# regexp facade (Windows-1252) into the text result domain on every execution.
+PREPARE regexp_replacement_charset FROM
+    'SELECT HEX(REGEXP_REPLACE(''a'', ''a'', ?)) AS replacement_hex';
+SET @regexp_replacement = _binary 0xff;
+EXECUTE regexp_replacement_charset USING @regexp_replacement;
+SET @regexp_replacement = _binary 0x80;
+EXECUTE regexp_replacement_charset USING @regexp_replacement;
+SET @regexp_replacement = '中';
+EXECUTE regexp_replacement_charset USING @regexp_replacement;
+SET @regexp_replacement = _binary 0xe4b8ad;
+EXECUTE regexp_replacement_charset USING @regexp_replacement;
+DEALLOCATE PREPARE regexp_replacement_charset;

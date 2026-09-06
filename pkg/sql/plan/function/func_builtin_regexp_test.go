@@ -606,19 +606,20 @@ func Test_BuiltIn_RegexpUsesMatchOperandDomain(t *testing.T) {
 		want            []string
 		wantBinary      bool
 	}{
-		{name: "subject selects binary matching", binaryParameter: 0, want: []string{"XXX", "X"}, wantBinary: true},
-		{name: "pattern selects binary matching", binaryParameter: 1, want: []string{"XXX", "X"}, wantBinary: true},
+		{name: "subject selects binary matching", binaryParameter: 0, want: []string{"\xff\xff\xff", "X"}, wantBinary: true},
+		{name: "pattern selects binary matching", binaryParameter: 1, want: []string{"\xff\xff\xff", "X"}, wantBinary: true},
 	} {
 		t.Run("regexp_replace_"+tc.name, func(t *testing.T) {
 			replace := NewFunctionTestCase(proc,
 				[]FunctionTestInput{
 					NewFunctionTestInput(varchar, []string{"中", "中"}, nil),
 					NewFunctionTestInput(varchar, []string{".", "."}, nil),
-					NewFunctionTestInput(varchar, []string{"X", "X"}, nil),
+					NewFunctionTestInput(varchar, []string{"\xff", "X"}, nil),
 				},
 				NewFunctionTestResult(varchar, false, tc.want, nil),
 				newOpBuiltInRegexp().builtInRegexpReplace)
 			setFirstRowBinary(t, &replace, tc.binaryParameter)
+			setFirstRowBinary(t, &replace, 2)
 			ok, info := replace.Run()
 			require.True(t, ok, info)
 			require.Equal(t, tc.wantBinary, replace.GetResultVectorDirectly().GetIsBinaryStringAt(0))
@@ -628,17 +629,19 @@ func Test_BuiltIn_RegexpUsesMatchOperandDomain(t *testing.T) {
 
 	for _, tc := range []struct {
 		name          string
+		replacement   string
+		want          string
 		controlInputs []FunctionTestInput
 	}{
-		{name: "three arguments"},
+		{name: "three arguments", replacement: "\xff", want: "ÿ"},
 		{
-			name: "four arguments",
+			name: "four arguments", replacement: "\x80", want: "€",
 			controlInputs: []FunctionTestInput{
 				NewFunctionTestInput(types.T_int64.ToType(), []int64{1}, nil),
 			},
 		},
 		{
-			name: "five arguments",
+			name: "five arguments", replacement: "中", want: "ä¸\u00ad",
 			controlInputs: []FunctionTestInput{
 				NewFunctionTestInput(types.T_int64.ToType(), []int64{1}, nil),
 				NewFunctionTestInput(types.T_int64.ToType(), []int64{0}, nil),
@@ -649,11 +652,11 @@ func Test_BuiltIn_RegexpUsesMatchOperandDomain(t *testing.T) {
 			inputs := []FunctionTestInput{
 				NewFunctionTestInput(varchar, []string{"中"}, nil),
 				NewFunctionTestInput(varchar, []string{"."}, nil),
-				NewFunctionTestInput(varchar, []string{"X"}, nil),
+				NewFunctionTestInput(varchar, []string{tc.replacement}, nil),
 			}
 			inputs = append(inputs, tc.controlInputs...)
 			replace := NewFunctionTestCase(proc, inputs,
-				NewFunctionTestResult(varchar, false, []string{"X"}, nil),
+				NewFunctionTestResult(varchar, false, []string{tc.want}, nil),
 				newOpBuiltInRegexp().builtInRegexpReplace)
 			setFirstRowBinary(t, &replace, 2)
 			ok, info := replace.Run()
@@ -677,6 +680,65 @@ func Test_BuiltIn_RegexpUsesMatchOperandDomain(t *testing.T) {
 	ok, info = replaceWithUnicodePattern.Run()
 	require.True(t, ok, info)
 	require.False(t, replaceWithUnicodePattern.GetResultVectorDirectly().GetIsBinaryStringAt(0))
+}
+
+func TestRegexpReplacementForMatchDomain(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		replacement string
+		want        string
+	}{
+		{name: "ASCII is unchanged", replacement: "AZ", want: "AZ"},
+		{name: "latin1 upper byte", replacement: "\xff", want: "ÿ"},
+		{name: "windows 1252 printable byte", replacement: "\x80", want: "€"},
+		{name: "windows 1252 undefined byte", replacement: "\x81", want: "\u0081"},
+		{name: "ASCII suffix after high byte", replacement: "\xffA", want: "ÿA"},
+		{name: "utf8 looking bytes are decoded independently", replacement: "中", want: "ä¸\u00ad"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, regexpBinaryReplacementToText(tc.replacement))
+		})
+	}
+
+	windows1252Bytes := make([]byte, 0x20)
+	for i := range windows1252Bytes {
+		windows1252Bytes[i] = byte(0x80 + i)
+	}
+	require.Equal(t,
+		"€\u0081‚ƒ„…†‡ˆ‰Š‹Œ\u008dŽ\u008f\u0090‘’“”•–—˜™š›œ\u009džŸ",
+		regexpBinaryReplacementToText(string(windows1252Bytes)))
+
+	latin1Bytes := make([]byte, 0x60)
+	latin1Runes := make([]rune, 0, len(latin1Bytes))
+	for i := range latin1Bytes {
+		latin1Bytes[i] = byte(0xa0 + i)
+		latin1Runes = append(latin1Runes, rune(0xa0+i))
+	}
+	require.Equal(t, string(latin1Runes),
+		regexpBinaryReplacementToText(string(latin1Bytes)))
+
+	proc := testutil.NewProcess(t)
+	constantBinary, err := vector.NewConstBytes(types.T_blob.ToType(), []byte{0xff}, 2, proc.Mp())
+	require.NoError(t, err)
+	defer constantBinary.Free(proc.Mp())
+	converter := newRegexpReplacementDomainConverter(constantBinary)
+	require.True(t, converter.mayBeBinary)
+	require.True(t, converter.constant)
+	require.Equal(t, "\xff", converter.forMatchDomain("\xff", 0, true))
+	require.False(t, converter.constantTextConverted,
+		"a binary match must not pay for text conversion")
+	require.Equal(t, "ÿ", converter.forMatchDomain("\xff", 0, false))
+	require.True(t, converter.constantTextConverted)
+	require.Equal(t, "ÿ", converter.forMatchDomain("\xff", 1, false),
+		"a constant replacement must reuse its converted value across rows")
+
+	constantText, err := vector.NewConstBytes(types.T_varchar.ToType(), []byte("中"), 1, proc.Mp())
+	require.NoError(t, err)
+	defer constantText.Free(proc.Mp())
+	textConverter := newRegexpReplacementDomainConverter(constantText)
+	require.False(t, textConverter.mayBeBinary)
+	require.Equal(t, "中", textConverter.forMatchDomain("中", 0, false))
+	require.False(t, textConverter.constantTextConverted)
 }
 
 func Test_BuiltIn_RegexpHonorsSelectList(t *testing.T) {

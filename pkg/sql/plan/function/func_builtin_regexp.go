@@ -803,6 +803,7 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 	p2 := vector.GenerateFunctionStrParameter(parameters[1]) // pat
 	p3 := vector.GenerateFunctionStrParameter(parameters[2]) // repl
 	rs := vector.MustFunctionResult[types.Varlena](result)
+	replacementConverter := newRegexpReplacementDomainConverter(parameters[2])
 
 	switch len(parameters) {
 	case 3:
@@ -832,7 +833,11 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 					return err
 				}
 			} else {
-				val, err := op.regMap.regularReplaceWithMode(functionUtil.QuickBytesToStr(v2), functionUtil.QuickBytesToStr(v1), functionUtil.QuickBytesToStr(v3), 1, 0, matchingIsBinary)
+				replacement := functionUtil.QuickBytesToStr(v3)
+				if replacementConverter.mayBeBinary {
+					replacement = replacementConverter.forMatchDomain(replacement, int(i), matchingIsBinary)
+				}
+				val, err := op.regMap.regularReplaceWithMode(functionUtil.QuickBytesToStr(v2), functionUtil.QuickBytesToStr(v1), replacement, 1, 0, matchingIsBinary)
 				if err != nil {
 					return err
 				}
@@ -874,7 +879,11 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 					return err
 				}
 			} else {
-				val, err := op.regMap.regularReplaceWithMode(functionUtil.QuickBytesToStr(v2), functionUtil.QuickBytesToStr(v1), functionUtil.QuickBytesToStr(v3), v4, 0, matchingIsBinary)
+				replacement := functionUtil.QuickBytesToStr(v3)
+				if replacementConverter.mayBeBinary {
+					replacement = replacementConverter.forMatchDomain(replacement, int(i), matchingIsBinary)
+				}
+				val, err := op.regMap.regularReplaceWithMode(functionUtil.QuickBytesToStr(v2), functionUtil.QuickBytesToStr(v1), replacement, v4, 0, matchingIsBinary)
 				if err != nil {
 					return err
 				}
@@ -918,7 +927,11 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 					return err
 				}
 			} else {
-				val, err := op.regMap.regularReplaceWithMode(functionUtil.QuickBytesToStr(v2), functionUtil.QuickBytesToStr(v1), functionUtil.QuickBytesToStr(v3), v4, v5, matchingIsBinary)
+				replacement := functionUtil.QuickBytesToStr(v3)
+				if replacementConverter.mayBeBinary {
+					replacement = replacementConverter.forMatchDomain(replacement, int(i), matchingIsBinary)
+				}
+				val, err := op.regMap.regularReplaceWithMode(functionUtil.QuickBytesToStr(v2), functionUtil.QuickBytesToStr(v1), replacement, v4, v5, matchingIsBinary)
 				if err != nil {
 					return err
 				}
@@ -946,6 +959,134 @@ func regexpMatchUsesBinary(parameters []*vector.Vector, row int) bool {
 		}
 	}
 	return false
+}
+
+type regexpReplacementDomainConverter struct {
+	parameter             *vector.Vector
+	mayBeBinary           bool
+	constant              bool
+	constantText          string
+	constantTextConverted bool
+}
+
+func newRegexpReplacementDomainConverter(parameter *vector.Vector) regexpReplacementDomainConverter {
+	return regexpReplacementDomainConverter{
+		parameter: parameter,
+		mayBeBinary: types.StaticStringDomain(*parameter.GetType()) == types.StringDomainBinary ||
+			parameter.HasBinaryStringMetadata(),
+		constant: parameter.IsConst(),
+	}
+}
+
+func (c *regexpReplacementDomainConverter) forMatchDomain(
+	replacement string,
+	row int,
+	matchingIsBinary bool,
+) string {
+	if !c.mayBeBinary || matchingIsBinary || !c.parameter.GetIsBinaryStringAt(row) {
+		return replacement
+	}
+	if !c.constant {
+		return regexpBinaryReplacementToText(replacement)
+	}
+	if !c.constantTextConverted {
+		c.constantText = regexpBinaryReplacementToText(replacement)
+		c.constantTextConverted = true
+	}
+	return c.constantText
+}
+
+// MySQL presents binary strings to its regexp library as Windows-1252 so that
+// each source byte has a stable character value. The domain converter above
+// calls this only for a binary replacement in a text match. Keep ASCII
+// zero-copy; a binary match bypasses this conversion and retains raw bytes.
+func regexpBinaryReplacementToText(replacement string) string {
+	firstHighByte := -1
+	for i := 0; i < len(replacement); i++ {
+		if replacement[i] >= utf8.RuneSelf {
+			firstHighByte = i
+			break
+		}
+	}
+	if firstHighByte == -1 {
+		return replacement
+	}
+
+	var converted strings.Builder
+	converted.Grow(len(replacement))
+	converted.WriteString(replacement[:firstHighByte])
+	for i := firstHighByte; i < len(replacement); i++ {
+		value := replacement[i]
+		if value < utf8.RuneSelf {
+			converted.WriteByte(value)
+		} else {
+			converted.WriteRune(regexpWindows1252Rune(value))
+		}
+	}
+	return converted.String()
+}
+
+func regexpWindows1252Rune(value byte) rune {
+	switch value {
+	case 0x80:
+		return 0x20ac
+	case 0x82:
+		return 0x201a
+	case 0x83:
+		return 0x0192
+	case 0x84:
+		return 0x201e
+	case 0x85:
+		return 0x2026
+	case 0x86:
+		return 0x2020
+	case 0x87:
+		return 0x2021
+	case 0x88:
+		return 0x02c6
+	case 0x89:
+		return 0x2030
+	case 0x8a:
+		return 0x0160
+	case 0x8b:
+		return 0x2039
+	case 0x8c:
+		return 0x0152
+	case 0x8e:
+		return 0x017d
+	case 0x91:
+		return 0x2018
+	case 0x92:
+		return 0x2019
+	case 0x93:
+		return 0x201c
+	case 0x94:
+		return 0x201d
+	case 0x95:
+		return 0x2022
+	case 0x96:
+		return 0x2013
+	case 0x97:
+		return 0x2014
+	case 0x98:
+		return 0x02dc
+	case 0x99:
+		return 0x2122
+	case 0x9a:
+		return 0x0161
+	case 0x9b:
+		return 0x203a
+	case 0x9c:
+		return 0x0153
+	case 0x9e:
+		return 0x017e
+	case 0x9f:
+		return 0x0178
+	default:
+		// MySQL maps the five undefined Windows-1252 bytes to their
+		// same-numbered C1 control characters.
+		return rune(value)
+	}
 }
 
 // regexpMatchDomainUniform identifies the common no-row-metadata case so

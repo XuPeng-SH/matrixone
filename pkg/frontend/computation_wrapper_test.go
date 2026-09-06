@@ -527,6 +527,7 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
 		mysqlTypes        []defines.MysqlType
+		replacement       string
 		wantInstr         int64
 		wantReplace       string
 		wantReplaceBinary bool
@@ -567,9 +568,22 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 			wantInstr:  2, wantReplace: "XXX", wantReplaceBinary: true,
 		},
 		{
-			name:       "binary direct replacement marker with text peer markers",
-			mysqlTypes: typesWithBinary(4),
-			wantInstr:  2, wantReplace: "X",
+			name:        "binary direct replacement latin1 byte with text peer markers",
+			mysqlTypes:  typesWithBinary(4),
+			replacement: "\xff",
+			wantInstr:   2, wantReplace: "ÿ",
+		},
+		{
+			name:        "binary direct replacement cp1252 byte with text peer markers",
+			mysqlTypes:  typesWithBinary(4),
+			replacement: "\x80",
+			wantInstr:   2, wantReplace: "€",
+		},
+		{
+			name:        "binary direct replacement utf8 looking bytes with text peer markers",
+			mysqlTypes:  typesWithBinary(4),
+			replacement: "中",
+			wantInstr:   2, wantReplace: "ä¸\u00ad",
 		},
 		{
 			name:       "binary direct outer pattern marker with text nested result",
@@ -583,9 +597,13 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			caseValues := append([]string(nil), values...)
+			if tc.replacement != "" {
+				caseValues[4] = tc.replacement
+			}
 			require.NoError(t, proto.ParseExecuteData(
 				execCtx.reqCtx, cw.proc, prepareStmt,
-				buildPacket(tc.mysqlTypes, values), 0))
+				buildPacket(tc.mysqlTypes, caseValues), 0))
 
 			_, runtimePlan, executionStmt, _, owned, err := initExecuteStmtParam(
 				execCtx, ses, cw, nil, prepareStmt.Name)

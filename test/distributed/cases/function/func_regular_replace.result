@@ -112,3 +112,22 @@ SELECT HEX(REGEXP_REPLACE(CAST(_binary'中中' AS BINARY(6)), CAST(_binary'中' 
 HEX(REGEXP_REPLACE(CAST(_binary'中中' AS VARBINARY(6)), CAST(_binary'中' AS VARBINARY(3)), _binary'X', 2, 1)) AS varbinary_replace;
 binary_replace    varbinary_replace
 E4B8AD58    E4B8AD58
+PREPARE regexp_replacement_charset FROM
+'SELECT HEX(REGEXP_REPLACE(''a'', ''a'', ?)) AS replacement_hex';
+SET @regexp_replacement = _binary 0xff;
+EXECUTE regexp_replacement_charset USING @regexp_replacement;
+replacement_hex
+C3BF
+SET @regexp_replacement = _binary 0x80;
+EXECUTE regexp_replacement_charset USING @regexp_replacement;
+replacement_hex
+E282AC
+SET @regexp_replacement = '中';
+EXECUTE regexp_replacement_charset USING @regexp_replacement;
+replacement_hex
+E4B8AD
+SET @regexp_replacement = _binary 0xe4b8ad;
+EXECUTE regexp_replacement_charset USING @regexp_replacement;
+replacement_hex
+C3A4C2B8C2AD
+DEALLOCATE PREPARE regexp_replacement_charset;

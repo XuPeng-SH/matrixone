@@ -21,6 +21,9 @@ limited to behavior MatrixOne can implement independently of the regexp engine:
   3995, but a text marker remains incompatible with a statically binary peer;
 - a parameter nested in a domain-preserving expression is no longer a direct
   marker. Its current result domain is checked normally at EXECUTE;
+- a direct binary replacement marker accepted with a text subject/pattern is
+  converted from MySQL's binary-regexp Windows-1252 facade into UTF-8 before
+  replacement; binary matching preserves replacement bytes unchanged;
 - `ORD` interprets its input in the selected row's effective string domain;
   `REGEXP_SUBSTR` and `REGEXP_REPLACE` preserve the subject-pattern matching
   domain on their string result;
@@ -74,6 +77,8 @@ collation. Their planner transfer function must express the same rule:
 - otherwise a runtime-owned subject or pattern makes both text and binary
   possible;
 - a binary replacement alone leaves text matching and a text result unchanged;
+- replacement evaluation converts from its source domain into that selected
+  result domain instead of copying opaque binary bytes into a text value;
 - the prepared result type remains the ordinary overload result, with runtime
   provenance carrying a differing row domain.
 
@@ -151,7 +156,11 @@ first when `match_type` itself is NULL, matching MySQL's argument semantics.
 5. REGEXP execution selects byte mode if the subject or pattern is effectively
    binary for the current row. `REGEXP_REPLACE` validates replacement
    compatibility independently of this choice.
-6. SUBSTR and REPLACE attach the selected subject-pattern matching domain to
+6. A binary `REGEXP_REPLACE` replacement is converted through MySQL's
+   Windows-1252 binary facade only when the selected matching domain is text.
+   Text replacements and binary-domain replacements require no conversion-stage
+   scan or allocation.
+7. SUBSTR and REPLACE attach the selected subject-pattern matching domain to
    their output vector.
 
 Metadata slices are bounded by statement parameter count and are cleared before
@@ -205,6 +214,11 @@ Cost model:
 - replace-all patterns that cannot consume zero input units retain RE2's native
   optimized path; only nullable/empty-width syntax uses the ICU-compatible
   iterator;
+- binary replacements in a text match scan once for a high byte; ASCII remains
+  zero-copy, while a high-byte value is converted in `O(n)` time with bounded
+  transient UTF-8 storage. A constant replacement is converted lazily at most
+  once per vector call and reused across its rows. The ordinary text-replacement
+  and binary-match paths do not scan or allocate for this conversion;
 - INSTR encodes only the suffix starting at `pos`; SUBSTR and REPLACE retain the
   complete subject because their anchor contract requires it;
 - the uniform-domain predicate path stays vectorized and allocation-free when
@@ -245,6 +259,7 @@ RE2 encoding is retained.
 | INSTR suffix anchors | direct matcher tests for `^`, multiline `^`, `\\b`, `$` | BVT SQL at `pos > 1` |
 | SUBSTR/REPLACE original anchors | start-aware iterator tests | existing BVT positional cases |
 | nested dynamic result domain | binder accepts correlated runtime domains, propagates binary from subject/pattern, excludes replacement from result ownership, and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse, including replacement-only BLOB |
+| replacement-domain conversion | Windows-1252 edge bytes, UTF-8-looking binary bytes, text control, binary-result byte preservation, and every REGEXP_REPLACE arity | SQL PREPARE binary/text/binary reuse observed through `HEX` |
 | static mismatch | function resolver returns 3995 for known mixed operands | existing BVT matrix |
 | execute-time marker semantics | exhaustive known/deferred/direct-marker/domainless matrix | mixed direct markers, fixed-binary controls, nested-result controls, and cached-plan reuse |
 | byte positions/results | binary vectors without legacy `SetIsBin` | BINARY/VARBINARY/BLOB BVT |
