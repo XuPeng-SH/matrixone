@@ -92,8 +92,18 @@ work must not claim row-scoped self-FK semantics until that source exists.
 - ALTER/DROP INDEX owns hidden child-relation deletion under the parent DDL
   lifecycle. It must not recursively enter SQL DDL and acquire child metadata
   locks in the inverse order of concurrent DML.
-- All action buffers are bounded by the input statement/bucket. No goroutine,
-  retry loop, or unbounded retained history is introduced.
+- DEDUP action replay is resumable. Each `Call` emits at most one ordinary
+  result batch, bounded by `DefaultBatchSize` and a soft byte budget. Because
+  expressions are materialized before their output size is known, a batch may
+  cross the byte budget only with its final admitted row; this also guarantees
+  progress for an intrinsically oversized row. Probe-row,
+  action, and unmatched-group cursors are reset on error, reuse, and spill
+  bucket transitions.
+- Target-arbitration hash entries, accepted identities, and group-to-identity
+  ordinals are owned by the statement allocation account. Exact arbitration
+  remains linear retained state, but exceeding the statement budget fails
+  through resource admission instead of escaping accounting into the Go heap.
+- No goroutine, retry loop, or unaccounted retained history is introduced.
 
 ## Performance model
 
@@ -109,10 +119,12 @@ the same binary/mode/data on the same machine and report medians rather than an
 individual run.
 
 Target arbitration is linear in input rows times usable UNIQUE constraints.
-Its retained state is bounded by the statement: one copy of each accepted
-INSERT identity, one hash entry per published non-NULL key, and one 8-byte
-identity ordinal per hash entry. It deliberately does not copy a possibly-wide
-primary key into every UNIQUE-key map.
+Its retained state contains one copy of each accepted INSERT identity, one hash
+entry per published non-NULL key, and one 8-byte identity ordinal per hash
+entry. It deliberately does not copy a possibly-wide primary key into every
+UNIQUE-key map. All three components use the statement allocation account; the
+account capacity is the admission bound for a statement whose exact conflict
+set does not fit in memory.
 
 ## Validation matrix
 
@@ -125,6 +137,8 @@ primary key into every UNIQUE-key map.
 | distributed compatibility | encode/decode and version-fence tests | mixed-version rejection coverage |
 | DDL child ownership | deterministic barrier/fake-engine test | concurrent DML versus ALTER DROP INDEX harness |
 | statement-local target selection | ordered multi-key arbiter and reset tests | repeated new PK/UNIQUE, fake/composite PK, nullable key, conflicting-target priority |
+| bounded action replay | row/byte boundary, probe/finalize resume, reset tests | existing hot-key and wide-row coverage |
+| arbitration memory admission | allocation-account provenance, capacity failure, reset tests | large-data validation belongs to the performance harness |
 
 Every failure case also checks durable table/index state after rollback. Tests
 use barriers or direct typed state; sleeps and probabilistic retries are not

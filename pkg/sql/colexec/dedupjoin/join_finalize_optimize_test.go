@@ -17,6 +17,7 @@ package dedupjoin
 import (
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -31,8 +32,8 @@ import (
 
 // runFinalizeFixture wires a HashBuild + DedupJoin pair, runs the build
 // phase, then drives the dedupjoin to completion by calling Exec until it
-// returns nil. Result batches are collected (caller-owned via the returned
-// slice; do NOT Free them here — they live inside dedupArg.ctr.buf).
+// returns nil. DedupJoin deliberately reuses its result batch across calls, so
+// the fixture clones every non-empty result before driving the next call.
 func runFinalizeFixture(
 	t *testing.T,
 	dedupArg *DedupJoin,
@@ -56,6 +57,13 @@ func runFinalizeFixture(
 	require.True(t, res.Batch == nil, "build phase should drain to nil")
 
 	var out []*batch.Batch
+	cloneMP := mpool.MustNewZero()
+	t.Cleanup(func() {
+		for _, cloned := range out {
+			cloned.Clean(cloneMP)
+		}
+		require.Zero(t, cloneMP.CurrNB())
+	})
 	for {
 		res, err = vm.Exec(dedupArg, proc)
 		require.NoError(t, err)
@@ -63,17 +71,48 @@ func runFinalizeFixture(
 			break
 		}
 		if res.Batch.RowCount() > 0 {
-			out = append(out, res.Batch)
+			cloned, cloneErr := res.Batch.DupWithoutAllocationAccount(cloneMP)
+			require.NoError(t, cloneErr)
+			out = append(out, cloned)
 		}
 	}
 	return out
 }
 
 func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
+	hotRows := colexec.DefaultBatchSize + 1
+	repeatInt32 := func(value int32) []int32 {
+		values := make([]int32, hotRows)
+		for i := range values {
+			values[i] = value
+		}
+		return values
+	}
+	finalUint64 := func(value uint64) []uint64 {
+		values := make([]uint64, hotRows)
+		values[len(values)-1] = value
+		return values
+	}
+	finalBool := func() []bool {
+		values := make([]bool, hotRows)
+		values[len(values)-1] = true
+		return values
+	}
+	firstBool := func(count int) []bool {
+		values := make([]bool, hotRows)
+		for i := 0; i < count; i++ {
+			values[i] = true
+		}
+		return values
+	}
+
 	for _, tc := range []struct {
 		name              string
 		buildPayload      []int32
+		buildKeyNulls     []uint64
 		probeKey          int32
+		wantBatchCount    int
+		resultByteLimit   int
 		wantPayload       []int32
 		wantAffected      []uint64
 		wantPhysical      []bool
@@ -82,18 +121,53 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 	}{
 		{
 			name: "compact existing row emits one final update action", buildPayload: []int32{100}, probeKey: 10,
-			wantPayload: []int32{777}, wantAffected: []uint64{2},
+			wantBatchCount: 1,
+			wantPayload:    []int32{777}, wantAffected: []uint64{2},
+			wantPhysical: []bool{true}, wantFinal: []bool{true}, wantFKEligibility: []bool{true},
+		},
+		{
+			name: "compact new row emits one final insert action", buildPayload: []int32{100}, probeKey: 99,
+			wantBatchCount: 1,
+			wantPayload:    []int32{100}, wantAffected: []uint64{1},
 			wantPhysical: []bool{true}, wantFinal: []bool{true}, wantFKEligibility: []bool{true},
 		},
 		{
 			name: "existing row validates each update action", buildPayload: []int32{100, 200}, probeKey: 10,
-			wantPayload: []int32{777, 777}, wantAffected: []uint64{0, 2},
+			wantBatchCount: 1,
+			wantPayload:    []int32{777, 777}, wantAffected: []uint64{0, 2},
 			wantPhysical: []bool{false, true}, wantFinal: []bool{false, true}, wantFKEligibility: []bool{true, false},
 		},
 		{
 			name: "new duplicate group validates insert then update", buildPayload: []int32{100, 200}, probeKey: 99,
-			wantPayload: []int32{100, 777}, wantAffected: []uint64{0, 3},
+			wantBatchCount: 1,
+			wantPayload:    []int32{100, 777}, wantAffected: []uint64{0, 3},
 			wantPhysical: []bool{false, true}, wantFinal: []bool{false, true}, wantFKEligibility: []bool{true, true},
+		},
+		{
+			name:         "nullable keys remain independent insert actions",
+			buildPayload: []int32{100, 200}, buildKeyNulls: []uint64{0, 1}, probeKey: 99,
+			wantBatchCount: 1,
+			wantPayload:    []int32{100, 200}, wantAffected: []uint64{1, 1},
+			wantPhysical: []bool{true, true}, wantFinal: []bool{true, true}, wantFKEligibility: []bool{true, true},
+		},
+		{
+			name:         "soft byte limit resumes without losing action state",
+			buildPayload: []int32{100, 200, 300}, probeKey: 10,
+			wantBatchCount: 3, resultByteLimit: 1,
+			wantPayload: []int32{777, 777, 777}, wantAffected: []uint64{0, 0, 2},
+			wantPhysical: []bool{false, false, true}, wantFinal: []bool{false, false, true},
+			wantFKEligibility: []bool{true, false, false},
+		},
+		{
+			name: "existing hot group resumes probe action replay", buildPayload: repeatInt32(100), probeKey: 10,
+			wantBatchCount: 2, wantPayload: repeatInt32(777), wantAffected: finalUint64(2),
+			wantPhysical: finalBool(), wantFinal: finalBool(), wantFKEligibility: firstBool(1),
+		},
+		{
+			name: "new hot group resumes finalize action replay", buildPayload: repeatInt32(100), probeKey: 99,
+			wantBatchCount: 2, wantPayload: append([]int32{100}, repeatInt32(777)[:hotRows-1]...),
+			wantAffected: finalUint64(3), wantPhysical: finalBool(), wantFinal: finalBool(),
+			wantFKEligibility: firstBool(2),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,7 +184,7 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 			for i := range rowCount {
 				keys[i], weights[i], markers[i] = 10, 1, true
 			}
-			buildBat.Vecs[0] = testutil.MakeInt32Vector(keys, nil, proc.Mp())
+			buildBat.Vecs[0] = testutil.MakeInt32Vector(keys, tc.buildKeyNulls, proc.Mp())
 			buildBat.Vecs[1] = testutil.MakeInt32Vector(tc.buildPayload, nil, proc.Mp())
 			buildBat.Vecs[2] = testutil.MakeUint64Vector(weights, nil, proc.Mp())
 			buildBat.Vecs[3] = testutil.MakeBoolVector(markers, nil, proc.Mp())
@@ -140,6 +214,7 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 				DelColIdx:        -1, DedupDeleteMarkerColIdx: -1, JoinMapTag: tag,
 				OperatorBase: vm.OperatorBase{OperatorInfo: vm.OperatorInfo{Idx: 0}},
 			}
+			dedupArg.ctr.resultBatchByteLimit = tc.resultByteLimit
 			buildArg := &hashbuild.HashBuild{
 				NeedHashMap: true, NeedBatches: true, NeedAllocateSels: true,
 				Conditions: conditions[1], IsDedup: true, OnDuplicateAction: plan.Node_UPDATE,
@@ -155,14 +230,63 @@ func TestDedupJoinEmitsOrderedODKUActions(t *testing.T) {
 			})
 
 			out := runFinalizeFixture(t, dedupArg, buildArg, proc, buildBat, probeBat)
-			require.Len(t, out, 1)
-			require.Equal(t, tc.wantPayload, vector.MustFixedColNoTypeCheck[int32](out[0].Vecs[0]))
-			require.Equal(t, tc.wantAffected, vector.MustFixedColNoTypeCheck[uint64](out[0].Vecs[1]))
-			require.Equal(t, tc.wantPhysical, vector.MustFixedColNoTypeCheck[bool](out[0].Vecs[2]))
-			require.Equal(t, tc.wantFinal, vector.MustFixedColNoTypeCheck[bool](out[0].Vecs[3]))
-			require.Equal(t, tc.wantFKEligibility, vector.MustFixedColNoTypeCheck[bool](out[0].Vecs[4]))
+			require.Len(t, out, tc.wantBatchCount)
+			var payload []int32
+			var affected []uint64
+			var physical, final, fkEligibility []bool
+			for _, output := range out {
+				require.LessOrEqual(t, output.RowCount(), colexec.DefaultBatchSize)
+				payload = append(payload, vector.MustFixedColNoTypeCheck[int32](output.Vecs[0])...)
+				affected = append(affected, vector.MustFixedColNoTypeCheck[uint64](output.Vecs[1])...)
+				physical = append(physical, vector.MustFixedColNoTypeCheck[bool](output.Vecs[2])...)
+				final = append(final, vector.MustFixedColNoTypeCheck[bool](output.Vecs[3])...)
+				fkEligibility = append(fkEligibility, vector.MustFixedColNoTypeCheck[bool](output.Vecs[4])...)
+			}
+			require.Equal(t, tc.wantPayload, payload)
+			require.Equal(t, tc.wantAffected, affected)
+			require.Equal(t, tc.wantPhysical, physical)
+			require.Equal(t, tc.wantFinal, final)
+			require.Equal(t, tc.wantFKEligibility, fkEligibility)
 		})
 	}
+}
+
+func TestDedupJoinResetClearsSuspendedActionReplay(t *testing.T) {
+	proc := testutil.NewProc(t)
+	arg := &DedupJoin{}
+	arg.ctr.resultBatchByteLimit = 123
+	arg.ctr.probeBat = batch.EmptyBatch
+	arg.ctr.probeRow = 7
+	arg.ctr.probeGroup = 9
+	arg.ctr.probeActionIdx = 11
+	arg.ctr.probeActionActive = true
+	arg.ctr.probeLogicalAffected = 13
+	arg.ctr.probeAnyChanged = true
+	arg.ctr.finalizePrepared = true
+	arg.ctr.finalizeDone = true
+	arg.ctr.finalizeZeroIdx = 17
+	arg.ctr.finalizeGroup = 19
+	arg.ctr.finalizeActionIdx = 23
+	arg.ctr.finalizeActionActive = true
+	arg.ctr.finalizeLogicalAffect = 29
+
+	arg.Reset(proc, true, nil)
+	require.Equal(t, 123, arg.ctr.resultBatchByteLimit,
+		"execution cleanup must preserve the configured batching policy")
+	require.Nil(t, arg.ctr.probeBat)
+	require.Zero(t, arg.ctr.probeRow)
+	require.Zero(t, arg.ctr.probeGroup)
+	require.Zero(t, arg.ctr.probeActionIdx)
+	require.False(t, arg.ctr.probeActionActive)
+	require.Zero(t, arg.ctr.probeLogicalAffected)
+	require.False(t, arg.ctr.probeAnyChanged)
+	require.False(t, arg.ctr.finalizePrepared)
+	require.False(t, arg.ctr.finalizeDone)
+	require.Zero(t, arg.ctr.finalizeZeroIdx)
+	require.Zero(t, arg.ctr.finalizeGroup)
+	require.Zero(t, arg.ctr.finalizeActionIdx)
+	require.False(t, arg.ctr.finalizeActionActive)
+	require.Zero(t, arg.ctr.finalizeLogicalAffect)
 }
 
 // TestDedupJoinUpdateRestoresProbeVectors exercises the real UPDATE probe

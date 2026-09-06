@@ -43,6 +43,8 @@ const (
 	End
 )
 
+const defaultDedupJoinResultBatchBytes = 64 * mpool.MB
+
 const (
 	dedupJoinAllocationSiteMatched mpool.AllocationSite = iota + 82
 	dedupJoinAllocationSiteCaptured
@@ -230,6 +232,29 @@ type evalVector struct {
 type container struct {
 	state   int
 	lastPos int
+
+	// Ordered ODKU action replay may expand one hot-key group into many logical
+	// rows. These cursors let Call yield without retaining an unbounded output
+	// batch. probeBat is borrowed from the child and remains valid until the next
+	// child Call; current vectors point into stableUpdateVecs owned below.
+	resultBatchByteLimit int
+	probeBat             *batch.Batch
+	probeRow             int
+	probeGroup           uint64
+	probeActionIdx       int
+	probeActionActive    bool
+	probeLogicalAffected uint64
+	probeAnyChanged      bool
+	probeCurrentVecs     []*vector.Vector
+
+	finalizePrepared      bool
+	finalizeDone          bool
+	finalizeZeroIdx       int
+	finalizeGroup         uint64
+	finalizeActionIdx     int
+	finalizeActionActive  bool
+	finalizeLogicalAffect uint64
+	finalizeCurrentVecs   []*vector.Vector
 
 	batches       []*batch.Batch
 	batchRowCount int64
@@ -534,6 +559,8 @@ func (ctr *container) cleanStableUpdateVecs(proc *process.Process) {
 	ctr.groupBeforeVecs = nil
 	ctr.foreignKeyBeforeVecs = nil
 	ctr.foreignKeyEligibility = nil
+	ctr.probeCurrentVecs = nil
+	ctr.finalizeCurrentVecs = nil
 }
 
 func (ctr *container) cleanBuf(proc *process.Process) {
@@ -594,6 +621,26 @@ func (ctr *container) cleanBucketState(proc *process.Process) {
 	ctr.batchRowCount = 0
 	colexec.FreeAccountedBitmap(ctr.matched, proc.Mp())
 	ctr.matched = nil
+	ctr.resetActionReplayCursors()
+}
+
+func (ctr *container) resetActionReplayCursors() {
+	ctr.probeBat = nil
+	ctr.probeRow = 0
+	ctr.probeGroup = 0
+	ctr.probeActionIdx = 0
+	ctr.probeActionActive = false
+	ctr.probeLogicalAffected = 0
+	ctr.probeAnyChanged = false
+	ctr.probeCurrentVecs = nil
+	ctr.finalizePrepared = false
+	ctr.finalizeDone = false
+	ctr.finalizeZeroIdx = 0
+	ctr.finalizeGroup = 0
+	ctr.finalizeActionIdx = 0
+	ctr.finalizeActionActive = false
+	ctr.finalizeLogicalAffect = 0
+	ctr.finalizeCurrentVecs = nil
 }
 
 func (ctr *container) cleanHashMap() {

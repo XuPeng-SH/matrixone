@@ -420,6 +420,7 @@ func TestODKUTargetArbitrationUsesOrderedStatementLocalState(t *testing.T) {
 				tc.uniqueNulls, tc.existingPKTargets, tc.existingPKNulls,
 				tc.existingUKTargets, tc.existingUKNulls)
 			arg := newODKUTargetArbitrationArgument(input)
+			account := installODKUTestAllocation(t, arg)
 			require.NoError(t, arg.Prepare(proc))
 
 			result, err := arg.Call(proc)
@@ -428,6 +429,7 @@ func TestODKUTargetArbitrationUsesOrderedStatementLocalState(t *testing.T) {
 				vector.MustFixedColNoTypeCheck[int32](result.Batch.Vecs[2])[:result.Batch.RowCount()])
 
 			arg.Free(proc, false, nil)
+			require.NoError(t, arg.ClearAllocationAccount(account))
 			input.Clean(proc.Mp())
 			require.Equal(t, int64(0), proc.Mp().CurrNB())
 		})
@@ -441,6 +443,7 @@ func TestODKUTargetArbitrationCarriesStateAcrossBatchesAndReset(t *testing.T) {
 	second := makeODKUTargetArbitrationBatch(t, proc,
 		[]int32{2}, []int32{10}, nil, nil, []bool{true}, nil, []bool{true})
 	arg := newODKUTargetArbitrationArgument(first, second)
+	account := installODKUTestAllocation(t, arg)
 	require.NoError(t, arg.Prepare(proc))
 
 	result, err := arg.Call(proc)
@@ -460,6 +463,7 @@ func TestODKUTargetArbitrationCarriesStateAcrossBatchesAndReset(t *testing.T) {
 		"Reset must begin a fresh statement-local arbitration generation")
 
 	arg.Free(proc, false, nil)
+	require.NoError(t, arg.ClearAllocationAccount(account))
 	first.Clean(proc.Mp())
 	second.Clean(proc.Mp())
 	require.Equal(t, int64(0), proc.Mp().CurrNB())
@@ -480,6 +484,7 @@ func TestODKUTargetArbitrationSupportsSingleSyntheticIdentityConstraint(t *testi
 		KeyColumns: []int32{0}, TargetColumns: []int32{1}, OutputColumns: 1,
 	}}
 	arg.AppendChild(colexec.NewMockOperator().WithBatchs([]*batch.Batch{input}))
+	account := installODKUTestAllocation(t, arg)
 	require.NoError(t, arg.Prepare(proc))
 
 	result, err := arg.Call(proc)
@@ -488,6 +493,7 @@ func TestODKUTargetArbitrationSupportsSingleSyntheticIdentityConstraint(t *testi
 		vector.MustFixedColNoTypeCheck[int32](result.Batch.Vecs[1]))
 
 	arg.Free(proc, false, nil)
+	require.NoError(t, arg.ClearAllocationAccount(account))
 	input.Clean(proc.Mp())
 	require.Equal(t, int64(0), proc.Mp().CurrNB())
 }
@@ -504,6 +510,7 @@ func TestODKUTargetArbitrationHandlesConstNullSnapshotTargets(t *testing.T) {
 	input.Vecs[3].Free(proc.Mp())
 	input.Vecs[3] = vector.NewConstNull(types.T_int32.ToType(), input.RowCount(), proc.Mp())
 	arg := newODKUTargetArbitrationArgument(input)
+	account := installODKUTestAllocation(t, arg)
 	require.NoError(t, arg.Prepare(proc))
 
 	result, err := arg.Call(proc)
@@ -512,6 +519,54 @@ func TestODKUTargetArbitrationHandlesConstNullSnapshotTargets(t *testing.T) {
 		vector.MustFixedColNoTypeCheck[int32](result.Batch.Vecs[2]))
 
 	arg.Free(proc, false, nil)
+	require.NoError(t, arg.ClearAllocationAccount(account))
+	input.Clean(proc.Mp())
+	require.Equal(t, int64(0), proc.Mp().CurrNB())
+}
+
+func TestODKUTargetArbitrationAllocationAccountLifecycle(t *testing.T) {
+	proc := testutil.NewProc(t)
+	input := makeODKUTargetArbitrationBatch(t, proc,
+		[]int32{1, 2}, []int32{10, 10}, nil, nil, []bool{true, true}, nil, []bool{true, true})
+	arg := newODKUTargetArbitrationArgument(input)
+
+	require.ErrorIs(t, arg.Prepare(proc), mpool.ErrAllocationAccountInvalid)
+	account := installODKUTestAllocation(t, arg)
+	require.NoError(t, arg.Prepare(proc))
+	_, err := arg.Call(proc)
+	require.NoError(t, err)
+	require.Positive(t, account.Snapshot().Used,
+		"statement-local hash keys, target rows, and ordinals must share the statement account")
+	require.ErrorIs(t, arg.ClearAllocationAccount(account), mpool.ErrAllocationAccountInvariant)
+
+	arg.Reset(proc, false, nil)
+	require.Zero(t, account.Snapshot().Used)
+	require.NoError(t, arg.ClearAllocationAccount(account))
+	arg.Free(proc, false, nil)
+	input.Clean(proc.Mp())
+	require.Equal(t, int64(0), proc.Mp().CurrNB())
+}
+
+func TestODKUTargetArbitrationHonorsAllocationCapacity(t *testing.T) {
+	proc := testutil.NewProc(t)
+	input := makeODKUTargetArbitrationBatch(t, proc,
+		[]int32{1}, []int32{10}, nil, nil, []bool{true}, nil, []bool{true})
+	arg := newODKUTargetArbitrationArgument(input)
+	registry, err := mpool.NewAllocationAccountRegistry(1, 16)
+	require.NoError(t, err)
+	account, err := registry.Open(1)
+	require.NoError(t, err)
+	require.NoError(t, arg.SetAllocationAccount(account))
+
+	err = arg.Prepare(proc)
+	if err == nil {
+		_, err = arg.Call(proc)
+	}
+	require.ErrorIs(t, err, mpool.ErrAllocationAccountCapacity)
+	arg.Reset(proc, true, err)
+	require.Zero(t, account.Snapshot().Used)
+	require.NoError(t, arg.ClearAllocationAccount(account))
+	arg.Free(proc, true, err)
 	input.Clean(proc.Mp())
 	require.Equal(t, int64(0), proc.Mp().CurrNB())
 }
@@ -589,6 +644,16 @@ func newODKUTargetArbitrationArgument(inputs ...*batch.Batch) *PreInsertUnique {
 	}
 	arg.AppendChild(colexec.NewMockOperator().WithBatchs(inputs))
 	return arg
+}
+
+func installODKUTestAllocation(t testing.TB, arg *PreInsertUnique) *mpool.AllocationAccount {
+	t.Helper()
+	registry, err := mpool.NewAllocationAccountRegistry(1, 4_096)
+	require.NoError(t, err)
+	account, err := registry.Open(1 << 60)
+	require.NoError(t, err)
+	require.NoError(t, arg.SetAllocationAccount(account))
+	return account
 }
 
 func makeInsertIgnoreMultiDedupBatch(

@@ -144,6 +144,9 @@ func (dedupJoin *DedupJoin) Prepare(proc *process.Process) (err error) {
 	if dedupJoin.allocationAccount == nil {
 		return mpool.ErrAllocationAccountInvalid
 	}
+	if dedupJoin.ctr.resultBatchByteLimit <= 0 {
+		dedupJoin.ctr.resultBatchByteLimit = defaultDedupJoinResultBatchBytes
+	}
 	if len(dedupJoin.UpdateColIdxList) != len(dedupJoin.UpdateColExprList) {
 		return moerr.NewInternalError(proc.Ctx, "dedup join update column/expression count mismatch")
 	}
@@ -288,8 +291,10 @@ func (dedupJoin *DedupJoin) Call(proc *process.Process) (vm.CallResult, error) {
 			}
 		case Probe:
 			var bat *batch.Batch
-			// Spill-read mode: read probe batches from engine.
-			if ctr.spillEngine != nil && ctr.spillEngine.IsProbing() {
+			if dedupJoin.EmitActionRows && ctr.probeBat != nil {
+				bat = ctr.probeBat
+				// Spill-read mode: read probe batches from engine.
+			} else if ctr.spillEngine != nil && ctr.spillEngine.IsProbing() {
 				var readErr error
 				bat, readErr = ctr.spillEngine.NextProbeBatch(proc)
 				if readErr != nil {
@@ -339,6 +344,11 @@ func (dedupJoin *DedupJoin) Call(proc *process.Process) (vm.CallResult, error) {
 				}
 			}
 			if dedupJoin.ctr.lastPos >= len(dedupJoin.ctr.buf) {
+				if dedupJoin.EmitActionRows && !ctr.finalizeDone {
+					ctr.cleanBuf(proc)
+					ctr.lastPos = 0
+					continue
+				}
 				if ctr.spillEngine != nil {
 					ctr.cleanBuf(proc)
 					// Clear previous bucket state before advancing.
@@ -557,8 +567,187 @@ func (ctr *container) initCaptureBuffers(ap *DedupJoin, proc *process.Process) e
 	}
 	return nil
 }
+
+func (ctr *container) appendBuildSelectionRow(
+	ap *DedupJoin,
+	dst *batch.Batch,
+	sel int32,
+	proc *process.Process,
+) error {
+	idx1, idx2 := sel/colexec.DefaultBatchSize, sel%colexec.DefaultBatchSize
+	for j, rp := range ap.Result {
+		if rp.Rel == 1 {
+			if err := dst.Vecs[j].UnionOne(
+				ctr.batches[idx1].Vecs[rp.Pos], int64(idx2), proc.Mp()); err != nil {
+				return err
+			}
+		} else if err := dst.Vecs[j].UnionNull(proc.Mp()); err != nil {
+			return err
+		}
+	}
+	dst.AddRowCount(1)
+	return nil
+}
+
+// finalizeODKUActionRows emits at most one bounded batch. finalizeGroup and
+// finalizeActionIdx are the durable cursor; result rows themselves are released
+// on the next Call and are never retained for the whole build bucket.
+func (ctr *container) finalizeODKUActionRows(
+	ap *DedupJoin,
+	proc *process.Process,
+) error {
+	if ctr.mp == nil || ctr.matched == nil {
+		ctr.finalizeDone = true
+		return nil
+	}
+	if err := ap.resetRBat(); err != nil {
+		return err
+	}
+
+	zeroSels := ctr.mp.GetSels(0)
+	for ctr.finalizeZeroIdx < len(zeroSels) {
+		if err := ctr.appendBuildSelectionRow(
+			ap, ctr.rbat, zeroSels[ctr.finalizeZeroIdx], proc); err != nil {
+			return err
+		}
+		ctr.finalizeZeroIdx++
+		if ctr.actionResultBatchFull() {
+			ctr.buf = []*batch.Batch{ctr.rbat}
+			ctr.lastPos = 0
+			return nil
+		}
+	}
+
+	groupCount := uint64(ctr.matched.Len())
+	for ctr.finalizeGroup < groupCount {
+		if ctr.matched.Contains(ctr.finalizeGroup) {
+			ctr.finalizeGroup++
+			continue
+		}
+		if ctr.mp.HashOnUnique() {
+			if err := ctr.appendBuildSelectionRow(
+				ap, ctr.rbat, int32(ctr.finalizeGroup), proc); err != nil {
+				return err
+			}
+			ctr.finalizeGroup++
+			if ctr.actionResultBatchFull() {
+				ctr.buf = []*batch.Batch{ctr.rbat}
+				ctr.lastPos = 0
+				return nil
+			}
+			continue
+		}
+		sels := ctr.mp.GetSels(ctr.finalizeGroup + 1)
+		if len(sels) == 0 {
+			return moerr.NewInternalError(proc.Ctx, "ODKU finalize group has no actions")
+		}
+		if len(sels) == 1 {
+			if err := ctr.appendBuildSelectionRow(ap, ctr.rbat, sels[0], proc); err != nil {
+				return err
+			}
+			ctr.finalizeGroup++
+			if ctr.actionResultBatchFull() {
+				ctr.buf = []*batch.Batch{ctr.rbat}
+				ctr.lastPos = 0
+				return nil
+			}
+			continue
+		}
+
+		if !ctr.finalizeActionActive {
+			idx1, idx2 := sels[0]/colexec.DefaultBatchSize, sels[0]%colexec.DefaultBatchSize
+			if ctr.joinBat1 == nil {
+				ctr.joinBat1, ctr.cfs1 = colexec.NewJoinBatch(ctr.batches[0], proc.Mp())
+			}
+			if ctr.joinBat2 == nil {
+				ctr.joinBat2, ctr.cfs2 = colexec.NewJoinBatch(ctr.batches[0], proc.Mp())
+			}
+			if err := colexec.SetJoinBatchValues(
+				ctr.joinBat1, ctr.batches[idx1], int64(idx2), 1, ctr.cfs1); err != nil {
+				return err
+			}
+			ctr.finalizeCurrentVecs = snapshotVectors(
+				ctr.finalizeCurrentVecs, ctr.joinBat1, ap.UpdateColIdxList)
+			ctr.finalizeActionIdx = 1
+			ctr.finalizeLogicalAffect = 1
+			ctr.finalizeActionActive = true
+			if err := ctr.appendFinalizeActionRow(
+				ap, ctr.rbat, 0, false, false,
+				ctr.allForeignKeysEligible(ap.ForeignKeyChecks), proc); err != nil {
+				return err
+			}
+			if ctr.actionResultBatchFull() {
+				ctr.buf = []*batch.Batch{ctr.rbat}
+				ctr.lastPos = 0
+				return nil
+			}
+		}
+
+		yield := false
+		err := ctr.withRestoredJoinBat1Vectors(ap.UpdateColIdxList, func() error {
+			restoreUpdateVectors(ctr.joinBat1, ap.UpdateColIdxList, ctr.finalizeCurrentVecs)
+			for ctr.finalizeActionIdx < len(sels) {
+				sel := sels[ctr.finalizeActionIdx]
+				idx1, idx2 := sel/colexec.DefaultBatchSize, sel%colexec.DefaultBatchSize
+				if err := colexec.SetJoinBatchValues(
+					ctr.joinBat2, ctr.batches[idx1], int64(idx2), 1, ctr.cfs2); err != nil {
+					return err
+				}
+				ctr.snapshotForeignKeys(ap.ForeignKeyChecks)
+				changed, err := ctr.applyUpdateExpressions(
+					proc, ap.UpdateColIdxList, ap.UpdateCheckColIdxList)
+				if err != nil {
+					return err
+				}
+				ctr.finalizeCurrentVecs = snapshotVectors(
+					ctr.finalizeCurrentVecs, ctr.joinBat1, ap.UpdateColIdxList)
+				ctr.finalizeLogicalAffect += odkuAffectedRows(changed, ap.CountFoundRows)
+				isFinal := ctr.finalizeActionIdx == len(sels)-1
+				affectedRows := uint64(0)
+				if isFinal {
+					affectedRows = ctr.finalizeLogicalAffect
+				}
+				if err := ctr.appendFinalizeActionRow(
+					ap, ctr.rbat, affectedRows, isFinal, isFinal,
+					ctr.foreignKeyChanges(ap.ForeignKeyChecks), proc); err != nil {
+					return err
+				}
+				ctr.finalizeActionIdx++
+				if ctr.actionResultBatchFull() {
+					yield = true
+					break
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if ctr.finalizeActionIdx == len(sels) {
+			ctr.finalizeActionActive = false
+			ctr.finalizeCurrentVecs = nil
+			ctr.finalizeGroup++
+		}
+		if yield {
+			ctr.buf = []*batch.Batch{ctr.rbat}
+			ctr.lastPos = 0
+			return nil
+		}
+	}
+
+	ctr.finalizeDone = true
+	if ctr.rbat.RowCount() > 0 {
+		ctr.buf = []*batch.Batch{ctr.rbat}
+		ctr.lastPos = 0
+	}
+	return nil
+}
+
 func (ctr *container) finalize(ap *DedupJoin, proc *process.Process) error {
 	var err error
+	if ap.EmitActionRows && ctr.finalizePrepared {
+		return ctr.finalizeODKUActionRows(ap, proc)
+	}
 	if ap.needsFinalizeMerge() {
 		if !ap.IsMerger {
 			if ap.Mailbox == nil {
@@ -604,6 +793,7 @@ func (ctr *container) finalize(ap *DedupJoin, proc *process.Process) error {
 			case <-proc.Ctx.Done():
 				return context.Cause(proc.Ctx)
 			}
+			ctr.finalizeDone = true
 			return nil
 		}
 
@@ -649,6 +839,23 @@ func (ctr *container) finalize(ap *DedupJoin, proc *process.Process) error {
 		// Do not release a fast worker into the next spill bucket until every
 		// worker's status for this bucket has been collected.
 		ap.Mailbox.completeRound()
+	}
+	if ap.EmitActionRows {
+		// Probe and build batches can have different schemas. The probe replay
+		// cache is no longer needed once finalize begins; rebuild it lazily from
+		// the build schema instead of reusing incompatible setters.
+		if ctr.joinBat1 != nil {
+			ctr.joinBat1.Clean(proc.Mp())
+			ctr.joinBat1 = nil
+			ctr.cfs1 = nil
+		}
+		if ctr.joinBat2 != nil {
+			ctr.joinBat2.Clean(proc.Mp())
+			ctr.joinBat2 = nil
+			ctr.cfs2 = nil
+		}
+		ctr.finalizePrepared = true
+		return ctr.finalizeODKUActionRows(ap, proc)
 	}
 
 	if ctr.matched == nil {
@@ -1477,7 +1684,161 @@ func (ctr *container) appendFinalizeActionRow(
 	return nil
 }
 
+func (ctr *container) actionResultBatchFull() bool {
+	// The byte threshold is intentionally checked after materialization: an
+	// update expression's varlen result is not known beforehand. Therefore the
+	// budget is soft and can be crossed only by the final admitted row.
+	return ctr.rbat.RowCount() >= colexec.DefaultBatchSize ||
+		ctr.rbat.RowCount() > 0 && ctr.rbat.Size() >= ctr.resultBatchByteLimit
+}
+
+func restoreUpdateVectors(bat *batch.Batch, cols []int32, values []*vector.Vector) {
+	for i, pos := range cols {
+		bat.Vecs[pos] = values[i]
+	}
+}
+
+func (ctr *container) actionSelection(group uint64, action int) int32 {
+	if ctr.mp.HashOnUnique() {
+		return int32(group - 1)
+	}
+	return ctr.mp.GetSels(group)[action]
+}
+
+func (ctr *container) actionCount(group uint64) int {
+	if ctr.mp.HashOnUnique() {
+		return 1
+	}
+	return len(ctr.mp.GetSels(group))
+}
+
+// probeODKUActionRows replays a hot-key group across as many Call invocations
+// as needed. The child batch is borrowed until probeRow reaches its end; no
+// subsequent child Call can invalidate it while probeActionActive is true.
+func (ctr *container) probeODKUActionRows(
+	bat *batch.Batch,
+	ap *DedupJoin,
+	proc *process.Process,
+	result *vm.CallResult,
+) error {
+	if err := ap.resetRBat(); err != nil {
+		return err
+	}
+	if ctr.probeBat == nil {
+		if err := ctr.evalJoinCondition(bat, proc); err != nil {
+			return err
+		}
+		ctr.probeBat = bat
+		ctr.probeRow = 0
+	}
+	if ctr.joinBat1 == nil {
+		ctr.joinBat1, ctr.cfs1 = colexec.NewJoinBatch(bat, proc.Mp())
+	}
+	if ctr.joinBat2 == nil && ctr.batchRowCount > 0 {
+		ctr.joinBat2, ctr.cfs2 = colexec.NewJoinBatch(ctr.batches[0], proc.Mp())
+	}
+	if ctr.cachedItr == nil {
+		ctr.cachedItr = ctr.mp.NewIterator()
+	}
+
+	for ctr.probeRow < bat.RowCount() {
+		start := ctr.probeRow
+		n := min(hashmap.UnitLimit, bat.RowCount()-start)
+		vals, zvals, err := ctr.cachedItr.Find(start, n, ctr.vecs)
+		if err != nil {
+			return err
+		}
+		for ctr.probeRow < start+n {
+			idx := ctr.probeRow - start
+			if zvals[idx] == 0 || vals[idx] == 0 {
+				ctr.probeRow++
+				continue
+			}
+			group := vals[idx]
+			if !ctr.probeActionActive {
+				if err := colexec.SetJoinBatchValues(
+					ctr.joinBat1, bat, int64(ctr.probeRow), 1, ctr.cfs1); err != nil {
+					return err
+				}
+				ctr.groupBeforeVecs = snapshotVectors(
+					ctr.groupBeforeVecs, ctr.joinBat1, ap.UpdateColIdxList)
+				ctr.probeCurrentVecs = snapshotVectors(
+					ctr.probeCurrentVecs, ctr.joinBat1, ap.UpdateColIdxList)
+				ctr.probeGroup = group
+				ctr.probeActionIdx = 0
+				ctr.probeLogicalAffected = 0
+				ctr.probeAnyChanged = false
+				ctr.probeActionActive = true
+			} else if ctr.probeGroup != group {
+				return moerr.NewInternalError(proc.Ctx, "ODKU action replay group changed while suspended")
+			}
+
+			yield := false
+			err = ctr.withRestoredJoinBat1Vectors(ap.UpdateColIdxList, func() error {
+				restoreUpdateVectors(ctr.joinBat1, ap.UpdateColIdxList, ctr.probeCurrentVecs)
+				actionCount := ctr.actionCount(group)
+				for ctr.probeActionIdx < actionCount {
+					sel := ctr.actionSelection(group, ctr.probeActionIdx)
+					idx1, idx2 := sel/colexec.DefaultBatchSize, sel%colexec.DefaultBatchSize
+					if err := colexec.SetJoinBatchValues(
+						ctr.joinBat2, ctr.batches[idx1], int64(idx2), 1, ctr.cfs2); err != nil {
+						return err
+					}
+					ctr.snapshotForeignKeys(ap.ForeignKeyChecks)
+					changed, err := ctr.applyUpdateExpressions(
+						proc, ap.UpdateColIdxList, ap.UpdateCheckColIdxList)
+					if err != nil {
+						return err
+					}
+					ctr.probeCurrentVecs = snapshotVectors(
+						ctr.probeCurrentVecs, ctr.joinBat1, ap.UpdateColIdxList)
+					ctr.probeLogicalAffected += odkuAffectedRows(changed, ap.CountFoundRows)
+					ctr.probeAnyChanged = ctr.probeAnyChanged || changed
+					isFinal := ctr.probeActionIdx == actionCount-1
+					physicalChanged := isFinal && odkuPhysicalChanged(
+						ctr.probeAnyChanged, ctr.groupBeforeVecs, ctr.joinBat1, ap.UpdateColIdxList)
+					affectedRows := uint64(0)
+					if isFinal {
+						affectedRows = ctr.probeLogicalAffected
+					}
+					if err := ctr.appendProbeActionRow(
+						ap, ctr.rbat, bat, int64(ctr.probeRow), affectedRows,
+						physicalChanged, isFinal, ctr.foreignKeyChanges(ap.ForeignKeyChecks), proc); err != nil {
+						return err
+					}
+					ctr.probeActionIdx++
+					if ctr.actionResultBatchFull() {
+						yield = true
+						break
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			if ctr.probeActionIdx == ctr.actionCount(group) {
+				ctr.matched.Add(group - 1)
+				ctr.probeActionActive = false
+				ctr.probeCurrentVecs = nil
+				ctr.probeRow++
+			}
+			if yield {
+				result.Batch = ctr.rbat
+				return nil
+			}
+		}
+	}
+	ctr.probeBat = nil
+	ctr.probeRow = 0
+	result.Batch = ctr.rbat
+	return nil
+}
+
 func (ctr *container) probe(bat *batch.Batch, ap *DedupJoin, proc *process.Process, analyzer process.Analyzer, result *vm.CallResult) error {
+	if ap.EmitActionRows {
+		return ctr.probeODKUActionRows(bat, ap, proc, result)
+	}
 	if err := ap.resetRBat(); err != nil {
 		return err
 	}

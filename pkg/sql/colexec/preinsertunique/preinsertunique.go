@@ -20,6 +20,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/hashmap"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
@@ -74,13 +75,17 @@ func (preInsertUnique *PreInsertUnique) Prepare(proc *process.Process) error {
 	if odkuArbitration && len(preInsertUnique.PreInsertCtx.KeyColumns) != len(preInsertUnique.PreInsertCtx.TargetColumns) {
 		return moerr.NewInvalidInput(proc.Ctx, "invalid ODKU target arbitration context")
 	}
+	if odkuArbitration && preInsertUnique.allocationAccount == nil {
+		return mpool.ErrAllocationAccountInvalid
+	}
 	if len(preInsertUnique.ctr.acceptedMaps) == 0 {
 		keyCount := len(preInsertUnique.PreInsertCtx.KeyColumns)
 		preInsertUnique.ctr.acceptedMaps = make([]*hashmap.StrHashMap, keyCount)
 		preInsertUnique.ctr.acceptedIters = make([]hashmap.Iterator, keyCount)
 		preInsertUnique.ctr.acceptedKeyVecs = make([][]*vector.Vector, keyCount)
 		for i := range keyCount {
-			accepted, err := hashmap.NewStrHashMap(false, proc.Mp())
+			accepted, err := hashmap.NewStrHashMapWithAllocation(
+				false, proc.Mp(), preInsertUnique.hashAllocation)
 			if err != nil {
 				preInsertUnique.freeAcceptedState(proc)
 				return err
@@ -90,7 +95,16 @@ func (preInsertUnique *PreInsertUnique) Prepare(proc *process.Process) error {
 			preInsertUnique.ctr.acceptedKeyVecs[i] = make([]*vector.Vector, 1)
 		}
 		if odkuArbitration {
-			preInsertUnique.ctr.acceptedRows = make([][]int64, keyCount)
+			preInsertUnique.ctr.acceptedRows = make([]*vector.Vector, keyCount)
+			for i := range keyCount {
+				acceptedRows, err := vector.NewOffHeapVecWithTypeAndAllocation(
+					types.T_int64.ToType(), preInsertUnique.retainedAllocation)
+				if err != nil {
+					preInsertUnique.freeAcceptedState(proc)
+					return err
+				}
+				preInsertUnique.ctr.acceptedRows[i] = acceptedRows
+			}
 		}
 	}
 	return nil
@@ -219,7 +233,12 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 		preInsertUnique.ctr.acceptedKeyVecs[i][0] = inputBat.Vecs[keyPos]
 	}
 	if preInsertUnique.ctr.acceptedTarget == nil {
-		preInsertUnique.ctr.acceptedTarget = vector.NewVec(*inputBat.Vecs[pkColumn].GetType())
+		var err error
+		preInsertUnique.ctr.acceptedTarget, err = vector.NewOffHeapVecWithTypeAndAllocation(
+			*inputBat.Vecs[pkColumn].GetType(), preInsertUnique.retainedAllocation)
+		if err != nil {
+			return vm.CancelResult, err
+		}
 	} else if !preInsertUnique.ctr.acceptedTarget.GetType().Eq(*inputBat.Vecs[pkColumn].GetType()) {
 		return vm.CancelResult, moerr.NewInvalidInput(proc.Ctx,
 			"ODKU target primary-key type changed between input batches")
@@ -279,13 +298,14 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 			}
 		case conflictKey >= 0:
 			groupIdx := int(conflictGroup - 1)
-			if groupIdx >= len(preInsertUnique.ctr.acceptedRows[conflictKey]) {
+			if groupIdx >= preInsertUnique.ctr.acceptedRows[conflictKey].Length() {
 				return vm.CancelResult, moerr.NewInternalError(proc.Ctx,
 					"ODKU accepted-key target ordinal is missing")
 			}
 			if err := targetOutput.UnionOne(
 				preInsertUnique.ctr.acceptedTarget,
-				preInsertUnique.ctr.acceptedRows[conflictKey][groupIdx], proc.Mp()); err != nil {
+				vector.GetFixedAtNoTypeCheck[int64](
+					preInsertUnique.ctr.acceptedRows[conflictKey], groupIdx), proc.Mp()); err != nil {
 				return vm.CancelResult, err
 			}
 		default:
@@ -314,8 +334,10 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 					return vm.CancelResult, moerr.NewInternalError(proc.Ctx,
 						"ODKU accepted-key state changed during row commit")
 				}
-				preInsertUnique.ctr.acceptedRows[keyIdx] = append(
-					preInsertUnique.ctr.acceptedRows[keyIdx], targetRow)
+				if err := vector.AppendFixed(
+					preInsertUnique.ctr.acceptedRows[keyIdx], targetRow, false, proc.Mp()); err != nil {
+					return vm.CancelResult, err
+				}
 			}
 		}
 	}
