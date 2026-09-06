@@ -209,6 +209,10 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 			}
 			return preInsertUnique.ctr.acceptedTarget.Length()
 		}())
+	for pos, vec := range inputBat.Vecs {
+		logutil.Infof("ODKU_ARB input pos=%d type=%s null=%t value=%v", pos,
+			vec.GetType().String(), vec.IsNull(0), vector.GetAny(vec, 0, false))
+	}
 	ctx := preInsertUnique.PreInsertCtx
 	outputColumns := int(ctx.OutputColumns)
 	pkColumn := int(ctx.PkColumn)
