@@ -204,6 +204,12 @@ SET @regexp_nested_subject = CAST(_binary'中中' AS BLOB);
 SET @regexp_nested_pattern = CAST(_binary'中' AS BLOB);
 EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested_pattern, @regexp_nested_subject, @regexp_nested_pattern;
 DEALLOCATE PREPARE regexp_nested_domain_rebind;
+
+# REGEXP_REPLACE's replacement participates in compatibility but cannot make
+# its text subject-pattern result dynamic. The fixed outer text/binary mismatch
+# must therefore be rejected at PREPARE rather than deferred to every EXECUTE.
+PREPARE regexp_nested_replacement_static_mismatch FROM
+    'SELECT REGEXP_INSTR(REGEXP_REPLACE(''a'', ''a'', ?), CAST(_binary''a'' AS VARBINARY(1)), 1)';
 DROP TABLE t_regexp_utf8;
 DROP DATABASE regexp_utf8_test;
 

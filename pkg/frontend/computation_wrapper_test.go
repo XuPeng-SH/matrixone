@@ -726,6 +726,8 @@ func TestBuildPlanRegexpDefersOnlyRuntimeStringDomains(t *testing.T) {
 		"select regexp_instr(concat(?, ''), cast(_binary'中' as varbinary(3)), 2)",
 		"select regexp_instr(concat(concat(?, ''), ''), cast(_binary'中' as varbinary(3)), 2)",
 		"select regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)",
+		"select regexp_instr(regexp_replace('a', 'a', ?), 'a', 1)",
+		"select regexp_instr(regexp_replace(cast(_binary'a' as varbinary(1)), cast(_binary'a' as varbinary(1)), ?), cast(_binary'a' as varbinary(1)), 1)",
 	} {
 		t.Run("accepted_"+sql, func(t *testing.T) {
 			prepare := tree.NewPrepareString(tree.Identifier("regexp_dynamic"), sql)
@@ -740,6 +742,9 @@ func TestBuildPlanRegexpDefersOnlyRuntimeStringDomains(t *testing.T) {
 		"select regexp_instr(concat(hex(?), ''), cast(_binary'中' as varbinary(3)), 2)",
 		"select regexp_replace(?, '中', cast(_binary'X' as varbinary(1)))",
 		"select regexp_instr(regexp_substr(cast(_binary'abc' as varbinary(3)), ?), 'a', 1)",
+		"select regexp_instr(regexp_replace('a', 'a', ?), cast(_binary'a' as varbinary(1)), 1)",
+		"select regexp_instr(regexp_replace('a', 'a', ?, 1), cast(_binary'a' as varbinary(1)), 1)",
+		"select regexp_instr(regexp_replace('a', 'a', ?, 1, 0), cast(_binary'a' as varbinary(1)), 1)",
 	} {
 		t.Run("rejected_"+sql, func(t *testing.T) {
 			prepare := tree.NewPrepareString(tree.Identifier("regexp_static"), sql)

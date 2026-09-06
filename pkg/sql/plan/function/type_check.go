@@ -224,33 +224,42 @@ func stringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) check
 	return stringDomainFixedTypeMatchIf(overloads, inputs, func(oid types.T) bool { return oid.IsMySQLString() })
 }
 
+const (
+	// RegexpMatchStringOperandCount is the subject-pattern pair that owns
+	// matching and any string result domain for every REGEXP function.
+	RegexpMatchStringOperandCount = 2
+	// RegexpReplaceCompatibilityStringOperandCount additionally includes the
+	// replacement in REGEXP_REPLACE's charset compatibility check.
+	RegexpReplaceCompatibilityStringOperandCount = 3
+)
+
 // regexpStringDomainFixedTypeMatch applies the MySQL REGEXP two-stage
 // contract. Statically known binary and nonbinary strings cannot participate
 // in one regexp call, while T_any parameter markers and ordinary NULL remain
 // unresolved until execution. The normal string-domain matcher then preserves
 // every accepted operand instead of erasing its domain through VARCHAR casts.
 func regexpStringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, regexpMatchStringOperandCount, nil)
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, RegexpMatchStringOperandCount, nil)
 }
 
 func regexpStringDomainTypeMatchWithModes(
 	overloads []overload, inputs []types.Type, modes []StringDomainCheckMode,
 ) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, regexpMatchStringOperandCount, modes)
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, RegexpMatchStringOperandCount, modes)
 }
 
 // regexpReplaceStringDomainFixedTypeMatch includes the replacement string in
 // the same compatibility domain as the subject and pattern.
 func regexpReplaceStringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) checkResult {
 	return regexpStringDomainFixedTypeMatchN(
-		overloads, inputs, regexpReplaceCompatibilityStringOperandCount, nil)
+		overloads, inputs, RegexpReplaceCompatibilityStringOperandCount, nil)
 }
 
 func regexpReplaceStringDomainTypeMatchWithModes(
 	overloads []overload, inputs []types.Type, modes []StringDomainCheckMode,
 ) checkResult {
 	return regexpStringDomainFixedTypeMatchN(
-		overloads, inputs, regexpReplaceCompatibilityStringOperandCount, modes)
+		overloads, inputs, RegexpReplaceCompatibilityStringOperandCount, modes)
 }
 
 func regexpStringDomainFixedTypeMatchN(

@@ -106,6 +106,70 @@ func TestPreparedBitCountDefaultsToBinaryAndSpecializesNumericValues(t *testing.
 	require.Equal(t, int32(13), overload)
 }
 
+func TestPreparedRegexpResultDomainTransferUsesOnlyMatchOperands(t *testing.T) {
+	textType := types.T_text.ToType()
+	binaryType := types.T_varbinary.ToType()
+	expr := func(typ types.Type) *planpb.Expr {
+		return &planpb.Expr{Typ: makePlan2Type(&typ)}
+	}
+
+	tests := []struct {
+		name           string
+		function       string
+		args           []*planpb.Expr
+		dynamicArgs    []int
+		preparedDomain types.StringDomain
+		wantDepends    bool
+	}{
+		{
+			name:        "replace replacement alone never owns result",
+			function:    "regexp_replace",
+			args:        []*planpb.Expr{expr(textType), expr(textType), expr(textType)},
+			dynamicArgs: []int{2}, preparedDomain: types.StringDomainText,
+		},
+		{
+			name:        "replace subject owns result",
+			function:    "regexp_replace",
+			args:        []*planpb.Expr{expr(textType), expr(textType), expr(textType)},
+			dynamicArgs: []int{0}, preparedDomain: types.StringDomainText,
+			wantDepends: true,
+		},
+		{
+			name:        "replace pattern owns result",
+			function:    "regexp_replace",
+			args:        []*planpb.Expr{expr(textType), expr(textType), expr(textType)},
+			dynamicArgs: []int{1}, preparedDomain: types.StringDomainText,
+			wantDepends: true,
+		},
+		{
+			name:        "fixed binary match pair dominates dynamic replacement",
+			function:    "regexp_replace",
+			args:        []*planpb.Expr{expr(binaryType), expr(binaryType), expr(textType)},
+			dynamicArgs: []int{2}, preparedDomain: types.StringDomainBinary,
+		},
+		{
+			name:        "substr correlated match operands own result",
+			function:    "regexp_substr",
+			args:        []*planpb.Expr{expr(textType), expr(textType)},
+			dynamicArgs: []int{0, 1}, preparedDomain: types.StringDomainText,
+			wantDepends: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.wantDepends,
+				preparedRegexpResultDomainDependsOnDynamicOperands(
+					test.function, test.args, test.dynamicArgs, test.preparedDomain))
+		})
+	}
+
+	require.Equal(t, function.RegexpReplaceCompatibilityStringOperandCount,
+		preparedRegexpCompatibilityStringOperandCount("regexp_replace", 5))
+	require.Equal(t, function.RegexpMatchStringOperandCount,
+		preparedRegexpResultStringOperandCount("regexp_replace", 5))
+}
+
 func TestPreparedNumericMetadataIsSparse(t *testing.T) {
 	require.Nil(t, (&planpb.Expr{}).GetPreparedNumeric())
 	// Five resident scalar fields made Expr 184 bytes. One optional pointer

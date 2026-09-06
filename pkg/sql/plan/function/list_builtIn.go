@@ -368,7 +368,7 @@ func regexpStringReturnType(parameters []types.Type) types.Type {
 	if len(parameters) == 0 {
 		return types.T_varchar.ToType()
 	}
-	operandCount := min(regexpMatchStringOperandCount, len(parameters))
+	operandCount := min(RegexpMatchStringOperandCount, len(parameters))
 	if hasBinaryStringDomain(parameters[:operandCount]) {
 		return binaryStringResultType(declaredStringByteBound(parameters[0]))
 	}

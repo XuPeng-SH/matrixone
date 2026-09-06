@@ -1676,7 +1676,7 @@ func (rule *ResetParamRefRule) preparedExecutionExprType(
 		}
 		argTypes := make([]types.Type, len(exprImpl.F.Args))
 		var stringDomainModes []planfunction.StringDomainCheckMode
-		stringOperands := preparedRegexpStringOperandCount(
+		stringOperands := preparedRegexpCompatibilityStringOperandCount(
 			strings.ToLower(exprImpl.F.Func.GetObjName()), len(exprImpl.F.Args))
 		if stringOperands > 0 {
 			stringDomainModes = make([]planfunction.StringDomainCheckMode, len(exprImpl.F.Args))
@@ -1724,7 +1724,7 @@ func (rule *ResetParamRefRule) resolvePreparedRegexpStringDomainCheckModes(
 	name string,
 	boundArgs, originalArgs []*plan.Expr,
 ) ([]planfunction.StringDomainCheckMode, error) {
-	stringOperands := preparedRegexpStringOperandCount(name, len(boundArgs))
+	stringOperands := preparedRegexpCompatibilityStringOperandCount(name, len(boundArgs))
 	if stringOperands == 0 {
 		return nil, nil
 	}

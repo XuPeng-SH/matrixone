@@ -335,6 +335,9 @@ EXECUTE regexp_nested_domain_rebind USING @regexp_nested_subject, @regexp_nested
 ord(regexp_substr(?, ?))    regexp_instr(regexp_substr(?, ?), cast(_binary'.' as varbinary(1)), 1)
 228    1
 DEALLOCATE PREPARE regexp_nested_domain_rebind;
+PREPARE regexp_nested_replacement_static_mismatch FROM
+'SELECT REGEXP_INSTR(REGEXP_REPLACE(''a'', ''a'', ?), CAST(_binary''a'' AS VARBINARY(1)), 1)';
+Character set 'utf8mb4_general_ci' cannot be used in conjunction with 'binary' in call to regexp_instr.
 DROP TABLE t_regexp_utf8;
 DROP DATABASE regexp_utf8_test;
 SELECT REGEXP_INSTR(CAST(_binary'中中' AS BINARY(6)), CAST(_binary'中' AS BINARY(3)), 2) AS binary_pos,

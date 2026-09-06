@@ -4440,7 +4440,7 @@ func bindMixedInListComparison(
 func preparedRegexpStringDomainCheckModes(
 	name string, args []*Expr,
 ) []function.StringDomainCheckMode {
-	stringOperands := preparedRegexpStringOperandCount(name, len(args))
+	stringOperands := preparedRegexpCompatibilityStringOperandCount(name, len(args))
 	if stringOperands == 0 {
 		return nil
 	}
@@ -4464,13 +4464,13 @@ func preparedRegexpStringDomainCheckModes(
 	return modes
 }
 
-func preparedRegexpStringOperandCount(name string, arity int) int {
+func preparedRegexpCompatibilityStringOperandCount(name string, arity int) int {
 	stringOperands := 0
 	switch name {
 	case "reg_match", "not_reg_match", "regexp_instr", "regexp_like", "regexp_substr":
-		stringOperands = 2
+		stringOperands = function.RegexpMatchStringOperandCount
 	case "regexp_replace":
-		stringOperands = 3
+		stringOperands = function.RegexpReplaceCompatibilityStringOperandCount
 	default:
 		return 0
 	}
@@ -4539,28 +4539,20 @@ func preparedFunctionStringDomainDependsOnRuntimeParam(expr *plan.Expr) bool {
 
 // preparedRegexpResultDomainDependsOnDynamicOperands models the result-domain
 // transfer performed by the REGEXP execution kernels. SUBSTR and REPLACE select
-// binary mode when any semantic string operand is binary; their output carries
-// that effective domain. Model that two-element lattice directly instead of
-// trying one parameter type at a time. The latter cannot discover a legal
-// binary/binary state when each intermediate binary/text combination is
-// rejected by static regexp compatibility checks.
+// binary mode only from their subject-pattern pair; REPLACE's replacement is a
+// compatibility operand but never owns the result domain. Model that
+// two-element lattice directly instead of trying one parameter type at a time.
+// The latter cannot discover a legal binary/binary state when each intermediate
+// binary/text combination is rejected by static regexp compatibility checks.
 func preparedRegexpResultDomainDependsOnDynamicOperands(
 	name string,
 	args []*plan.Expr,
 	dynamicArgs []int,
 	preparedDomain types.StringDomain,
 ) bool {
-	stringOperands := 0
-	switch name {
-	case "regexp_substr":
-		stringOperands = 2
-	case "regexp_replace":
-		stringOperands = 3
-	default:
+	stringOperands := preparedRegexpResultStringOperandCount(name, len(args))
+	if stringOperands == 0 {
 		return false
-	}
-	if stringOperands > len(args) {
-		stringOperands = len(args)
 	}
 
 	dynamic := make([]bool, stringOperands)
@@ -4588,6 +4580,15 @@ func preparedRegexpResultDomainDependsOnDynamicOperands(
 		(preparedDomain == types.StringDomainBinary && canReturnText)
 }
 
+func preparedRegexpResultStringOperandCount(name string, arity int) int {
+	switch name {
+	case "regexp_substr", "regexp_replace":
+		return min(function.RegexpMatchStringOperandCount, arity)
+	default:
+		return 0
+	}
+}
+
 func BindFuncExprImplByPlanExpr(ctx context.Context, name string, args []*Expr) (*plan.Expr, error) {
 	return bindFuncExprImplByPlanExpr(ctx, name, args, true, nil)
 }
@@ -4598,7 +4599,7 @@ func bindPreparedFuncExprImplByPlanExpr(
 	args []*Expr,
 	stringDomainModes []function.StringDomainCheckMode,
 ) (*plan.Expr, error) {
-	if stringDomainModes == nil && preparedRegexpStringOperandCount(name, len(args)) > 0 {
+	if stringDomainModes == nil && preparedRegexpCompatibilityStringOperandCount(name, len(args)) > 0 {
 		// PREPARE may defer compatibility for parameter-owned domains, but this
 		// path runs only after the current EXECUTE values have been bound. An
 		// explicit mode vector prevents cached ParamRefs from deferring the check

@@ -38,9 +38,7 @@ import (
 const (
 	DefaultEscapeChar = '\\'
 
-	mapSizeForRegexp                             = 100
-	regexpMatchStringOperandCount                = 2
-	regexpReplaceCompatibilityStringOperandCount = 3
+	mapSizeForRegexp = 100
 )
 
 type opBuiltInRegexp struct {
@@ -952,7 +950,7 @@ func (op *opBuiltInRegexp) builtInRegexpReplace(parameters []*vector.Vector, res
 // string arguments, such as REGEXP_REPLACE's replacement, may have separate
 // compatibility rules but never change the matcher domain.
 func regexpMatchUsesBinary(parameters []*vector.Vector, row int) bool {
-	operandCount := min(regexpMatchStringOperandCount, len(parameters))
+	operandCount := min(RegexpMatchStringOperandCount, len(parameters))
 	for i := 0; i < operandCount; i++ {
 		if parameters[i].GetIsBinaryStringAt(row) {
 			return true
@@ -1093,7 +1091,7 @@ func regexpWindows1252Rune(value byte) rune {
 // boolean predicates retain the allocation-free vectorized executor. Mixed
 // prepared/user-variable batches fall back to the row-aware loop above.
 func regexpMatchDomainUniform(parameters []*vector.Vector) (binary, uniform bool) {
-	operandCount := min(regexpMatchStringOperandCount, len(parameters))
+	operandCount := min(RegexpMatchStringOperandCount, len(parameters))
 	for i := 0; i < operandCount; i++ {
 		parameter := parameters[i]
 		if parameter.HasBinaryStringRows() {
