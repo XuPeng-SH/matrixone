@@ -22,8 +22,8 @@ limited to behavior MatrixOne can implement independently of the regexp engine:
 - a parameter nested in a domain-preserving expression is no longer a direct
   marker. Its current result domain is checked normally at EXECUTE;
 - `ORD` interprets its input in the selected row's effective string domain;
-  `REGEXP_SUBSTR` and `REGEXP_REPLACE` also preserve that domain on their
-  string result;
+  `REGEXP_SUBSTR` and `REGEXP_REPLACE` preserve the subject-pattern matching
+  domain on their string result;
 - `pos` does not have one common anchor contract across all regexp functions.
 
 The last two items cross planner, prepared-statement, vector, and execution
@@ -64,13 +64,16 @@ They answer only whether that current domain may trigger the regexp charset
 restriction.
 
 `REGEXP_SUBSTR` and `REGEXP_REPLACE` are special only in that their executor
-already derives the result domain from all semantic string operands. Their
-planner transfer function must express the same rule:
+derives a string result domain from the subject-pattern matching pair. The
+replacement in `REGEXP_REPLACE` participates in its three-operand compatibility
+check, but it is evaluated separately and never changes matching or result
+collation. Their planner transfer function must express the same rule:
 
-- if a statically binary operand fixes execution to binary, the only possible
-  runtime result is binary;
-- otherwise a runtime-owned semantic operand makes both text and binary
+- if a statically binary subject or pattern fixes execution to binary, the only
+  possible runtime result is binary;
+- otherwise a runtime-owned subject or pattern makes both text and binary
   possible;
+- a binary replacement alone leaves text matching and a text result unchanged;
 - the prepared result type remains the ordinary overload result, with runtime
   provenance carrying a differing row domain.
 
@@ -84,9 +87,10 @@ At EXECUTE, the four-mode table is applied at every nested regexp boundary; a
 nested function must not accidentally re-run the ordinary static checker and
 erase the direct-marker exception of its own children. A known binary operand
 is incompatible with any participating text operand. A binary direct marker is
-not a trigger, so two differently typed direct markers are legal and select
-binary execution if either current value is binary. This preserves early 3995
-errors without rejecting valid `PARAM_ITEM` combinations.
+not a trigger, so differently typed direct markers remain legal. Execution is
+binary only when the current subject or pattern is binary; a replacement marker
+does not own the matcher. This preserves early 3995 errors without rejecting
+valid `PARAM_ITEM` combinations.
 
 The defer mode is PREPARE-only: execute-time rebinding supplies an explicit
 resolved mode vector, so cached ParamRefs cannot defer a second time after the
@@ -144,10 +148,11 @@ first when `match_type` itself is NULL, matching MySQL's argument semantics.
 3. COM_STMT and SQL EXECUTE rebuild parameter metadata on every execution;
    binary-to-text-to-binary reuse must not retain a stale domain.
 4. Vectors carry static type plus optional row-level runtime provenance.
-5. REGEXP execution selects byte mode if any semantic string operand is
-   effectively binary for the current row.
-6. SUBSTR and REPLACE attach the selected effective result domain to their
-   output vector.
+5. REGEXP execution selects byte mode if the subject or pattern is effectively
+   binary for the current row. `REGEXP_REPLACE` validates replacement
+   compatibility independently of this choice.
+6. SUBSTR and REPLACE attach the selected subject-pattern matching domain to
+   their output vector.
 
 Metadata slices are bounded by statement parameter count and are cleared before
 reuse. The prepared statement/session remains their owner. No new goroutine,
@@ -239,7 +244,7 @@ RE2 encoding is retained.
 |---|---|---|
 | INSTR suffix anchors | direct matcher tests for `^`, multiline `^`, `\\b`, `$` | BVT SQL at `pos > 1` |
 | SUBSTR/REPLACE original anchors | start-aware iterator tests | existing BVT positional cases |
-| nested dynamic result domain | binder accepts correlated runtime domains, propagates binary from every semantic operand, and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse |
+| nested dynamic result domain | binder accepts correlated runtime domains, propagates binary from subject/pattern, excludes replacement from result ownership, and rejects fixed controls | SQL PREPARE and COM_STMT binary/text/binary reuse, including replacement-only BLOB |
 | static mismatch | function resolver returns 3995 for known mixed operands | existing BVT matrix |
 | execute-time marker semantics | exhaustive known/deferred/direct-marker/domainless matrix | mixed direct markers, fixed-binary controls, nested-result controls, and cached-plan reuse |
 | byte positions/results | binary vectors without legacy `SetIsBin` | BINARY/VARBINARY/BLOB BVT |

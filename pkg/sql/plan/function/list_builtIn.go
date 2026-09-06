@@ -360,19 +360,16 @@ func derivedStringReturnType(parameters []types.Type, sourceIndex int, resultOID
 	return textStringResultType(declaredTextCharacterBound(parameters[sourceIndex]), parameters[sourceIndex].Charset)
 }
 
-// regexpStringReturnType derives the result bound from the subject, while the
-// effective text/binary domain belongs to every semantic string operand. This
-// must match regexpOperandsUseBinary in the executor: a binary pattern or
-// replacement makes SUBSTR/REPLACE byte-oriented even when the subject itself
-// is text.
-func regexpStringReturnType(parameters []types.Type, stringOperands int) types.Type {
+// regexpStringReturnType derives the result bound from the subject and the
+// effective text/binary domain from the subject-pattern matching pair. Other
+// string operands may participate in compatibility checks, but cannot change
+// the matcher or result domain.
+func regexpStringReturnType(parameters []types.Type) types.Type {
 	if len(parameters) == 0 {
 		return types.T_varchar.ToType()
 	}
-	if stringOperands > len(parameters) {
-		stringOperands = len(parameters)
-	}
-	if hasBinaryStringDomain(parameters[:stringOperands]) {
+	operandCount := min(regexpMatchStringOperandCount, len(parameters))
+	if hasBinaryStringDomain(parameters[:operandCount]) {
 		return binaryStringResultType(declaredStringByteBound(parameters[0]))
 	}
 	return textStringResultType(
@@ -3089,7 +3086,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 0,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_varchar},
 				retType: func(parameters []types.Type) types.Type {
-					return regexpStringReturnType(parameters, 3)
+					return regexpStringReturnType(parameters)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpReplace
@@ -3099,7 +3096,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 1,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_varchar, types.T_int64},
 				retType: func(parameters []types.Type) types.Type {
-					return regexpStringReturnType(parameters, 3)
+					return regexpStringReturnType(parameters)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpReplace
@@ -3109,7 +3106,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 2,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_varchar, types.T_int64, types.T_int64},
 				retType: func(parameters []types.Type) types.Type {
-					return regexpStringReturnType(parameters, 3)
+					return regexpStringReturnType(parameters)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpReplace
@@ -3131,7 +3128,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 0,
 				args:       []types.T{types.T_varchar, types.T_varchar},
 				retType: func(parameters []types.Type) types.Type {
-					return regexpStringReturnType(parameters, 2)
+					return regexpStringReturnType(parameters)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpSubstr
@@ -3142,7 +3139,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 1,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_int64},
 				retType: func(parameters []types.Type) types.Type {
-					return regexpStringReturnType(parameters, 2)
+					return regexpStringReturnType(parameters)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpSubstr
@@ -3153,7 +3150,7 @@ var supportedStringBuiltIns = []FuncNew{
 				overloadId: 2,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_int64, types.T_int64},
 				retType: func(parameters []types.Type) types.Type {
-					return regexpStringReturnType(parameters, 2)
+					return regexpStringReturnType(parameters)
 				},
 				newOp: func() executeLogicOfOverload {
 					return newOpBuiltInRegexp().builtInRegexpSubstr

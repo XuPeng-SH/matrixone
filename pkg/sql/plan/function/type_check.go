@@ -230,25 +230,27 @@ func stringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) check
 // unresolved until execution. The normal string-domain matcher then preserves
 // every accepted operand instead of erasing its domain through VARCHAR casts.
 func regexpStringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 2, nil)
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, regexpMatchStringOperandCount, nil)
 }
 
 func regexpStringDomainTypeMatchWithModes(
 	overloads []overload, inputs []types.Type, modes []StringDomainCheckMode,
 ) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 2, modes)
+	return regexpStringDomainFixedTypeMatchN(overloads, inputs, regexpMatchStringOperandCount, modes)
 }
 
 // regexpReplaceStringDomainFixedTypeMatch includes the replacement string in
 // the same compatibility domain as the subject and pattern.
 func regexpReplaceStringDomainFixedTypeMatch(overloads []overload, inputs []types.Type) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 3, nil)
+	return regexpStringDomainFixedTypeMatchN(
+		overloads, inputs, regexpReplaceCompatibilityStringOperandCount, nil)
 }
 
 func regexpReplaceStringDomainTypeMatchWithModes(
 	overloads []overload, inputs []types.Type, modes []StringDomainCheckMode,
 ) checkResult {
-	return regexpStringDomainFixedTypeMatchN(overloads, inputs, 3, modes)
+	return regexpStringDomainFixedTypeMatchN(
+		overloads, inputs, regexpReplaceCompatibilityStringOperandCount, modes)
 }
 
 func regexpStringDomainFixedTypeMatchN(

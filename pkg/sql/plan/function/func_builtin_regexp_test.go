@@ -540,7 +540,7 @@ func Test_BuiltIn_RegexpUsesRowStringDomainAndSurvivesRebind(t *testing.T) {
 	require.False(t, replace.GetResultVectorDirectly().GetIsBinaryStringAt(1))
 }
 
-func Test_BuiltIn_RegexpUsesEveryStringOperandDomain(t *testing.T) {
+func Test_BuiltIn_RegexpUsesMatchOperandDomain(t *testing.T) {
 	proc := testutil.NewProcess(t)
 	varchar := types.T_varchar.ToType()
 	setFirstRowBinary := func(t *testing.T, testCase *FunctionTestCase, parameter int) {
@@ -600,19 +600,83 @@ func Test_BuiltIn_RegexpUsesEveryStringOperandDomain(t *testing.T) {
 	require.True(t, substr.GetResultVectorDirectly().GetIsBinaryStringAt(0))
 	require.False(t, substr.GetResultVectorDirectly().GetIsBinaryStringAt(1))
 
-	replace := NewFunctionTestCase(proc,
-		[]FunctionTestInput{
-			NewFunctionTestInput(varchar, []string{"中", "中"}, nil),
-			NewFunctionTestInput(varchar, []string{".", "."}, nil),
-			NewFunctionTestInput(varchar, []string{"X", "X"}, nil),
+	for _, tc := range []struct {
+		name            string
+		binaryParameter int
+		want            []string
+		wantBinary      bool
+	}{
+		{name: "subject selects binary matching", binaryParameter: 0, want: []string{"XXX", "X"}, wantBinary: true},
+		{name: "pattern selects binary matching", binaryParameter: 1, want: []string{"XXX", "X"}, wantBinary: true},
+	} {
+		t.Run("regexp_replace_"+tc.name, func(t *testing.T) {
+			replace := NewFunctionTestCase(proc,
+				[]FunctionTestInput{
+					NewFunctionTestInput(varchar, []string{"中", "中"}, nil),
+					NewFunctionTestInput(varchar, []string{".", "."}, nil),
+					NewFunctionTestInput(varchar, []string{"X", "X"}, nil),
+				},
+				NewFunctionTestResult(varchar, false, tc.want, nil),
+				newOpBuiltInRegexp().builtInRegexpReplace)
+			setFirstRowBinary(t, &replace, tc.binaryParameter)
+			ok, info := replace.Run()
+			require.True(t, ok, info)
+			require.Equal(t, tc.wantBinary, replace.GetResultVectorDirectly().GetIsBinaryStringAt(0))
+			require.False(t, replace.GetResultVectorDirectly().GetIsBinaryStringAt(1))
+		})
+	}
+
+	for _, tc := range []struct {
+		name          string
+		controlInputs []FunctionTestInput
+	}{
+		{name: "three arguments"},
+		{
+			name: "four arguments",
+			controlInputs: []FunctionTestInput{
+				NewFunctionTestInput(types.T_int64.ToType(), []int64{1}, nil),
+			},
 		},
-		NewFunctionTestResult(varchar, false, []string{"XXX", "X"}, nil),
+		{
+			name: "five arguments",
+			controlInputs: []FunctionTestInput{
+				NewFunctionTestInput(types.T_int64.ToType(), []int64{1}, nil),
+				NewFunctionTestInput(types.T_int64.ToType(), []int64{0}, nil),
+			},
+		},
+	} {
+		t.Run("regexp_replace_binary_replacement_does_not_select_domain_"+tc.name, func(t *testing.T) {
+			inputs := []FunctionTestInput{
+				NewFunctionTestInput(varchar, []string{"中"}, nil),
+				NewFunctionTestInput(varchar, []string{"."}, nil),
+				NewFunctionTestInput(varchar, []string{"X"}, nil),
+			}
+			inputs = append(inputs, tc.controlInputs...)
+			replace := NewFunctionTestCase(proc, inputs,
+				NewFunctionTestResult(varchar, false, []string{"X"}, nil),
+				newOpBuiltInRegexp().builtInRegexpReplace)
+			setFirstRowBinary(t, &replace, 2)
+			ok, info := replace.Run()
+			require.True(t, ok, info)
+			require.False(t, replace.GetResultVectorDirectly().GetIsBinaryStringAt(0))
+		})
+	}
+
+	// A binary replacement must not make the text pattern pass through the
+	// binary-regexp validator. This Unicode escape is legal in text mode and
+	// intentionally rejected in byte mode.
+	replaceWithUnicodePattern := NewFunctionTestCase(proc,
+		[]FunctionTestInput{
+			NewFunctionTestInput(varchar, []string{"Ā"}, nil),
+			NewFunctionTestInput(varchar, []string{`\x{100}`}, nil),
+			NewFunctionTestInput(varchar, []string{"X"}, nil),
+		},
+		NewFunctionTestResult(varchar, false, []string{"X"}, nil),
 		newOpBuiltInRegexp().builtInRegexpReplace)
-	setFirstRowBinary(t, &replace, 2)
-	ok, info = replace.Run()
+	setFirstRowBinary(t, &replaceWithUnicodePattern, 2)
+	ok, info = replaceWithUnicodePattern.Run()
 	require.True(t, ok, info)
-	require.True(t, replace.GetResultVectorDirectly().GetIsBinaryStringAt(0))
-	require.False(t, replace.GetResultVectorDirectly().GetIsBinaryStringAt(1))
+	require.False(t, replaceWithUnicodePattern.GetResultVectorDirectly().GetIsBinaryStringAt(0))
 }
 
 func Test_BuiltIn_RegexpHonorsSelectList(t *testing.T) {
@@ -855,10 +919,11 @@ func TestRegexpFunctionsHonorStringDomainCheckModes(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name  string
-		fn    string
-		args  []types.Type
-		modes []StringDomainCheckMode
+		name       string
+		fn         string
+		args       []types.Type
+		modes      []StringDomainCheckMode
+		wantDomain types.StringDomain
 	}{
 		{
 			name: "substr binary pattern marker owns result domain",
@@ -867,21 +932,41 @@ func TestRegexpFunctionsHonorStringDomainCheckModes(t *testing.T) {
 			modes: []StringDomainCheckMode{
 				StringDomainCheckParamMarker, StringDomainCheckParamMarker,
 			},
+			wantDomain: types.StringDomainBinary,
 		},
 		{
-			name: "replace binary replacement marker owns result domain",
+			name: "replace binary subject marker owns result domain",
+			fn:   "regexp_replace",
+			args: []types.Type{binary, text, text},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckParamMarker, StringDomainCheckParamMarker, StringDomainCheckParamMarker,
+			},
+			wantDomain: types.StringDomainBinary,
+		},
+		{
+			name: "replace binary pattern marker owns result domain",
+			fn:   "regexp_replace",
+			args: []types.Type{text, binary, text},
+			modes: []StringDomainCheckMode{
+				StringDomainCheckParamMarker, StringDomainCheckParamMarker, StringDomainCheckParamMarker,
+			},
+			wantDomain: types.StringDomainBinary,
+		},
+		{
+			name: "replace binary replacement marker does not own result domain",
 			fn:   "regexp_replace",
 			args: []types.Type{text, text, binary},
 			modes: []StringDomainCheckMode{
 				StringDomainCheckParamMarker, StringDomainCheckParamMarker, StringDomainCheckParamMarker,
 			},
+			wantDomain: types.StringDomainText,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved, err := GetFunctionByNameWithStringDomainCheckModes(
 				ctx, tc.fn, tc.args, tc.modes)
 			require.NoError(t, err)
-			require.Equal(t, types.StringDomainBinary,
+			require.Equal(t, tc.wantDomain,
 				types.StaticStringDomain(resolved.GetReturnType()))
 		})
 	}

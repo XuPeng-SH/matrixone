@@ -552,9 +552,24 @@ func TestCOMStmtRegexpRebindExecutesWithWireStringDomain(t *testing.T) {
 			wantInstr:  4, wantReplace: "X",
 		},
 		{
+			name:       "binary direct replacement subject marker with text peers",
+			mysqlTypes: typesWithBinary(2),
+			wantInstr:  2, wantReplace: "XXX", wantReplaceBinary: true,
+		},
+		{
+			name:       "binary direct replacement pattern marker with text peers",
+			mysqlTypes: typesWithBinary(3),
+			wantInstr:  2, wantReplace: "XXX", wantReplaceBinary: true,
+		},
+		{
+			name:       "binary direct replacement match pair with text replacement",
+			mysqlTypes: typesWithBinary(2, 3),
+			wantInstr:  2, wantReplace: "XXX", wantReplaceBinary: true,
+		},
+		{
 			name:       "binary direct replacement marker with text peer markers",
 			mysqlTypes: typesWithBinary(4),
-			wantInstr:  2, wantReplace: "XXX", wantReplaceBinary: true,
+			wantInstr:  2, wantReplace: "X",
 		},
 		{
 			name:       "binary direct outer pattern marker with text nested result",
