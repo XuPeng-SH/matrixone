@@ -24,7 +24,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
-	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
@@ -202,17 +201,6 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 	result vm.CallResult,
 ) (vm.CallResult, error) {
 	inputBat := result.Batch
-	logutil.Infof("ODKU_ARB call op=%p rows=%d accepted=%d", preInsertUnique,
-		inputBat.RowCount(), func() int {
-			if preInsertUnique.ctr.acceptedTarget == nil {
-				return 0
-			}
-			return preInsertUnique.ctr.acceptedTarget.Length()
-		}())
-	for pos, vec := range inputBat.Vecs {
-		logutil.Infof("ODKU_ARB input pos=%d type=%s null=%t value=%v", pos,
-			vec.GetType().String(), vec.IsNull(0), vector.GetAny(vec, 0, false))
-	}
 	ctx := preInsertUnique.PreInsertCtx
 	outputColumns := int(ctx.OutputColumns)
 	pkColumn := int(ctx.PkColumn)
@@ -264,12 +252,12 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 		conflictTargetColumn := int32(-1)
 		for keyIdx, targetPos := range ctx.TargetColumns {
 			targetVec := inputBat.Vecs[targetPos]
-			if !targetVec.GetNulls().Contains(uint64(row)) {
+			if !targetVec.IsNull(uint64(row)) {
 				conflictTargetColumn = targetPos
 				break
 			}
 			keyVec := preInsertUnique.ctr.acceptedKeyVecs[keyIdx][0]
-			if keyVec.GetNulls().Contains(uint64(row)) {
+			if keyVec.IsNull(uint64(row)) {
 				continue
 			}
 			vals, zvals, err := preInsertUnique.ctr.acceptedIters[keyIdx].Find(
@@ -285,13 +273,11 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 
 		switch {
 		case conflictTargetColumn >= 0:
-			logutil.Infof("ODKU_ARB row=%d preexisting-column=%d", row, conflictTargetColumn)
 			if err := targetOutput.UnionOne(
 				inputBat.Vecs[conflictTargetColumn], int64(row), proc.Mp()); err != nil {
 				return vm.CancelResult, err
 			}
 		case conflictKey >= 0:
-			logutil.Infof("ODKU_ARB row=%d local-key=%d group=%d", row, conflictKey, conflictGroup)
 			groupIdx := int(conflictGroup - 1)
 			if groupIdx >= len(preInsertUnique.ctr.acceptedRows[conflictKey]) {
 				return vm.CancelResult, moerr.NewInternalError(proc.Ctx,
@@ -303,8 +289,7 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 				return vm.CancelResult, err
 			}
 		default:
-			logutil.Infof("ODKU_ARB row=%d insert", row)
-			if inputBat.Vecs[pkColumn].GetNulls().Contains(uint64(row)) {
+			if inputBat.Vecs[pkColumn].IsNull(uint64(row)) {
 				return vm.CancelResult, moerr.NewInvalidInput(proc.Ctx, "NULL ODKU insertion target primary key")
 			}
 			if err := targetOutput.UnionOne(inputBat.Vecs[pkColumn], int64(row), proc.Mp()); err != nil {
@@ -317,7 +302,7 @@ func (preInsertUnique *PreInsertUnique) callODKUTargetArbitration(
 			}
 			for keyIdx := range ctx.KeyColumns {
 				keyVec := preInsertUnique.ctr.acceptedKeyVecs[keyIdx][0]
-				if keyVec.GetNulls().Contains(uint64(row)) {
+				if keyVec.IsNull(uint64(row)) {
 					continue
 				}
 				isNew, err := preInsertUnique.ctr.acceptedIters[keyIdx].DetectDup(

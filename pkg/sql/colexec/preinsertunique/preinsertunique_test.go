@@ -492,6 +492,30 @@ func TestODKUTargetArbitrationSupportsSingleSyntheticIdentityConstraint(t *testi
 	require.Equal(t, int64(0), proc.Mp().CurrNB())
 }
 
+func TestODKUTargetArbitrationHandlesConstNullSnapshotTargets(t *testing.T) {
+	proc := testutil.NewProc(t)
+	input := makeODKUTargetArbitrationBatch(t, proc,
+		[]int32{1, 2}, []int32{10, 10}, nil, nil, []bool{true, true}, nil, []bool{true, true})
+	// Hash joins over INSERT ... SELECT can represent an unmatched lookup column
+	// as a const-NULL vector with no physical values. Reading only its raw null
+	// bitmap misclassifies it as a pre-statement target.
+	input.Vecs[2].Free(proc.Mp())
+	input.Vecs[2] = vector.NewConstNull(types.T_int32.ToType(), input.RowCount(), proc.Mp())
+	input.Vecs[3].Free(proc.Mp())
+	input.Vecs[3] = vector.NewConstNull(types.T_int32.ToType(), input.RowCount(), proc.Mp())
+	arg := newODKUTargetArbitrationArgument(input)
+	require.NoError(t, arg.Prepare(proc))
+
+	result, err := arg.Call(proc)
+	require.NoError(t, err)
+	require.Equal(t, []int32{1, 1},
+		vector.MustFixedColNoTypeCheck[int32](result.Batch.Vecs[2]))
+
+	arg.Free(proc, false, nil)
+	input.Clean(proc.Mp())
+	require.Equal(t, int64(0), proc.Mp().CurrNB())
+}
+
 func TestOrderedUniqueKeyArbitrationRejectsMalformedContext(t *testing.T) {
 	for _, tc := range []struct {
 		name string
