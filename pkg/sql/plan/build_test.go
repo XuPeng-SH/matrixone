@@ -5556,16 +5556,21 @@ func TestInsertOnDupFakePKUsesModernPath(t *testing.T) {
 
 	hasMultiUpdate := false
 	hasDedupJoin := false
+	hasTargetArbiter := false
 	for _, node := range query.Nodes {
 		switch {
 		case node.NodeType == plan.Node_MULTI_UPDATE:
 			hasMultiUpdate = true
 		case node.NodeType == plan.Node_JOIN && node.JoinType == plan.Node_DEDUP:
 			hasDedupJoin = true
+		case node.NodeType == plan.Node_PRE_INSERT_UK && node.PreInsertUkCtx.GetOdkuTargetArbitration():
+			hasTargetArbiter = true
 		}
 	}
 	assert.True(t, hasMultiUpdate, "fake-PK ODKU plan should contain MULTI_UPDATE node")
 	assert.True(t, hasDedupJoin, "fake-PK ODKU plan should contain DEDUP JOIN node")
+	assert.True(t, hasTargetArbiter,
+		"fake-PK ODKU must arbitrate pre-statement and statement-local unique conflicts")
 }
 
 func TestInsertOnDupFKUsesModernPath(t *testing.T) {
@@ -5987,13 +5992,9 @@ func TestInsertOnDupRealPKUniqueKeyConflictUpdates(t *testing.T) {
 	// a unique-key conflict on a real-PK table must trigger an UPDATE of the
 	// conflicting row instead of raising a duplicate-entry error.
 	//
-	// The modern plan achieves this by resolving a single UPDATE target row up
-	// front: target_pk = coalesce(pk-existence-probe, uk1_pri, uk2_pri, ...),
-	// treating PRIMARY as the 0th index. The main DEDUP-update join then keys on
-	// target_pk so a cross-row UK conflict lands on the existing row's UPDATE.
-	// The per-UK FAIL dedup join is intentionally kept as in-batch protection
-	// (two brand-new rows sharing a new UK value still error, avoiding a
-	// duplicated unique-index entry).
+	// The modern plan resolves a single UPDATE target in PRIMARY/UNIQUE priority
+	// order against both the table snapshot and prior INSERT actions in this
+	// statement. The main DEDUP-update join then keys on that target identity.
 	logicPlan, err := runOneStmt(mock, t,
 		"INSERT INTO dept VALUES (1, 'Sales', 'NY') ON DUPLICATE KEY UPDATE loc = 'LA'")
 	if err != nil {
@@ -6005,7 +6006,7 @@ func TestInsertOnDupRealPKUniqueKeyConflictUpdates(t *testing.T) {
 
 	hasMultiUpdate := false
 	hasUpdateDedupJoin := false
-	hasTargetPkResolve := false
+	hasTargetArbiter := false
 	for _, node := range query.Nodes {
 		if node.NodeType == plan.Node_MULTI_UPDATE {
 			hasMultiUpdate = true
@@ -6014,27 +6015,26 @@ func TestInsertOnDupRealPKUniqueKeyConflictUpdates(t *testing.T) {
 			node.OnDuplicateAction == plan.Node_UPDATE {
 			hasUpdateDedupJoin = true
 		}
-		for _, expr := range node.ProjectList {
-			if exprContainsFuncName(expr, "coalesce") {
-				hasTargetPkResolve = true
-			}
+		if node.NodeType == plan.Node_PRE_INSERT_UK && node.PreInsertUkCtx.GetOdkuTargetArbitration() {
+			hasTargetArbiter = true
+			require.Len(t, node.PreInsertUkCtx.KeyColumns, 2,
+				"PRIMARY and secondary UNIQUE must participate in one ordered arbiter")
+			require.Len(t, node.PreInsertUkCtx.TargetColumns, 2)
 		}
 	}
 	assert.True(t, hasMultiUpdate, "real-PK ODKU plan should contain MULTI_UPDATE node")
 	assert.True(t, hasUpdateDedupJoin,
 		"real-PK ODKU plan should contain a DEDUP JOIN with OnDuplicateAction=UPDATE")
-	assert.True(t, hasTargetPkResolve,
-		"real-PK ODKU must resolve a coalesce(pk, uk...) target so unique-key "+
-			"conflicts update the existing row (MySQL-aligned), not just dedup on PK")
+	assert.True(t, hasTargetArbiter,
+		"real-PK ODKU must arbitrate existing and statement-local PK/UNIQUE conflicts")
 }
 
 func TestInsertOnDupRealPKCompositeUniqueKeyConflict(t *testing.T) {
 	mock := NewMockOptimizer(true)
 
 	// dept_ck has a real PK (deptno) and a composite unique key (dname, loc),
-	// plus a free column note. The target_pk resolution must serialize the
-	// composite unique-key value to probe its index table, so a composite
-	// unique-key conflict also resolves into the UPDATE target (MySQL-aligned).
+	// plus a free column note. The target arbiter must consume the serialized
+	// composite key used by its hidden index table.
 	logicPlan, err := runOneStmt(mock, t,
 		"INSERT INTO dept_ck VALUES (1, 'Sales', 'NY', 'n') ON DUPLICATE KEY UPDATE note = 'x'")
 	if err != nil {
@@ -6045,20 +6045,20 @@ func TestInsertOnDupRealPKCompositeUniqueKeyConflict(t *testing.T) {
 	assert.NotNil(t, query)
 
 	hasMultiUpdate := false
-	hasTargetPkResolve := false
+	hasTargetArbiter := false
 	for _, node := range query.Nodes {
 		if node.NodeType == plan.Node_MULTI_UPDATE {
 			hasMultiUpdate = true
 		}
-		for _, expr := range node.ProjectList {
-			if exprContainsFuncName(expr, "coalesce") {
-				hasTargetPkResolve = true
-			}
+		if node.NodeType == plan.Node_PRE_INSERT_UK && node.PreInsertUkCtx.GetOdkuTargetArbitration() {
+			hasTargetArbiter = true
+			require.Len(t, node.PreInsertUkCtx.KeyColumns, 2)
+			require.Len(t, node.PreInsertUkCtx.TargetColumns, 2)
 		}
 	}
 	assert.True(t, hasMultiUpdate, "composite-UK real-PK ODKU should contain MULTI_UPDATE node")
-	assert.True(t, hasTargetPkResolve,
-		"composite-UK real-PK ODKU should resolve a coalesce(pk, composite-uk) target")
+	assert.True(t, hasTargetArbiter,
+		"composite-UK real-PK ODKU should use ordered target arbitration")
 }
 
 // TestInsertOnDupIndexMetaTableUsesModernPath guards the regression where

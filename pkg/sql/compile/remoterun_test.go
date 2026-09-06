@@ -1679,6 +1679,24 @@ func Test_DMLOperatorSerializationRoundtrip(t *testing.T) {
 		require.ErrorContains(t, err, "MORPC protocol version 51")
 		_, err = decodeScope(actionData, proc, true, nil)
 		require.ErrorContains(t, err, "MORPC protocol version 51")
+
+		targetOp := &preinsertunique.PreInsertUnique{PreInsertCtx: &planpb.PreInsertUkCtx{
+			OdkuTargetArbitration: true,
+			PkColumn:              0,
+			KeyColumns:            []int32{0, 1},
+			TargetColumns:         []int32{2, 3},
+			OutputColumns:         2,
+		}}
+		rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCLatestVersion)
+		_, targetInstruction, err := convertToPipelineInstruction(targetOp, proc, ctx, 1)
+		require.NoError(t, err)
+		targetData, err := (&pipeline.Pipeline{InstructionList: []*pipeline.Instruction{targetInstruction}}).Marshal()
+		require.NoError(t, err)
+		rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCVersion50)
+		_, _, err = convertToPipelineInstruction(targetOp, proc, ctx, 1)
+		require.ErrorContains(t, err, "MORPC protocol version 51")
+		_, err = decodeScope(targetData, proc, true, nil)
+		require.ErrorContains(t, err, "MORPC protocol version 51")
 		rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCLatestVersion)
 	})
 
@@ -2170,6 +2188,28 @@ func Test_DMLOperatorSerializationRoundtrip(t *testing.T) {
 		require.Equal(t, int32(6), restoredDedup.ActionFinalResultPos)
 		require.Equal(t, []int32{1, 2}, restoredDedup.ForeignKeyChecks[0].ColIdxList)
 		require.Equal(t, int32(7), restoredDedup.ForeignKeyChecks[0].EligibilityResultPos)
+	})
+
+	t.Run("PreInsertUnique_ODKUTargetArbitration", func(t *testing.T) {
+		op := &preinsertunique.PreInsertUnique{PreInsertCtx: &planpb.PreInsertUkCtx{
+			OdkuTargetArbitration: true,
+			PkColumn:              0,
+			KeyColumns:            []int32{0, 1},
+			TargetColumns:         []int32{2, 3},
+			OutputColumns:         2,
+		}}
+		_, pipeInstr, err := convertToPipelineInstruction(op, proc, ctx, 1)
+		require.NoError(t, err)
+		wire, err := pipeInstr.Marshal()
+		require.NoError(t, err)
+		decoded := new(pipeline.Instruction)
+		require.NoError(t, decoded.Unmarshal(wire))
+		restored, err := convertToVmOperator(decoded, ctx, nil)
+		require.NoError(t, err)
+		restoredPreInsert := restored.(*preinsertunique.PreInsertUnique)
+		require.True(t, restoredPreInsert.PreInsertCtx.OdkuTargetArbitration)
+		require.Equal(t, []int32{0, 1}, restoredPreInsert.PreInsertCtx.KeyColumns)
+		require.Equal(t, []int32{2, 3}, restoredPreInsert.PreInsertCtx.TargetColumns)
 	})
 
 	t.Run("MergeOrder_SpillThreshold", func(t *testing.T) {

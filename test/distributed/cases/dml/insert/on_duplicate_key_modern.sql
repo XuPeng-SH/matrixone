@@ -530,6 +530,48 @@ select row_count(), id, v from t_odku_repeat_count;
 select count(*) from t_odku_repeat_count force index(iv) where v = 10;
 drop table t_odku_repeat_count;
 
+-- Conflict targets evolve in input order across every unique constraint. An
+-- input row that becomes UPDATE must not reserve its unused PK/UNIQUE values.
+drop table if exists t_odku_statement_keys;
+create table t_odku_statement_keys(id int primary key, u int unique, v int);
+insert into t_odku_statement_keys values (1, 10, 1), (1, 11, 2)
+  on duplicate key update v = values(v);
+select row_count(), id, u, v from t_odku_statement_keys order by id;
+truncate table t_odku_statement_keys;
+insert into t_odku_statement_keys values (1, 10, 1), (2, 10, 2)
+  on duplicate key update v = values(v);
+select row_count(), id, u, v from t_odku_statement_keys order by id;
+truncate table t_odku_statement_keys;
+insert into t_odku_statement_keys values (1, 10, 1), (2, 10, 2), (2, 20, 3)
+  on duplicate key update v = values(v);
+select row_count(), id, u, v from t_odku_statement_keys order by id;
+truncate table t_odku_statement_keys;
+insert into t_odku_statement_keys values (1, 10, 1), (2, 20, 2);
+insert into t_odku_statement_keys values (1, 20, 99)
+  on duplicate key update v = values(v);
+select row_count(), id, u, v from t_odku_statement_keys order by id;
+drop table t_odku_statement_keys;
+
+drop table if exists t_odku_statement_fake_pk;
+create table t_odku_statement_fake_pk(u int unique, v int);
+insert into t_odku_statement_fake_pk values (10, 1), (10, 2)
+  on duplicate key update v = values(v);
+select row_count(), u, v from t_odku_statement_fake_pk;
+drop table t_odku_statement_fake_pk;
+
+drop table if exists t_odku_statement_composite;
+create table t_odku_statement_composite(
+  id int primary key,
+  a int,
+  b int,
+  v int,
+  unique key uk_ab(a, b)
+);
+insert into t_odku_statement_composite values (1, 10, 20, 1), (2, 10, 20, 2)
+  on duplicate key update v = values(v);
+select row_count(), id, a, b, v from t_odku_statement_composite;
+drop table t_odku_statement_composite;
+
 -- Generated columns observe the ordered final row. A later CHECK failure must
 -- roll back both a preceding insert and all base/index maintenance.
 drop table if exists t_odku_order_generated;

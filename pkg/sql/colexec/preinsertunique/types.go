@@ -34,6 +34,8 @@ type container struct {
 	acceptedMaps    []*hashmap.StrHashMap
 	acceptedIters   []hashmap.Iterator
 	acceptedKeyVecs [][]*vector.Vector
+	acceptedTarget  *vector.Vector
+	acceptedRows    [][]int64
 }
 type PreInsertUnique struct {
 	ctr          container
@@ -82,7 +84,7 @@ func (preInsertUnique *PreInsertUnique) Reset(proc *process.Process, pipelineFai
 	if preInsertUnique.packers.PackerCount() > 10 {
 		preInsertUnique.packers.Free()
 	}
-	preInsertUnique.freeAcceptedMaps()
+	preInsertUnique.freeAcceptedState(proc)
 }
 
 func (preInsertUnique *PreInsertUnique) Free(proc *process.Process, pipelineFailed bool, err error) {
@@ -91,10 +93,10 @@ func (preInsertUnique *PreInsertUnique) Free(proc *process.Process, pipelineFail
 		preInsertUnique.ctr.buf = nil
 	}
 	preInsertUnique.packers.Free()
-	preInsertUnique.freeAcceptedMaps()
+	preInsertUnique.freeAcceptedState(proc)
 }
 
-func (preInsertUnique *PreInsertUnique) freeAcceptedMaps() {
+func (preInsertUnique *PreInsertUnique) freeAcceptedState(proc *process.Process) {
 	for i := range preInsertUnique.ctr.acceptedMaps {
 		if preInsertUnique.ctr.acceptedMaps[i] != nil {
 			preInsertUnique.ctr.acceptedMaps[i].Free()
@@ -103,6 +105,11 @@ func (preInsertUnique *PreInsertUnique) freeAcceptedMaps() {
 	preInsertUnique.ctr.acceptedMaps = nil
 	preInsertUnique.ctr.acceptedIters = nil
 	preInsertUnique.ctr.acceptedKeyVecs = nil
+	if preInsertUnique.ctr.acceptedTarget != nil {
+		preInsertUnique.ctr.acceptedTarget.Free(proc.Mp())
+	}
+	preInsertUnique.ctr.acceptedTarget = nil
+	preInsertUnique.ctr.acceptedRows = nil
 }
 
 func (preInsertUnique *PreInsertUnique) ExecProjection(proc *process.Process, input *batch.Batch) (*batch.Batch, error) {

@@ -1,6 +1,6 @@
 # Ordered `ON DUPLICATE KEY UPDATE` Semantics
 
-Status: In progress
+Status: Implemented; pending reviewer acceptance
 
 ## Problem
 
@@ -38,6 +38,10 @@ Those consumers need one explicit contract rather than independently inferring
    `interface{}` conversion or heap allocation.
 7. Malformed/missing metadata fails closed. A mixed-version CN that cannot
    interpret the action/count/physical markers must not execute the plan.
+8. Target selection is itself statement-ordered. For each input row, PRIMARY
+   then UNIQUE constraints are considered in definition order against both the
+   pre-statement snapshot and earlier successful INSERT actions. The first
+   conflict wins. An UPDATE action does not publish unused incoming keys.
 
 ## Plan and execution model
 
@@ -56,6 +60,17 @@ action-final filter. The filter then reduces each key group to its final row.
 `MULTI_UPDATE` consumes the count marker independently and applies the physical
 marker uniformly to base, regular-index, irregular-index, partition, direct,
 and S3 writers.
+
+For tables with secondary UNIQUE constraints, the planner also emits one
+ordered target-arbitration stage before DEDUP. Each constraint contributes its
+incoming key and nullable pre-statement target identity. The stage owns one
+hash map per constraint, a single vector of identities for rows accepted as
+INSERTs, and compact map-group-to-identity ordinals. Rows with no conflict
+publish all non-NULL keys atomically; rows resolved as UPDATE publish none.
+The resolved identity becomes the DEDUP key for both explicit and synthetic
+primary-key tables. This prevents a static snapshot probe from turning two
+same-statement ODKU actions into a duplicate error or an insert of the wrong
+row.
 
 Self-referencing FKs retain their existing statement-level post-write check in
 this change. Their parent domain can include rows created by the same statement,
@@ -93,6 +108,12 @@ pure no-op, CHECK/FK/NOT NULL action validation, and a wide varlen row. Compare
 the same binary/mode/data on the same machine and report medians rather than an
 individual run.
 
+Target arbitration is linear in input rows times usable UNIQUE constraints.
+Its retained state is bounded by the statement: one copy of each accepted
+INSERT identity, one hash entry per published non-NULL key, and one 8-byte
+identity ordinal per hash entry. It deliberately does not copy a possibly-wide
+primary key into every UNIQUE-key map.
+
 ## Validation matrix
 
 | Contract | White-box proof | SQL-visible proof |
@@ -103,6 +124,7 @@ individual run.
 | type-aware equality | scalar/vector comparator tests and allocation oracle | CHAR/JSON/scaled FLOAT no-op cases |
 | distributed compatibility | encode/decode and version-fence tests | mixed-version rejection coverage |
 | DDL child ownership | deterministic barrier/fake-engine test | concurrent DML versus ALTER DROP INDEX harness |
+| statement-local target selection | ordered multi-key arbiter and reset tests | repeated new PK/UNIQUE, fake/composite PK, nullable key, conflicting-target priority |
 
 Every failure case also checks durable table/index state after rollback. Tests
 use barriers or direct typed state; sleeps and probabilistic retries are not

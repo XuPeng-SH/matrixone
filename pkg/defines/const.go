@@ -86,7 +86,7 @@ const (
 	MORPCVersion48     int64 = 48 // generation-aware CDC watermark catalog
 	MORPCVersion49     int64 = 49 // vector-level grouping-set projection expansion
 	MORPCVersion50     int64 = 50 // ordered ODKU evaluation and logical affected-row metadata
-	MORPCVersion51     int64 = 51 // per-action ODKU constraint-validation metadata
+	MORPCVersion51     int64 = 51 // per-action ODKU validation and statement-local target arbitration
 	MORPCLatestVersion       = MORPCVersion51
 )
 

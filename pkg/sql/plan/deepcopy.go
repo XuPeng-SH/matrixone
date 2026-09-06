@@ -195,6 +195,8 @@ func DeepCopyPreInsertUkCtx(ctx *plan.PreInsertUkCtx) *plan.PreInsertUkCtx {
 		KeyColumns:             slices.Clone(ctx.KeyColumns),
 		ConflictColumns:        slices.Clone(ctx.ConflictColumns),
 		OutputColumns:          ctx.OutputColumns,
+		OdkuTargetArbitration:  ctx.OdkuTargetArbitration,
+		TargetColumns:          slices.Clone(ctx.TargetColumns),
 	}
 
 	return newCtx

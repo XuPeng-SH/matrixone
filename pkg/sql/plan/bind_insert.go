@@ -1198,24 +1198,13 @@ func (builder *QueryBuilder) determineShuffleForDMLSteps() {
 	}
 }
 
-// buildOnDupTargetPkResolution builds the conflict-resolution subgraph for
-// real-PK INSERT ... ON DUPLICATE KEY UPDATE so a unique-key conflict updates the
-// existing row (MySQL-aligned) instead of raising a duplicate-entry error.
-//
-// Treating PRIMARY as the 0th index, it LEFT JOINs a primary-key existence probe
-// plus every usable unique index, then projects
-//
-//	target_pk = coalesce(pk_probe, uk1_pri, uk2_pri, ...)
-//
-// in PK > unique-key definition order. A NULL unique-key value never matches its
-// index, so it contributes no candidate (MySQL: NULL never conflicts). The
-// returned project re-projects every original incoming column at its original
-// position and appends target_pk at the end; the caller rebinds selectTag to it
-// and keys the main DEDUP-update join on target_pk. Conflicting rows then carry a
-// non-NULL target_pk (UPDATE) while genuinely new rows carry NULL (INSERT) — the
-// exact predicate the existing createIfExpr masking already keys on, so the
-// per-unique-key FAIL dedup is preserved untouched as in-batch duplicate
-// protection (two brand-new rows sharing a new unique-key value still error).
+// buildOnDupTargetPkResolution builds the ordered conflict-resolution subgraph
+// for INSERT ... ON DUPLICATE KEY UPDATE. Treating a real PRIMARY as constraint
+// zero, it probes every constraint against the pre-statement snapshot, then a
+// single PRE_INSERT_UK arbiter resolves rows in input order against both those
+// probe targets and keys published by earlier INSERT actions in this statement.
+// UPDATE actions publish no incoming keys: ODKU rejects UNIQUE-key assignments,
+// so those candidate values never become stored state.
 //
 // It returns the new top node id, the new select binding tag, and the target_pk
 // column position within the new project list.
@@ -1235,35 +1224,51 @@ func (builder *QueryBuilder) buildOnDupTargetPkResolution(
 	pkTyp := tableDef.Cols[pkColIdx].Typ
 	incomingPkPos := colName2Idx[tableDef.Name+"."+pkName]
 
-	candExprs := make([]*plan.Expr, 0, len(tableDef.Indexes)+1)
+	keyExprs := make([]*plan.Expr, 0, len(tableDef.Indexes)+1)
+	targetExprs := make([]*plan.Expr, 0, len(tableDef.Indexes)+1)
 
-	// cand0: primary-key existence probe. A lightweight LEFT JOIN against the main
-	// table on the primary key; project the probe's pk (NULL when the row's pk does
-	// not yet exist). PK is the highest-priority candidate.
-	probeTag := builder.genNewBindTag()
-	builder.addNameByColRef(probeTag, tableDef)
-	probeScanID := builder.appendNode(&plan.Node{
-		NodeType:     plan.Node_TABLE_SCAN,
-		TableDef:     tableDef,
-		ObjRef:       objRef,
-		BindingTags:  []int32{probeTag},
-		ScanSnapshot: bindCtx.snapshot,
-	}, bindCtx)
-
-	probeCond, _ := BindFuncExprImplByPlanExpr(builder.GetContext(), "=", []*plan.Expr{
-		{Typ: pkTyp, Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: probeTag, ColPos: pkColIdx}}},
-		{Typ: pkTyp, Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: selectTag, ColPos: incomingPkPos}}},
-	})
-	lastNodeID = builder.appendNode(&plan.Node{
-		NodeType: plan.Node_JOIN,
-		Children: []int32{lastNodeID, probeScanID},
-		JoinType: plan.Node_LEFT,
-		OnList:   []*plan.Expr{probeCond},
-	}, bindCtx)
-	candExprs = append(candExprs, &plan.Expr{
-		Typ:  pkTyp,
-		Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: probeTag, ColPos: pkColIdx}},
-	})
+	if pkName != catalog.FakePrimaryKeyColName {
+		probeTag := builder.genNewBindTag()
+		builder.addNameByColRef(probeTag, tableDef)
+		probeScanID := builder.appendNode(&plan.Node{
+			NodeType:     plan.Node_TABLE_SCAN,
+			TableDef:     tableDef,
+			ObjRef:       objRef,
+			BindingTags:  []int32{probeTag},
+			ScanSnapshot: bindCtx.snapshot,
+		}, bindCtx)
+		inputPK := &plan.Expr{Typ: pkTyp, Expr: &plan.Expr_Col{Col: &plan.ColRef{
+			RelPos: selectTag, ColPos: incomingPkPos,
+		}}}
+		existingPK := &plan.Expr{Typ: pkTyp, Expr: &plan.Expr_Col{Col: &plan.ColRef{
+			RelPos: probeTag, ColPos: pkColIdx,
+		}}}
+		var err error
+		inputPK, err = bindPrimaryKeyIdentityExpr(builder, inputPK, pkTyp)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		existingPK, err = bindPrimaryKeyIdentityExpr(builder, existingPK, pkTyp)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		probeCond, err := BindFuncExprImplByPlanExpr(builder.GetContext(), "=", []*plan.Expr{
+			existingPK, DeepCopyExpr(inputPK),
+		})
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		lastNodeID = builder.appendNode(&plan.Node{
+			NodeType: plan.Node_JOIN,
+			Children: []int32{lastNodeID, probeScanID},
+			JoinType: plan.Node_LEFT,
+			OnList:   []*plan.Expr{probeCond},
+		}, bindCtx)
+		keyExprs = append(keyExprs, inputPK)
+		targetExprs = append(targetExprs, &plan.Expr{
+			Typ: pkTyp, Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: probeTag, ColPos: pkColIdx}},
+		})
+	}
 
 	// candi: each usable unique index. LEFT JOIN the index table on its index
 	// column = the incoming unique-key value; project the index's primary column
@@ -1330,45 +1335,67 @@ func (builder *QueryBuilder) buildOnDupTargetPkResolution(
 			JoinType: plan.Node_LEFT,
 			OnList:   []*plan.Expr{joinCond},
 		}, bindCtx)
-		candExprs = append(candExprs, &plan.Expr{
+		keyExprs = append(keyExprs, DeepCopyExpr(incomingValExpr))
+		targetExprs = append(targetExprs, &plan.Expr{
 			Typ:  priColTyp,
 			Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: idxTag, ColPos: priColPos}},
 		})
 	}
 
-	// Re-project every original incoming column at its original position, then
-	// append target_pk = coalesce(cand0, cand1, ...). Positions [0, len) are
-	// preserved so colName2Idx stays valid; target_pk lands at len.
-	newTag := builder.genNewBindTag()
-	newProjList := make([]*plan.Expr, 0, len(incomingProjectList)+1)
+	if len(keyExprs) == 0 || len(keyExprs) != len(targetExprs) {
+		return 0, 0, 0, moerr.NewInternalError(builder.GetContext(),
+			"ODKU target arbitration requires at least one unique constraint")
+	}
+
+	projectTag := builder.genNewBindTag()
+	projectList := make([]*plan.Expr, 0, len(incomingProjectList)+2*len(keyExprs))
 	for i, expr := range incomingProjectList {
-		newProjList = append(newProjList, &plan.Expr{
+		projectList = append(projectList, &plan.Expr{
 			Typ:  expr.Typ,
 			Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: selectTag, ColPos: int32(i)}},
 		})
 	}
-	targetPkPos := int32(len(newProjList))
-
-	var targetPkExpr *plan.Expr
-	if len(candExprs) == 1 {
-		targetPkExpr = candExprs[0]
-	} else {
-		var err error
-		targetPkExpr, err = BindFuncExprImplByPlanExpr(builder.GetContext(), "coalesce", candExprs)
-		if err != nil {
-			return 0, 0, 0, err
-		}
+	keyColumns := make([]int32, len(keyExprs))
+	targetColumns := make([]int32, len(targetExprs))
+	for i := range keyExprs {
+		keyColumns[i] = int32(len(projectList))
+		projectList = append(projectList, keyExprs[i])
+		targetColumns[i] = int32(len(projectList))
+		projectList = append(projectList, targetExprs[i])
 	}
-	newProjList = append(newProjList, targetPkExpr)
-
 	lastNodeID = builder.appendNode(&plan.Node{
 		NodeType:    plan.Node_PROJECT,
-		ProjectList: newProjList,
+		ProjectList: projectList,
 		Children:    []int32{lastNodeID},
-		BindingTags: []int32{newTag},
+		BindingTags: []int32{projectTag},
 	}, bindCtx)
 
-	return lastNodeID, newTag, targetPkPos, nil
+	outputTag := builder.genNewBindTag()
+	outputProject := make([]*plan.Expr, 0, len(incomingProjectList)+1)
+	for i, expr := range incomingProjectList {
+		outputProject = append(outputProject, &plan.Expr{
+			Typ: expr.Typ, Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: projectTag, ColPos: int32(i)}},
+		})
+	}
+	targetPkPos := int32(len(outputProject))
+	outputProject = append(outputProject, &plan.Expr{
+		Typ: pkTyp, Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: projectTag, ColPos: incomingPkPos}},
+	})
+	lastNodeID = builder.appendNode(&plan.Node{
+		NodeType:    plan.Node_PRE_INSERT_UK,
+		Children:    []int32{lastNodeID},
+		ProjectList: outputProject,
+		BindingTags: []int32{outputTag},
+		PreInsertUkCtx: &plan.PreInsertUkCtx{
+			PkColumn:              incomingPkPos,
+			PkType:                pkTyp,
+			OdkuTargetArbitration: true,
+			KeyColumns:            keyColumns,
+			TargetColumns:         targetColumns,
+			OutputColumns:         int32(len(incomingProjectList)),
+		},
+	}, bindCtx)
+	return lastNodeID, outputTag, targetPkPos, nil
 }
 
 // appendModernChildFkMarkOks appends, for every non-self-referencing foreign key, a
@@ -2373,11 +2400,10 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 		}
 	}
 
-	// real-PK ON DUPLICATE KEY UPDATE: resolve a single UPDATE target up front so a
-	// cross-row unique-key conflict updates the existing row (MySQL-aligned) rather
-	// than erroring. The resolved target_pk re-keys the main DEDUP-update join
-	// below; the per-unique-key FAIL dedup is kept as in-batch duplicate protection.
-	useTargetPk := !isFakePK && onDupAction == plan.Node_UPDATE &&
+	// ODKU with secondary UNIQUE constraints resolves one target identity per
+	// action, including conflicts created by earlier input rows. The target_pk
+	// re-keys the main DEDUP-update join below for both real and synthetic PKs.
+	useTargetPk := onDupAction == plan.Node_UPDATE &&
 		firstUniqueIdxPos >= 0 && !builder.canSkipDedup(tableDef)
 	targetPkPos := int32(-1)
 	affectedRowsInputPos := int32(-1)
@@ -2495,13 +2521,20 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 		lockTargets = append(lockTargets, lockTarget)
 	}
 	if len(lockTargets) > 0 {
+		lockTag := builder.genNewBindTag()
 		lastNodeID = builder.appendNode(&plan.Node{
 			NodeType:    plan.Node_LOCK_OP,
 			Children:    []int32{lastNodeID},
 			TableDef:    tableDef,
-			BindingTags: []int32{builder.genNewBindTag()},
+			BindingTags: []int32{lockTag},
 			LockTargets: lockTargets,
 		}, bindCtx)
+		if useTargetPk {
+			if builder.preserveLockProjection == nil {
+				builder.preserveLockProjection = make(map[int32]struct{})
+			}
+			builder.preserveLockProjection[lastNodeID] = struct{}{}
+		}
 		applyLockTableFallback(builder)
 	}
 
@@ -2690,11 +2723,11 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 		// table. That unique index is then skipped in the unique-key dedup loop
 		// below (its conflict is already handled as an UPDATE here, not a FAIL).
 		pkRoleIdxPos := -1
-		if isFakePK && onDupAction == plan.Node_UPDATE {
+		if isFakePK && onDupAction == plan.Node_UPDATE && !useTargetPk {
 			pkRoleIdxPos = firstUniqueIdxPos
 		}
 
-		if !skipPkDedup && (!isFakePK || pkRoleIdxPos >= 0) {
+		if !skipPkDedup && (!isFakePK || pkRoleIdxPos >= 0 || useTargetPk) {
 			builder.addNameByColRef(scanTag, tableDef)
 
 			scanNodeID := builder.appendNode(&plan.Node{
@@ -2962,7 +2995,6 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
 				}},
 				FilterIsBarrier: true,
 			}, bindCtx)
-			odkuActionValidationApplied = true
 		}
 
 		// dedup#2:handle unique key dedup

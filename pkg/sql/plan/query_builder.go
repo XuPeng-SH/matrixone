@@ -3449,7 +3449,8 @@ func (builder *QueryBuilder) remapAllColRefsForConsumer(
 		if node.PreInsertUkCtx == nil {
 			return nil, moerr.NewInternalError(builder.GetContext(), "invalid PRE_INSERT_UK node in query plan")
 		}
-		if !node.PreInsertUkCtx.InsertIgnoreMultiDedup {
+		if !node.PreInsertUkCtx.InsertIgnoreMultiDedup &&
+			!node.PreInsertUkCtx.OdkuTargetArbitration {
 			return builder.remapRegularIndexPreInsert(
 				nodeID, step, colRefCnt, colRefBool, sinkColRef, node.PreInsertUkCtx,
 			)
@@ -3457,20 +3458,33 @@ func (builder *QueryBuilder) remapAllColRefsForConsumer(
 
 		child := builder.qry.Nodes[node.Children[0]]
 		if len(child.BindingTags) != 1 {
-			return nil, moerr.NewInternalError(builder.GetContext(), "invalid INSERT IGNORE dedup input")
+			return nil, moerr.NewInternalError(builder.GetContext(), "invalid ordered unique-key arbitration input")
 		}
 		childTag := child.BindingTags[0]
 		keyRefs := make([][2]int32, len(node.PreInsertUkCtx.KeyColumns))
-		conflictRefs := make([][2]int32, len(node.PreInsertUkCtx.ConflictColumns))
+		auxColumns := node.PreInsertUkCtx.ConflictColumns
+		if node.PreInsertUkCtx.OdkuTargetArbitration {
+			auxColumns = node.PreInsertUkCtx.TargetColumns
+		}
+		auxRefs := make([][2]int32, len(auxColumns))
 		for i, pos := range node.PreInsertUkCtx.KeyColumns {
 			keyRefs[i] = [2]int32{childTag, pos}
 			colRefCnt[keyRefs[i]]++
 		}
-		for i, pos := range node.PreInsertUkCtx.ConflictColumns {
-			conflictRefs[i] = [2]int32{childTag, pos}
-			colRefCnt[conflictRefs[i]]++
+		for i, pos := range auxColumns {
+			auxRefs[i] = [2]int32{childTag, pos}
+			colRefCnt[auxRefs[i]]++
+		}
+		var pkRef [2]int32
+		if node.PreInsertUkCtx.OdkuTargetArbitration {
+			pkRef = [2]int32{childTag, node.PreInsertUkCtx.PkColumn}
+			colRefCnt[pkRef]++
 		}
 		outputTag := node.BindingTags[0]
+		targetOutputPos := int32(-1)
+		if node.PreInsertUkCtx.OdkuTargetArbitration {
+			targetOutputPos = int32(len(node.ProjectList) - 1)
+		}
 		neededOutputs := make([]int32, 0, len(node.ProjectList))
 		for i, expr := range node.ProjectList {
 			if colRefCnt[[2]int32{outputTag, int32(i)}] == 0 {
@@ -3489,17 +3503,29 @@ func (builder *QueryBuilder) remapAllColRefsForConsumer(
 			colRefCnt[ref]--
 			pos, ok := childRemapping.globalToLocal[ref]
 			if !ok {
-				return nil, moerr.NewInternalError(builder.GetContext(), "missing INSERT IGNORE dedup key column")
+				return nil, moerr.NewInternalError(builder.GetContext(), "missing ordered arbitration key column")
 			}
 			node.PreInsertUkCtx.KeyColumns[i] = pos[1]
 		}
-		for i, ref := range conflictRefs {
+		for i, ref := range auxRefs {
 			colRefCnt[ref]--
 			pos, ok := childRemapping.globalToLocal[ref]
 			if !ok {
-				return nil, moerr.NewInternalError(builder.GetContext(), "missing INSERT IGNORE conflict column")
+				return nil, moerr.NewInternalError(builder.GetContext(), "missing ordered arbitration auxiliary column")
 			}
-			node.PreInsertUkCtx.ConflictColumns[i] = pos[1]
+			if node.PreInsertUkCtx.OdkuTargetArbitration {
+				node.PreInsertUkCtx.TargetColumns[i] = pos[1]
+			} else {
+				node.PreInsertUkCtx.ConflictColumns[i] = pos[1]
+			}
+		}
+		if node.PreInsertUkCtx.OdkuTargetArbitration {
+			colRefCnt[pkRef]--
+			pos, ok := childRemapping.globalToLocal[pkRef]
+			if !ok {
+				return nil, moerr.NewInternalError(builder.GetContext(), "missing ODKU incoming primary key column")
+			}
+			node.PreInsertUkCtx.PkColumn = pos[1]
 		}
 
 		childProjList := builder.qry.Nodes[node.Children[0]].ProjectList
@@ -3518,6 +3544,12 @@ func (builder *QueryBuilder) remapAllColRefsForConsumer(
 		}
 		node.ProjectList = newProjectList
 		node.PreInsertUkCtx.OutputColumns = int32(len(newProjectList))
+		if node.PreInsertUkCtx.OdkuTargetArbitration {
+			if len(neededOutputs) == 0 || neededOutputs[len(neededOutputs)-1] != targetOutputPos {
+				return nil, moerr.NewInternalError(builder.GetContext(), "ODKU target output was pruned")
+			}
+			node.PreInsertUkCtx.OutputColumns--
+		}
 
 	default:
 		return nil, moerr.NewInternalErrorf(builder.GetContext(), "unsupported node type %s", node.NodeType.String())

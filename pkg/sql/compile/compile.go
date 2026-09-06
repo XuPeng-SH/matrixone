@@ -7644,11 +7644,12 @@ func (c *Compile) compileMultiUpdate(node *plan.Node, ss []*Scope) ([]*Scope, er
 
 func (c *Compile) compilePreInsertUk(node *plan.Node, ss []*Scope) []*Scope {
 	currentFirstFlag := c.anal.isFirst
-	if node.PreInsertUkCtx.GetInsertIgnoreMultiDedup() &&
+	if (node.PreInsertUkCtx.GetInsertIgnoreMultiDedup() ||
+		node.PreInsertUkCtx.GetOdkuTargetArbitration()) &&
 		(len(ss) > 1 || ss[0].NodeInfo.Mcpu > 1) {
-		// Multi-key INSERT IGNORE arbitration is row-global: partitioning by one
-		// key cannot observe conflicts on the other keys.  Merge candidate streams
-		// before the stateful arbiter; ordinary index PRE_INSERT_UK stays parallel.
+		// Ordered multi-key arbitration is row-global: partitioning by one key
+		// cannot observe conflicts on the other keys. Merge candidate streams before
+		// the stateful arbiter; ordinary index PRE_INSERT_UK stays parallel.
 		ss = []*Scope{c.newMergeScope(ss)}
 	}
 	for i := range ss {

@@ -1474,6 +1474,14 @@ message PreInsertUkCtx {
   repeated int32 key_columns = 6;
   repeated int32 conflict_columns = 7;
   int32 output_columns = 8;
+  // ODKU target arbitration resolves every input row against both the
+  // pre-statement table snapshot and rows inserted earlier by this statement.
+  // key_columns and target_columns are parallel arrays in constraint priority
+  // order. A non-NULL target column names a pre-existing conflicting row;
+  // otherwise the operator consults its statement-local accepted-key state.
+  // Only a row that remains an INSERT publishes all of its keys.
+  bool odku_target_arbitration = 9;
+  repeated int32 target_columns = 10;
 }
 
 message PreInsertCtx {
