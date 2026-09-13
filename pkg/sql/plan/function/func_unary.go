@@ -1958,6 +1958,9 @@ func geodeticArea(payload []byte) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := geo.ValidateGeodeticCoordinates(g); err != nil {
+		return 0, err
+	}
 	return geo.AreaSquareMeters(g), nil
 }
 
@@ -1973,6 +1976,9 @@ func geodeticLength(payload []byte) (float64, error) {
 	}
 	g, err := decodeGeoGeometry(payload)
 	if err != nil {
+		return 0, err
+	}
+	if err := geo.ValidateGeodeticCoordinates(g); err != nil {
 		return 0, err
 	}
 	return geo.LengthMeters(g), nil
