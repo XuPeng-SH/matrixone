@@ -2764,6 +2764,81 @@ func TestD256Div(t *testing.T) {
 	})
 }
 
+func TestD256DivViaD128PreservesWideQuotient(t *testing.T) {
+	x, err := types.ParseDecimal256("1", 65, 30)
+	require.NoError(t, err)
+	y, err := types.ParseDecimal256("0.000000000000000003", 65, 18)
+	require.NoError(t, err)
+
+	got := make([]types.Decimal256, 1)
+	resultNulls := nulls.NewWithSize(1)
+	err = d256Div([]types.Decimal256{x}, []types.Decimal256{y}, got, 30, 18, resultNulls, true)
+	require.NoError(t, err)
+	require.Equal(t, "333333333333333333.333333333333333333333333333333", got[0].Format(30))
+
+	// The same quotient cannot fit a Decimal128 result and must remain an
+	// overflow for callers whose declared result domain is Decimal128.
+	x128, err := types.ParseDecimal128("1", 38, 30)
+	require.NoError(t, err)
+	y128, err := types.ParseDecimal128("0.000000000000000003", 38, 18)
+	require.NoError(t, err)
+	got128 := make([]types.Decimal128, 1)
+	err = d128Div([]types.Decimal128{x128}, []types.Decimal128{y128}, got128, 30, 18, nulls.NewWithSize(1), true)
+	require.Error(t, err)
+}
+
+func TestD256DivViaD128MinInt128Divisor(t *testing.T) {
+	const numerator = "85070591730234615865843651857943"
+	const divisor = "-170141183460469231731687303715884105728"
+
+	for _, negativeNumerator := range []bool{false, true} {
+		leftText := numerator
+		want := "-0.000001"
+		if negativeNumerator {
+			leftText = "-" + leftText
+			want = "0.000001"
+		}
+
+		left, err := types.ParseDecimal256(leftText, 65, 0)
+		require.NoError(t, err)
+		right, err := types.ParseDecimal256(divisor, 65, 0)
+		require.NoError(t, err)
+
+		got := make([]types.Decimal256, 1)
+		err = d256Div([]types.Decimal256{left}, []types.Decimal256{right}, got, 0, 0, nulls.NewWithSize(1), true)
+		require.NoError(t, err, "negativeNumerator=%t", negativeNumerator)
+		require.Equal(t, want, got[0].Format(6), "negativeNumerator=%t", negativeNumerator)
+	}
+}
+
+func TestD128DivLargeDivisorHalfUp(t *testing.T) {
+	x, err := types.ParseDecimal128("123456789012345", 38, 0)
+	require.NoError(t, err)
+	y, err := types.ParseDecimal128("999999999999999.999999999999999999", 38, 18)
+	require.NoError(t, err)
+
+	for _, negativeX := range []bool{false, true} {
+		for _, negativeY := range []bool{false, true} {
+			left, right := x, y
+			if negativeX {
+				left = left.Minus()
+			}
+			if negativeY {
+				right = right.Minus()
+			}
+
+			got := make([]types.Decimal128, 1)
+			err := d128Div([]types.Decimal128{left}, []types.Decimal128{right}, got, 0, 18, nulls.NewWithSize(1), true)
+			require.NoError(t, err)
+			want := "0.123457"
+			if negativeX != negativeY {
+				want = "-" + want
+			}
+			require.Equal(t, want, got[0].Format(6), "negativeX=%t negativeY=%t", negativeX, negativeY)
+		}
+	}
+}
+
 func TestD256Div_LargeValues(t *testing.T) {
 	v1 := make([]types.Decimal256, 4)
 	v2 := make([]types.Decimal256, 4)
