@@ -64,6 +64,21 @@ func TestOnHeapShardHintsAreConservativeAndExact(t *testing.T) {
 	defer DeleteMPool(freeingPool)
 
 	ownerBuffers := make([][]byte, 0, 3)
+	var offHeap, otherBuffer []byte
+	defer func() {
+		for _, buffer := range ownerBuffers {
+			if buffer != nil {
+				owner.Free(buffer)
+			}
+		}
+		if offHeap != nil {
+			owner.Free(offHeap)
+		}
+		if otherBuffer != nil {
+			other.Free(otherBuffer)
+		}
+	}()
+
 	for _, size := range []int{64, 96, 128} {
 		buffer, err := owner.Alloc(size, false)
 		require.NoError(t, err)
@@ -78,7 +93,7 @@ func TestOnHeapShardHintsAreConservativeAndExact(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, expected, onHeapShardHintsForTest(owner))
 
-	otherBuffer, err := other.Alloc(48, false)
+	otherBuffer, err = other.Alloc(48, false)
 	require.NoError(t, err)
 	freeingPool.Free(ownerBuffers[0])
 	ownerBuffers[0] = nil
@@ -89,8 +104,11 @@ func TestOnHeapShardHintsAreConservativeAndExact(t *testing.T) {
 	freeingPool.Free(ownerBuffers[1])
 	ownerBuffers[1] = nil
 	owner.Free(ownerBuffers[2])
+	ownerBuffers[2] = nil
 	owner.Free(offHeap)
+	offHeap = nil
 	other.Free(otherBuffer)
+	otherBuffer = nil
 	requireHintedOutstandingMatchesRegistry(t, owner)
 	requireHintedOutstandingMatchesRegistry(t, other)
 	ownerBytes, ownerObjects := owner.scanOnHeapOutstandingHinted()
@@ -113,6 +131,16 @@ func TestOnHeapShardHintsConcurrentPublicationAndCrossPoolFree(t *testing.T) {
 		ops     = 64
 	)
 	buffers := make([][][]byte, workers)
+	defer func() {
+		for _, workerBuffers := range buffers {
+			for _, buffer := range workerBuffers {
+				if buffer != nil {
+					owner.Free(buffer)
+				}
+			}
+		}
+	}()
+
 	start := make(chan struct{})
 	errCh := make(chan error, workers)
 	var wg sync.WaitGroup
@@ -148,8 +176,9 @@ func TestOnHeapShardHintsConcurrentPublicationAndCrossPoolFree(t *testing.T) {
 		go func(worker int) {
 			defer wg.Done()
 			<-start
-			for _, buffer := range buffers[worker] {
+			for i, buffer := range buffers[worker] {
 				freeingPool.Free(buffer)
+				buffers[worker][i] = nil
 			}
 		}(worker)
 	}
@@ -171,6 +200,16 @@ func BenchmarkMPoolDestroyUnrelatedPointersByOwnerSize(b *testing.B) {
 				defer DeleteMPool(onHeapOwner)
 				defer DeleteMPool(offHeapOwner)
 				buffers := make([][]byte, 0, unrelatedSize)
+				defer func() {
+					b.StopTimer()
+					for i, buffer := range buffers {
+						if i%2 == 0 {
+							onHeapOwner.Free(buffer)
+						} else {
+							offHeapOwner.Free(buffer)
+						}
+					}
+				}()
 				for i := range unrelatedSize {
 					owner, offHeap := onHeapOwner, false
 					if i%2 == 1 {
@@ -188,6 +227,10 @@ func BenchmarkMPoolDestroyUnrelatedPointersByOwnerSize(b *testing.B) {
 				for i := range sampleBuffers {
 					buffer, err := sample.Alloc(64, false)
 					if err != nil {
+						for _, allocated := range sampleBuffers[:i] {
+							sample.Free(allocated)
+						}
+						DeleteMPool(sample)
 						b.Fatal(err)
 					}
 					sampleBuffers[i] = buffer
@@ -210,6 +253,10 @@ func BenchmarkMPoolDestroyUnrelatedPointersByOwnerSize(b *testing.B) {
 					for i := range targetBuffers {
 						buffer, err := target.Alloc(64, false)
 						if err != nil {
+							for _, allocated := range targetBuffers[:i] {
+								target.Free(allocated)
+							}
+							DeleteMPool(target)
 							b.Fatal(err)
 						}
 						targetBuffers[i] = buffer
@@ -221,13 +268,6 @@ func BenchmarkMPoolDestroyUnrelatedPointersByOwnerSize(b *testing.B) {
 				}
 				b.StopTimer()
 				b.ReportMetric(float64(touchedShards), "touched-shards")
-				for i, buffer := range buffers {
-					if i%2 == 0 {
-						onHeapOwner.Free(buffer)
-					} else {
-						offHeapOwner.Free(buffer)
-					}
-				}
 			})
 		}
 	}
