@@ -1116,16 +1116,13 @@ func (x Decimal128) Div128(y Decimal128) (Decimal128, error) {
 		// Round half-up iff remainder >= ceil(y/2), without forming 2*remainder.
 		threshold := y.Right(1)
 		if y.B0_63&1 != 0 {
-			threshold, err = threshold.Add128(Decimal128{B0_63: 1})
-			if err != nil {
-				return x, err
-			}
+			var carry uint64
+			threshold.B0_63, carry = bits.Add64(threshold.B0_63, 1, 0)
+			threshold.B64_127 += carry
 		}
 		if remainder.Compare(threshold) >= 0 {
-			q, err = q.Add128(Decimal128{B0_63: 1})
-			if err != nil {
-				return x, err
-			}
+			// Here y >= 2^64 and x < 2^127, so the rounded quotient fits in B0_63.
+			q.B0_63++
 		}
 		return q, nil
 	}
@@ -1178,18 +1175,10 @@ func (x Decimal128) div128TruncQuoRem(y Decimal128) (Decimal128, Decimal128, err
 	if err != nil {
 		return Decimal128{}, Decimal128{}, err
 	}
+	// The normalized divisor is rounded down, so the quotient estimate cannot
+	// undershoot. After the optional decrement above, remainder must be < y.
 	if remainder.Compare(y) >= 0 {
-		q, err = q.Add128(Decimal128{B0_63: 1})
-		if err != nil {
-			return Decimal128{}, Decimal128{}, err
-		}
-		remainder, err = remainder.Sub128(y)
-		if err != nil {
-			return Decimal128{}, Decimal128{}, err
-		}
-		if remainder.Compare(y) >= 0 {
-			return Decimal128{}, Decimal128{}, moerr.NewInternalErrorNoCtx("Decimal128 division quotient correction failed")
-		}
+		return Decimal128{}, Decimal128{}, moerr.NewInternalErrorNoCtx("Decimal128 division quotient correction failed")
 	}
 	return q, remainder, nil
 }

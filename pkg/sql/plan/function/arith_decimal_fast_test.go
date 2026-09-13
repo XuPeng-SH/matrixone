@@ -2839,6 +2839,35 @@ func TestD128DivLargeDivisorHalfUp(t *testing.T) {
 	}
 }
 
+func TestD128DivOneToD256FailurePaths(t *testing.T) {
+	x := types.Decimal128{B0_63: 1}
+	zero := types.Decimal128{}
+
+	t.Run("zero divisor returns error", func(t *testing.T) {
+		nul := nulls.NewWithSize(1)
+		var dst types.Decimal256
+		err := d128DivOneToD256(x, zero, &dst, 0, nul, 0, true, 0, 0)
+		require.Error(t, err)
+	})
+
+	t.Run("zero divisor sets null", func(t *testing.T) {
+		nul := nulls.NewWithSize(1)
+		var dst types.Decimal256
+		err := d128DivOneToD256(x, zero, &dst, 0, nul, 0, false, 0, 0)
+		require.NoError(t, err)
+		require.True(t, nul.Contains(0))
+	})
+
+	t.Run("D256 scale-up overflow", func(t *testing.T) {
+		numerator := []types.Decimal256{{B0_63: 20}}
+		divisor := []types.Decimal256{{B0_63: 1}}
+		result := make([]types.Decimal256, 1)
+		err := d256Div(numerator, divisor, result, 0, 76, nulls.NewWithSize(1), true)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "Decimal256 Div overflow")
+	})
+}
+
 func TestD256Div_LargeValues(t *testing.T) {
 	v1 := make([]types.Decimal256, 4)
 	v2 := make([]types.Decimal256, 4)

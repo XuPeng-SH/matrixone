@@ -535,6 +535,14 @@ func TestDecimal128Div128HalfUpLargeDivisor(t *testing.T) {
 		}
 	}
 
+	t.Run("odd half threshold carries into high limb", func(t *testing.T) {
+		x := new(big.Int).Lsh(big.NewInt(1), 64)
+		y := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 65), big.NewInt(1))
+		got, err := fromBig(x).Div128(fromBig(y))
+		require.NoError(t, err)
+		require.Equal(t, big.NewInt(1), toBig(got))
+	})
+
 	t.Run("corrects high quotient estimate at signed limit", func(t *testing.T) {
 		x := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 127), big.NewInt(1))
 		y := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(3))
@@ -556,6 +564,21 @@ func TestDecimal128Div128HalfUpLargeDivisor(t *testing.T) {
 		require.Equal(t, big.NewInt(9223372036854775807), want)
 		require.Equal(t, want, toBig(got))
 	})
+
+	t.Run("rounded quotient reaches the high bit of the low limb", func(t *testing.T) {
+		x := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 127), big.NewInt(1))
+		y := new(big.Int).Lsh(big.NewInt(1), 64)
+		got, err := fromBig(x).Div128(fromBig(y))
+		require.NoError(t, err)
+		want := new(big.Int).Lsh(big.NewInt(1), 63)
+		require.Equal(t, want, toBig(got))
+	})
+}
+
+func TestDecimal128Div128TruncByZero(t *testing.T) {
+	_, err := (Decimal128{B0_63: 1}).Div128Trunc(Decimal128{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Decimal128 Div by Zero")
 }
 
 func TestParseFormat(t *testing.T) {
