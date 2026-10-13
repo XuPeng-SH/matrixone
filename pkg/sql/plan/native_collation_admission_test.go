@@ -125,7 +125,7 @@ func TestCollationCatalogAdmissionPreservesAllowedDomainsAndReuse(t *testing.T) 
 					require.Error(t, err)
 				}
 				if sql == "select * from nation limit 0" {
-					require.Positive(t, ctx.fastCalls, "catalog-only shortcut must be covered")
+					require.Equal(t, 1, ctx.resolveCalls, "schema-only scan resolves complete metadata once")
 				}
 				// The admission visitor is per call; an error must not poison
 				// the same compiler context's subsequent legacy query.

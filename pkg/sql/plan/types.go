@@ -272,7 +272,6 @@ type CompilerContext interface {
 	SetQueryingSubscription(meta *SubscriptionMeta)
 	GetQueryingSubscription() *SubscriptionMeta
 	IsPublishing(dbName string) (bool, error)
-	BuildTableDefByMoColumns(dbName, table string) (*TableDef, error)
 	ResolveSubscriptionTableById(tableId uint64, pubmeta *SubscriptionMeta) (*ObjectRef, *TableDef, error)
 
 	ResolveSnapshotWithSnapshotName(snapshotName string) (*Snapshot, error)
@@ -506,7 +505,7 @@ type QueryBuilder struct {
 	isForUpdate           bool // if it's a query plan for update
 	isRestore             bool
 	isRestoreByTs         bool
-	isSkipResolveTableDef bool
+	isSchemaOnlyScan      bool
 	skipStats             bool
 	isInsertIgnore        bool             // INSERT IGNORE: over-length CHAR/VARCHAR writes are truncated instead of rejected
 	deleteNode            map[uint64]int32 //delete node in this query. key is tableId, value is the nodeId of sinkScan node in the delete plan

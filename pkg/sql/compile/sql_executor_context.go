@@ -162,17 +162,6 @@ func (c *compilerContext) IsPublishing(dbName string) (bool, error) {
 	return delegate.IsPublishing(dbName)
 }
 
-func (c *compilerContext) BuildTableDefByMoColumns(dbName, table string) (*plan.TableDef, error) {
-	_, tableDef, err := c.Resolve(dbName, table, nil)
-	if err != nil {
-		return nil, err
-	}
-	if tableDef == nil {
-		return nil, moerr.NewNoSuchTable(c.GetContext(), dbName, table)
-	}
-	return tableDef, nil
-}
-
 func (c *compilerContext) ResolveSnapshotWithSnapshotName(snapshotName string) (*plan.Snapshot, error) {
 	delegate, err := c.sessionCompilerContext()
 	if err != nil {

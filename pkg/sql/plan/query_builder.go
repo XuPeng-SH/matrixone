@@ -8705,12 +8705,12 @@ func (builder *QueryBuilder) bindSelectClause(
 	boundHavingList []*plan.Expr,
 	err error,
 ) {
-	// The catalog-only shortcut belongs to this SELECT, not to its siblings
+	// The schema-only scan belongs to this SELECT, not to its siblings
 	// or its nested View/CTE bodies. In particular, an inner LIMIT 0 must not
 	// let a later ordinary SELECT bypass semantic binding.
-	previousSkipResolve := builder.isSkipResolveTableDef
-	builder.isSkipResolveTableDef = false
-	defer func() { builder.isSkipResolveTableDef = previousSkipResolve }()
+	previousSchemaOnly := builder.isSchemaOnlyScan
+	builder.isSchemaOnlyScan = false
+	defer func() { builder.isSchemaOnlyScan = previousSchemaOnly }()
 
 	if ctx.bindingRecurStmt() && clause.Distinct {
 		err = moerr.NewParseError(builder.GetContext(), "not support DISTINCT in recursive cte")
@@ -8730,11 +8730,10 @@ func (builder *QueryBuilder) bindSelectClause(
 				if cExpr, ok := limitExpr.Expr.(*plan.Expr_Lit); ok {
 					if c, ok := cExpr.Lit.Value.(*plan.Literal_U64Val); ok {
 						if c.U64Val == 0 {
-							// View metadata generation needs the complete catalog identity
-							// exposed by Resolve so it can persist reverse dependencies.
-							// Keep the mo_columns-only shortcut for ordinary LIMIT 0 queries.
+							// View metadata generation retains ordinary scan binding
+							// while recording reverse dependencies.
 							if _, capturingViewDependencies := builder.compCtx.(viewDependencyScope); !capturingViewDependencies {
-								builder.isSkipResolveTableDef = true
+								builder.isSchemaOnlyScan = true
 							}
 						}
 					}
@@ -12821,34 +12820,7 @@ func (builder *QueryBuilder) buildTable(stmt tree.TableExpr, ctx *BindContext, t
 
 		var subMeta *SubscriptionMeta
 		subMeta, err = builder.compCtx.GetSubscriptionMeta(catalogDatabase, snapshot)
-		if err == nil && builder.isSkipResolveTableDef && len(ctx.viewPath) == 0 && snapshot == nil && subMeta == nil {
-			var tableDef *TableDef
-			tableDef, err = builder.compCtx.BuildTableDefByMoColumns(catalogDatabase, table)
-			if err != nil {
-				return 0, "", err
-			}
-
-			// Both frontend and internal compiler contexts must identify Views.
-			// Their persisted columns are not an output schema, even for no rows.
-			if tableDef != nil && tableDef.TableType != catalog.SystemViewRel && tableDef.ViewSql == nil {
-				if err = plan.RequireLegacyCollations(tableDef); err != nil {
-					return 0, "", err
-				}
-				object := &plan.ObjectRef{DbName: catalogDatabase, SchemaName: catalogDatabase, ObjName: table,
-					Db: int64(tableDef.DbId), Obj: int64(tableDef.TblId)}
-				builder.qry.CatalogDependencies = appendPrepareSchemas(
-					builder.qry.CatalogDependencies, prepareSchemaRef(object, tableDef))
-				nodeID = builder.appendNode(&plan.Node{
-					NodeType:     plan.Node_TABLE_SCAN,
-					Stats:        nil,
-					ObjRef:       object,
-					TableDef:     tableDef,
-					BindingTags:  []int32{builder.genNewBindTag()},
-					ScanSnapshot: snapshot,
-				}, ctx)
-				return
-			}
-		}
+		schemaOnly := err == nil && builder.isSchemaOnlyScan && len(ctx.viewPath) == 0 && snapshot == nil && subMeta == nil
 
 		// TODO
 		obj, tableDef, err := builder.compCtx.Resolve(catalogDatabase, table, snapshot)
@@ -12882,6 +12854,20 @@ func (builder *QueryBuilder) buildTable(stmt tree.TableExpr, ctx *BindContext, t
 		// shell and column slice, which are replaced locally, without copying the
 		// immutable column definitions, indexes, constraints, or expressions.
 		tableDef = CloneTableDefForPlan(tableDef, true)
+		// No-row base-table scans still own complete admitted catalog metadata.
+		// Views must bind their current SQL, and snapshots/subscriptions retain
+		// ordinary resolution. Avoid statistics and connector setup here.
+		if schemaOnly && tableDef.TableType != catalog.SystemViewRel && tableDef.ViewSql == nil {
+			nodeID = builder.appendNode(&plan.Node{
+				NodeType:     plan.Node_TABLE_SCAN,
+				Stats:        nil,
+				ObjRef:       obj,
+				TableDef:     tableDef,
+				BindingTags:  []int32{builder.genNewBindTag()},
+				ScanSnapshot: snapshot,
+			}, ctx)
+			return nodeID, "", nil
+		}
 		tableDef.Name2ColIndex = map[string]int32{}
 		var tbColToDataCol map[string]int32 = make(map[string]int32, 0)
 		for i := 0; i < len(tableDef.Cols); i++ {

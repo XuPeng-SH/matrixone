@@ -30,17 +30,6 @@ type catalogOnlyStatsContext struct {
 
 func (c *catalogOnlyStatsContext) GetStatsCache() *StatsCache { return c.stats }
 
-func (c *catalogOnlyStatsContext) BuildTableDefByMoColumns(db, name string) (*TableDef, error) {
-	def, err := c.viewMetadataConsumerContext.BuildTableDefByMoColumns(db, name)
-	if err != nil || def == nil {
-		return def, err
-	}
-	// Match the frontend's catalog-only shape: identity and columns are known,
-	// but primary-key, cluster-key, and column-index metadata is not loaded.
-	return &TableDef{Name: def.Name, DbName: def.DbName, DbId: def.DbId,
-		TblId: def.TblId, Version: def.Version, TableType: def.TableType, Cols: def.Cols}, nil
-}
-
 func TestViewMetadataTableLimitZeroWithCachedStats(t *testing.T) {
 	mock := newViewMetadataConsumerContext(t)
 	def := mock.tables["nation"]
@@ -58,9 +47,9 @@ func TestViewMetadataTableLimitZeroWithCachedStats(t *testing.T) {
 		var err error
 		p, err = buildViewMetadataConsumerPlan(t, ctx, "select * from nation limit 0", false)
 		require.NoError(t, err)
-	}, "a populated statistics cache must not require full metadata from the catalog-only path")
+	}, "a populated statistics cache must not prevent a schema-only scan")
 	require.NotNil(t, p)
-	require.Equal(t, 1, ctx.fastCalls)
+	require.Equal(t, 1, ctx.resolveCalls)
 	columns := GetResultColumnsFromPlan(p)
 	require.Len(t, columns, 4, "SELECT * must omit the mock catalog's hidden rowid")
 	require.Equal(t, []string{"n_nationkey", "n_name", "n_regionkey", "n_comment"},

@@ -29,13 +29,12 @@ import (
 // as the current result schema.
 type viewMetadataConsumerContext struct {
 	*MockCompilerContext
-	fastCalls int
+	resolveCalls int
 }
 
-func (c *viewMetadataConsumerContext) BuildTableDefByMoColumns(db, name string) (*TableDef, error) {
-	c.fastCalls++
-	_, def, err := c.MockCompilerContext.Resolve(db, name, nil)
-	return def, err
+func (c *viewMetadataConsumerContext) Resolve(db, name string, snapshot *Snapshot) (*ObjectRef, *TableDef, error) {
+	c.resolveCalls++
+	return c.MockCompilerContext.Resolve(db, name, snapshot)
 }
 
 func newViewMetadataConsumerContext(t *testing.T) *viewMetadataConsumerContext {
@@ -94,13 +93,13 @@ func TestViewMetadataLimitZeroBindsCurrentColumns(t *testing.T) {
 			"select * from (select * from v1 limit 0) d union all select * from v1", false)
 		require.NoError(t, err)
 		require.Equal(t, int32(60), GetResultColumnsFromPlan(p)[0].Typ.Width)
-		require.Equal(t, 1, ctx.fastCalls, "only the inner LIMIT 0 may probe the catalog-only path")
+		require.Equal(t, 4, ctx.resolveCalls, "each View and source must resolve once per UNION branch")
 	})
-	t.Run("ordinary table keeps catalog fast path", func(t *testing.T) {
+	t.Run("ordinary table resolves once for schema-only scan", func(t *testing.T) {
 		ctx := newViewMetadataConsumerContext(t)
 		p, err := buildViewMetadataConsumerPlan(t, ctx, "select * from nation limit 0", false)
 		require.NoError(t, err)
-		require.Equal(t, 1, ctx.fastCalls)
+		require.Equal(t, 1, ctx.resolveCalls)
 		require.Len(t, p.GetQuery().CatalogDependencies, 1, "the table may later be replaced by a View")
 		require.Equal(t, "nation", p.GetQuery().CatalogDependencies[0].ObjName)
 	})

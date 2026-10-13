@@ -446,7 +446,7 @@ func TestCompilerContext_Database(t *testing.T) {
 	require.Equal(t, sql, "")
 }
 
-func TestCompilerContextBuildTableDefByMoColumns(t *testing.T) {
+func TestCompilerContextResolveCompleteDefinition(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	proc := testutil.NewProcessWithOwnedMPool(t, "", mpool.MustNewZero())
 	tableDef := &plan.TableDef{
@@ -469,13 +469,13 @@ func TestCompilerContextBuildTableDefByMoColumns(t *testing.T) {
 		engine:    eng,
 		proc:      proc,
 	}
-	actual, err := c.BuildTableDefByMoColumns("db", "src")
+	_, actual, err := c.Resolve("db", "src", nil)
 	require.NoError(t, err)
 	require.Equal(t, tableDef.Cols, actual.Cols)
 	require.NotSame(t, tableDef, actual)
 }
 
-func TestCompilerContextBuildTableDefByMoColumnsPropagatesRelationError(t *testing.T) {
+func TestCompilerContextResolveCompleteDefinitionPropagatesRelationError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	proc := testutil.NewProcessWithOwnedMPool(t, "", mpool.MustNewZero())
 	relationErr := moerr.NewInternalErrorNoCtx("relation failed")
@@ -490,12 +490,12 @@ func TestCompilerContextBuildTableDefByMoColumnsPropagatesRelationError(t *testi
 		engine:    eng,
 		proc:      proc,
 	}
-	actual, err := c.BuildTableDefByMoColumns("db", "src")
+	_, actual, err := c.Resolve("db", "src", nil)
 	require.Nil(t, actual)
 	require.ErrorIs(t, err, relationErr)
 }
 
-func TestCompilerContextBuildTableDefByMoColumnsNoSuchTable(t *testing.T) {
+func TestCompilerContextResolveCompleteDefinitionNoSuchTable(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	proc := testutil.NewProcessWithOwnedMPool(t, "", mpool.MustNewZero())
 
@@ -509,10 +509,9 @@ func TestCompilerContextBuildTableDefByMoColumnsNoSuchTable(t *testing.T) {
 		engine:    eng,
 		proc:      proc,
 	}
-	actual, err := c.BuildTableDefByMoColumns("db", "src")
+	_, actual, err := c.Resolve("db", "src", nil)
 	require.Nil(t, actual)
-	require.Error(t, err)
-	require.True(t, moerr.IsMoErrCode(err, moerr.ErrNoSuchTable))
+	require.NoError(t, err)
 }
 
 func TestCompilerContextResolveDatabaseErrors(t *testing.T) {

@@ -53,21 +53,6 @@ func (m *MockCompilerContext2) EXPECT() *MockCompilerContext2MockRecorder {
 	return m.recorder
 }
 
-// BuildTableDefByMoColumns mocks base method.
-func (m *MockCompilerContext2) BuildTableDefByMoColumns(dbName, table string) (*TableDef, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "BuildTableDefByMoColumns", dbName, table)
-	ret0, _ := ret[0].(*TableDef)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// BuildTableDefByMoColumns indicates an expected call of BuildTableDefByMoColumns.
-func (mr *MockCompilerContext2MockRecorder) BuildTableDefByMoColumns(dbName, table interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BuildTableDefByMoColumns", reflect.TypeOf((*MockCompilerContext2)(nil).BuildTableDefByMoColumns), dbName, table)
-}
-
 // CheckSubscriptionValid mocks base method.
 func (m *MockCompilerContext2) CheckSubscriptionValid(subName, accName, pubName string) error {
 	m.ctrl.T.Helper()
