@@ -582,4 +582,65 @@ select @vector=cast('[1,2]' as vecf32(2)) as matches;
 create procedure sql_vector(out v vecf64(2)) 'begin set v=''[1,2]''; end';
 call sql_vector(@vector);
 select @vector=cast('[1,2]' as vecf64(2)) as matches;
+-- Typed vector outputs compose with subsequent INOUT and mo.getvar reads.
+create procedure reuse_vecf32(inout v vecf32(2)) language 'starlark' $$
+seen, err = mo.getvar("v")
+if err != None or seen != v: fail("readback mismatch")
+out_v = v
+$$;
+set @v='[1.25,-2.5]';
+call reuse_vecf32(@v);
+call reuse_vecf32(@v);
+select @v=cast('[1.25,-2.5]' as vecf32(2)) as matches;
+drop procedure reuse_vecf32;
+create procedure reuse_vecf64(inout v vecf64(2)) language 'starlark' $$
+seen, err = mo.getvar("v")
+if err != None or seen != v: fail("readback mismatch")
+out_v = v
+$$;
+set @v='[1.25,-2.5]';
+call reuse_vecf64(@v);
+call reuse_vecf64(@v);
+select @v=cast('[1.25,-2.5]' as vecf64(2)) as matches;
+drop procedure reuse_vecf64;
+create procedure reuse_vecbf16(inout v vecbf16(2)) language 'starlark' $$
+seen, err = mo.getvar("v")
+if err != None or seen != v: fail("readback mismatch")
+out_v = v
+$$;
+set @v='[1.25,-2.5]';
+call reuse_vecbf16(@v);
+call reuse_vecbf16(@v);
+select @v=cast('[1.25,-2.5]' as vecbf16(2)) as matches;
+drop procedure reuse_vecbf16;
+create procedure reuse_vecf16(inout v vecf16(2)) language 'starlark' $$
+seen, err = mo.getvar("v")
+if err != None or seen != v: fail("readback mismatch")
+out_v = v
+$$;
+set @v='[1.25,-2.5]';
+call reuse_vecf16(@v);
+call reuse_vecf16(@v);
+select @v=cast('[1.25,-2.5]' as vecf16(2)) as matches;
+drop procedure reuse_vecf16;
+create procedure reuse_vecint8(inout v vecint8(2)) language 'starlark' $$
+seen, err = mo.getvar("v")
+if err != None or seen != v: fail("readback mismatch")
+out_v = v
+$$;
+set @v='[-128,127]';
+call reuse_vecint8(@v);
+call reuse_vecint8(@v);
+select @v=cast('[-128,127]' as vecint8(2)) as matches;
+drop procedure reuse_vecint8;
+create procedure reuse_vecuint8(inout v vecuint8(2)) language 'starlark' $$
+seen, err = mo.getvar("v")
+if err != None or seen != v: fail("readback mismatch")
+out_v = v
+$$;
+set @v='[0,255]';
+call reuse_vecuint8(@v);
+call reuse_vecuint8(@v);
+select @v=cast('[0,255]' as vecuint8(2)) as matches;
+drop procedure reuse_vecuint8;
 drop database starlark_parameter_types;

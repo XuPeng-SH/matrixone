@@ -17,6 +17,7 @@ package frontend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -30,6 +31,7 @@ import (
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
 	"github.com/matrixorigin/matrixone/pkg/testutil"
 	"github.com/stretchr/testify/require"
+	"go.starlark.net/starlark"
 )
 
 func starlarkOutputTestSession(t *testing.T) *Session {
@@ -130,6 +132,9 @@ func TestStarlarkOutputDeclaredTypes(t *testing.T) {
 			t.Run(direction+" "+tc.name, func(t *testing.T) {
 				interp, back := starlarkOutputTestInterpreter(t, ses, direction+" v "+tc.typ)
 				require.NoError(t, ses.SetUserDefinedVar("v", int64(99), ""))
+				old, getErr := ses.GetUserDefinedVar("v")
+				require.NoError(t, getErr)
+				before := *old
 				previousCtx := ses.GetTxnCompileCtx().GetContext()
 				err := interp.ExecuteStarlark("out_v = "+tc.value, "test", false)
 				require.Equal(t, previousCtx, ses.GetTxnCompileCtx().GetContext())
@@ -139,11 +144,21 @@ func TestStarlarkOutputDeclaredTypes(t *testing.T) {
 					require.Error(t, err)
 					var sqlErr *moerr.Error
 					require.ErrorAs(t, err, &sqlErr)
-					require.Equal(t, int64(99), got.Value)
+					require.Equal(t, before, *got)
 					require.Equal(t, "rollback;", back.executedSQLs[len(back.executedSQLs)-1])
 				} else {
 					require.NoError(t, err)
 					require.Equal(t, tc.want, got.Value)
+					wantType := interp.argsType["v"]
+					if tc.want == nil {
+						wantType = plan.Type{}
+					}
+					require.Equal(t, wantType, got.Type)
+					require.Equal(t, prepareParamKindFromType(types.T(wantType.Id)), got.PrepareParamKind)
+					require.False(t, got.IsBin)
+					resolved, resolveErr := ses.GetTxnCompileCtx().ResolveVariableType("v", false, false)
+					require.NoError(t, resolveErr)
+					require.Equal(t, wantType, resolved)
 					require.Equal(t, "commit;", back.executedSQLs[len(back.executedSQLs)-1])
 				}
 			})
@@ -159,6 +174,12 @@ func TestStarlarkOutputAtomicityAndReuse(t *testing.T) {
 			for _, name := range []string{"a", "b", "c"} {
 				require.NoError(t, ses.SetUserDefinedVar(name, int64(7), ""))
 			}
+			before := make(map[string]UserDefinedVar)
+			for _, name := range []string{"a", "b", "c"} {
+				v, err := ses.GetUserDefinedVar(name)
+				require.NoError(t, err)
+				before[name] = *v
+			}
 			if aliases {
 				interp.argsMap["b"] = &tree.VarExpr{Name: "a"}
 				interp.argsMap["c"] = &tree.VarExpr{Name: "a"}
@@ -167,7 +188,7 @@ func TestStarlarkOutputAtomicityAndReuse(t *testing.T) {
 			for _, name := range []string{"a", "b", "c"} {
 				got, err := ses.GetUserDefinedVar(name)
 				require.NoError(t, err)
-				require.Equal(t, int64(7), got.Value)
+				require.Equal(t, before[name], *got)
 			}
 			require.Equal(t, "rollback;", back.executedSQLs[len(back.executedSQLs)-1])
 			require.NoError(t, interp.ExecuteStarlark("out_a = 12\nout_b = 'ok'\nout_c = 13", "test", false))
@@ -175,6 +196,11 @@ func TestStarlarkOutputAtomicityAndReuse(t *testing.T) {
 			require.NoError(t, err)
 			if aliases {
 				require.Contains(t, []any{int32(12), "ok", int32(13)}, got.Value)
+				if got.Value == "ok" {
+					require.Equal(t, interp.argsType["b"], got.Type)
+				} else {
+					require.Equal(t, interp.argsType["a"], got.Type)
+				}
 			} else {
 				require.Equal(t, int32(12), got.Value)
 			}
@@ -192,8 +218,15 @@ func TestStarlarkOutputAtomicityAndReuse(t *testing.T) {
 	require.Error(t, interp.ExecuteStarlark("fail('body error')", "test", false))
 	require.Equal(t, "rollback;", back.executedSQLs[len(back.executedSQLs)-1])
 	back.sql2err["commit;"] = errors.New("commit failed")
-	require.ErrorContains(t, interp.ExecuteStarlark("pass", "test", false), "commit failed")
+	require.ErrorContains(t, interp.ExecuteStarlark("out_a = 21\nout_c = 22", "test", false), "commit failed")
 	require.Equal(t, "rollback;", back.executedSQLs[len(back.executedSQLs)-1])
+	// Session variables are published before transaction completion, as in
+	// ordinary stored procedures; commit failure does not undo publication.
+	for name, want := range map[string]any{"a": int32(21), "c": int32(22)} {
+		got, err := ses.GetUserDefinedVar(name)
+		require.NoError(t, err)
+		require.Equal(t, want, got.Value)
+	}
 }
 
 // Values crossing the evaluator boundary must survive reuse of vector storage.
@@ -218,4 +251,123 @@ func testOwnedArrayValue[T types.ArrayElement](t *testing.T, oid types.T, want [
 		clear(borrowed)
 		require.Equal(t, want, got)
 	})
+}
+
+func TestStarlarkTypedVectorInput(t *testing.T) {
+	for _, tc := range []struct {
+		value any
+		want  string
+	}{
+		{[]float32{1.25, -2.5}, "[1.25, -2.5]"},
+		{[]float64{1.25, -2.5}, "[1.25, -2.5]"},
+		{[]types.BF16{types.BF16FromFloat32(1.25)}, "[1.25]"},
+		{[]types.Float16{types.Float16FromFloat32(-2.5)}, "[-2.5]"},
+		{[]int8{-128, 127}, "[-128, 127]"},
+		{[]uint8{0, 255}, "[0, 255]"},
+		{[]float32(nil), "[]"},
+		{[]float64{}, "[]"},
+		{[]types.BF16(nil), "[]"}, {[]types.BF16{}, "[]"},
+		{[]types.Float16(nil), "[]"}, {[]types.Float16{}, "[]"},
+		{[]int8(nil), "[]"}, {[]int8{}, "[]"},
+		{[]uint8(nil), "[]"}, {[]uint8{}, "[]"},
+		{[]float32{}, "[]"}, {[]float64(nil), "[]"},
+		{"binary\x00string", "binary\x00string"},
+	} {
+		before := fmt.Sprint(tc.value)
+		got, err := convertToStarlarkValue(context.Background(), tc.value)
+		require.NoError(t, err)
+		require.Equal(t, starlark.String(tc.want), got)
+		require.Equal(t, before, fmt.Sprint(tc.value))
+	}
+	for _, value := range []any{[]int{1}, map[string]int{"a": 1}} {
+		_, err := convertToStarlarkValue(context.Background(), value)
+		require.Error(t, err)
+	}
+}
+
+func TestStarlarkVectorINOUTRepeatedCall(t *testing.T) {
+	for _, typ := range []string{"vecf32", "vecf64", "vecbf16", "vecf16", "vecint8", "vecuint8"} {
+		t.Run(typ, func(t *testing.T) {
+			ses := starlarkOutputTestSession(t)
+			require.NoError(t, ses.SetUserDefinedVar("v", "[1,2]", ""))
+			for call := 0; call < 2; call++ {
+				interp, _ := starlarkOutputTestInterpreter(t, ses, "inout v "+typ+"(2)")
+				require.NoError(t, interp.ExecuteStarlark("readback, err = mo.getvar(\"v\")\nif err != None:\n    fail(str(err))\nif readback != v:\n    fail(\"readback differs\")\nout_v = v", "test", false))
+				got, err := ses.GetUserDefinedVar("v")
+				require.NoError(t, err)
+				input, err := convertToStarlarkValue(context.Background(), got.Value)
+				require.NoError(t, err)
+				require.Equal(t, starlark.String("[1, 2]"), input)
+			}
+			previous, err := ses.GetUserDefinedVar("v")
+			require.NoError(t, err)
+			interp, _ := starlarkOutputTestInterpreter(t, ses, "inout v "+typ+"(2)")
+			require.Error(t, interp.ExecuteStarlark("out_v = '[1,2,3]'", "test", false))
+			got, err := ses.GetUserDefinedVar("v")
+			require.NoError(t, err)
+			require.Equal(t, *previous, *got)
+		})
+	}
+}
+
+func TestStarlarkScalarINOUTRepeatedCall(t *testing.T) {
+	for _, tc := range []struct{ typ, value string }{
+		{"bigint", "-9223372036854775808"},
+		{"bigint unsigned", "18446744073709551615"},
+		{"double", "1.25"},
+		{"decimal(38,2)", "'123456789012345678901234567890.25'"},
+		{"varchar(20)", "'hello'"},
+		{"varbinary(20)", "'hello'"},
+		{"date", "'2026-10-14'"},
+		{"datetime", "'2026-10-14 12:34:56'"},
+	} {
+		t.Run(tc.typ, func(t *testing.T) {
+			ses := starlarkOutputTestSession(t)
+			require.NoError(t, ses.SetUserDefinedVar("v", int64(1), ""))
+			interp, _ := starlarkOutputTestInterpreter(t, ses, "inout v "+tc.typ)
+			require.NoError(t, interp.ExecuteStarlark("out_v = "+tc.value, "test", false))
+			before, err := ses.GetUserDefinedVar("v")
+			require.NoError(t, err)
+			interp, _ = starlarkOutputTestInterpreter(t, ses, "inout v "+tc.typ)
+			require.NoError(t, interp.ExecuteStarlark("out_v = v", "test", false))
+			after, err := ses.GetUserDefinedVar("v")
+			require.NoError(t, err)
+			require.Equal(t, before.Value, after.Value)
+		})
+	}
+}
+
+func TestStarlarkOutputMetadataMigration(t *testing.T) {
+	for _, tc := range []struct{ typ, value string }{
+		{"vecuint8(2)", "'[0,255]'"},
+		{"varbinary(3)", "'abc'"},
+		{"decimal(38,2)", "'123456789012345678901234567890.25'"},
+	} {
+		t.Run(tc.typ, func(t *testing.T) {
+			ses := starlarkOutputTestSession(t)
+			interp, back := starlarkOutputTestInterpreter(t, ses, "out v "+tc.typ)
+			require.NoError(t, interp.ExecuteStarlark("out_v = "+tc.value, "test", true))
+			for _, sql := range back.executedSQLs {
+				require.NotContains(t, []string{"begin;", "commit;", "rollback;"}, sql)
+			}
+			before, err := ses.GetUserDefinedVar("v")
+			require.NoError(t, err)
+			snapshot, err := ses.snapshotUserDefinedVars(context.Background())
+			require.NoError(t, err)
+			restored, err := decodeUserDefinedVars(context.Background(), snapshot, false)
+			require.NoError(t, err)
+			require.Equal(t, before.Value, restored["v"].Value)
+			require.Equal(t, before.Type, restored["v"].Type)
+			require.Equal(t, before.PrepareParamKind, restored["v"].PrepareParamKind)
+			ses.mu.Lock()
+			ses.userDefinedVars = restored
+			ses.mu.Unlock()
+			interp, _ = starlarkOutputTestInterpreter(t, ses, "inout v "+tc.typ)
+			require.NoError(t, interp.ExecuteStarlark("out_v = v", "test", false))
+			after, err := ses.GetUserDefinedVar("v")
+			require.NoError(t, err)
+			require.Equal(t, before.Value, after.Value)
+			require.Equal(t, before.Type, after.Type)
+		})
+	}
 }

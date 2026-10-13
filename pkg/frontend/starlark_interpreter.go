@@ -20,6 +20,7 @@ import (
 	"reflect"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/monlp/llm"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
@@ -44,6 +45,22 @@ type starlarkInterpreter struct {
 }
 
 func convertToStarlarkValue(ctx context.Context, v any) (starlark.Value, error) {
+	// Preserve the string input interface when typed SQL vectors are reused.
+	switch array := v.(type) {
+	case []float32:
+		return starlark.String(types.ArrayToString(array)), nil
+	case []float64:
+		return starlark.String(types.ArrayToString(array)), nil
+	case []types.BF16:
+		return starlark.String(types.ArrayToString(array)), nil
+	case []types.Float16:
+		return starlark.String(types.ArrayToString(array)), nil
+	case []int8:
+		return starlark.String(types.ArrayToString(array)), nil
+	case []uint8:
+		return starlark.String(types.ArrayToString(array)), nil
+	}
+
 	val := reflect.ValueOf(v)
 	kind := val.Kind()
 	if kind == reflect.Pointer {
@@ -216,6 +233,7 @@ func (interpreter *Interpreter) ExecuteStarlark(spBody string, dbName string, bg
 	type outputValue struct {
 		name  string
 		value any
+		typ   plan.Type
 	}
 	outputs := make([]outputValue, 0, len(interpreter.outParamMap))
 	for k := range interpreter.outParamMap {
@@ -233,11 +251,15 @@ func (interpreter *Interpreter) ExecuteStarlark(spBody string, dbName string, bg
 			if err != nil {
 				return err
 			}
-			outputs = append(outputs, outputValue{interpreter.outParamMap[k].(string), av})
+			// NULL keeps the existing untyped user-variable policy.
+			if av == nil {
+				declaredType = plan.Type{}
+			}
+			outputs = append(outputs, outputValue{name: interpreter.outParamMap[k].(string), value: av, typ: declaredType})
 		}
 	}
 	for _, output := range outputs {
-		if err = interpreter.ses.SetUserDefinedVar(output.name, output.value, ""); err != nil {
+		if err = setUserDefinedVarWithType(interpreter.ses, output.name, output.value, "", false, output.typ); err != nil {
 			return err
 		}
 	}
