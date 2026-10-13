@@ -6094,6 +6094,7 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 	execCtx.reqCtx, statsInfo = installStatementStatsInfo(execCtx.reqCtx, beginInstant, 0)
 	execCtx.isIssue3482 = input.isIssue3482Sql()
 
+	parseStart := time.Now()
 	executionInput := input
 	stagedSQLMode := false
 	stagedRemaining := ""
@@ -6131,12 +6132,13 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 
 	ParseDuration := time.Since(beginInstant)
 	recordParseError := func(errorInput *UserInput, parseErr error) error {
+		parseDuration := time.Since(parseStart)
 		// There is no AST on this path, but it is still a statement boundary:
 		// capture the limit in the request context so any later error handling
 		// or internal work observes the same generation. The helper itself keeps
 		// internal and diagnostic inputs outside the client boundary.
 		resetDiagnosticsForStatement(ses, execCtx, errorInput, nil)
-		execCtx.reqCtx, _ = installStatementStatsInfo(execCtx.reqCtx, beginInstant, time.Since(beginInstant))
+		execCtx.reqCtx, _ = installStatementStatsInfo(execCtx.reqCtx, parseStart, parseDuration)
 		proc.ReplaceTopCtx(execCtx.reqCtx)
 		diagnosticErr := redactStatementErrorForLogging(parseErr, errorInput.getSql())
 		records, sources := errorInput.parseErrorRecords(ses)
@@ -6435,6 +6437,9 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 			// replaces the compiler context's ExecCtx. Restore this outer query
 			// before planning the next staged statement.
 			ses.GetTxnCompileCtx().SetExecCtx(execCtx)
+			// Parsing this suffix owns only its parse/rewrite/wrapper interval,
+			// excluding work already attributed to preceding statements.
+			parseStart = time.Now()
 			nextInput, remaining, nextErr := nextSQLModeStatementInput(
 				execCtx.reqCtx,
 				ses,

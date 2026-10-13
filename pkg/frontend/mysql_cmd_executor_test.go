@@ -12504,7 +12504,17 @@ func TestDoComQueryStagedParseErrorHasIndependentStatistics(t *testing.T) {
 	first := mock_frontend.NewMockComputationWrapper(ctrl)
 	first.EXPECT().GetAst().Return(stmts[0]).AnyTimes()
 	first.EXPECT().Plan().Return(nil).AnyTimes()
-	first.EXPECT().RecordCompoundStmt(gomock.Any(), gomock.Any()).Return(nil)
+	var precedingWork time.Duration
+	var precedingEnd time.Time
+	first.EXPECT().RecordCompoundStmt(gomock.Any(), gomock.Any()).DoAndReturn(func(context.Context, statistic.StatsArray) error {
+		// Work before suffix parsing must not become the suffix parsing charge.
+		start := time.Now()
+		for time.Since(start) < 30*time.Millisecond {
+		}
+		precedingEnd = time.Now()
+		precedingWork = precedingEnd.Sub(start)
+		return nil
+	})
 	first.EXPECT().Free().Times(1)
 	var retained *statistic.StatsInfo
 	var phases statistic.StatsInfo
@@ -12523,8 +12533,13 @@ func TestDoComQueryStagedParseErrorHasIndependentStatistics(t *testing.T) {
 		require.NotSame(t, retained, failed)
 		require.Same(t, failed, statistic.StatsInfoFromContext(execCtx.proc.GetTopContext()))
 		require.Zero(t, failed.Snapshot().PlanStage.BuildPlanStatsS3.Get)
-		_, claimed := failed.ClaimRootPhaseResource()
+		delta, claimed := failed.ClaimRootPhaseResource()
 		require.True(t, claimed)
+		tail := time.Since(precedingEnd)
+		require.GreaterOrEqual(t, precedingWork, 30*time.Millisecond)
+		require.False(t, failed.ParseStage.ParseStartTime.Before(precedingEnd))
+		require.Positive(t, delta.Usage.ExclusiveActiveNS)
+		require.LessOrEqual(t, delta.Usage.ExclusiveActiveNS, uint64(tail.Nanoseconds()))
 		return c, nil
 	})
 	defer parseStubs.Reset()
