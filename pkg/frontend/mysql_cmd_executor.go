@@ -6090,10 +6090,8 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 	proc.Base.SessionInfo.User = userNameOnly
 	proc.Base.SessionInfo.QueryId = ses.getQueryId(input.isInternal())
 
-	statsInfo := statistic.NewStatsInfo()
-	statsInfo.ParseStage.ParseStartTime = beginInstant
-
-	execCtx.reqCtx = statistic.ContextWithStatsInfo(execCtx.reqCtx, statsInfo)
+	var statsInfo *statistic.StatsInfo
+	execCtx.reqCtx, statsInfo = installStatementStatsInfo(execCtx.reqCtx, beginInstant, 0)
 	execCtx.isIssue3482 = input.isIssue3482Sql()
 
 	executionInput := input
@@ -6138,7 +6136,8 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 		// or internal work observes the same generation. The helper itself keeps
 		// internal and diagnostic inputs outside the client boundary.
 		resetDiagnosticsForStatement(ses, execCtx, errorInput, nil)
-		statsInfo.ParseStage.ParseDuration = time.Since(beginInstant)
+		execCtx.reqCtx, _ = installStatementStatsInfo(execCtx.reqCtx, beginInstant, time.Since(beginInstant))
+		proc.ReplaceTopCtx(execCtx.reqCtx)
 		diagnosticErr := redactStatementErrorForLogging(parseErr, errorInput.getSql())
 		records, sources := errorInput.parseErrorRecords(ses)
 		var recordErr error
@@ -6239,6 +6238,12 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 		// statement generation. Reset before authorization/admission, then inject
 		// binary PREPARE metadata captured before doComQuery.
 		execCtx.beginStatementGeneration(currentInput)
+		// A refresh may retain the previous statement context after execution.
+		// Keep its statistics alive rather than resetting a published owner.
+		if i > 0 {
+			execCtx.reqCtx, statsInfo = installStatementStatsInfo(execCtx.reqCtx, beginInstant, 0)
+		}
+		statsInfo.ParseStage.ParseDuration = time.Duration(ParseDuration.Nanoseconds() / int64(len(cws)))
 		// Keep the transaction origin available to compile-time lineage admission.
 		// Implicit-commit DDL commits the old transaction before planning, so the
 		// fresh transaction alone cannot tell whether the client was already in an
@@ -6338,11 +6343,6 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 				return err
 			}
 		}
-
-		statsInfo.Reset()
-		//average parse duration
-		statsInfo.ParseStage.ParseStartTime = beginInstant
-		statsInfo.ParseStage.ParseDuration = time.Duration(ParseDuration.Nanoseconds() / int64(len(cws)))
 
 		tenant := ses.GetTenantNameWithStmt(stmt)
 		//skip PREPARE statement here

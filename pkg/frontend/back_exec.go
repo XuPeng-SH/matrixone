@@ -131,7 +131,7 @@ func isBackgroundRestoreSQL(stmt tree.Statement, sql string) bool {
 	}
 }
 
-func installBackExecStatsInfo(
+func installStatementStatsInfo(
 	ctx context.Context,
 	parseStart time.Time,
 	parseDuration time.Duration,
@@ -472,7 +472,7 @@ func doComQueryInBack(
 	// parsing instance for the parse-error path; successful substatements get
 	// their own instances below so their phase accounting is not reused.
 	var parseStatsInfo *statistic.StatsInfo
-	execCtx.reqCtx, parseStatsInfo = installBackExecStatsInfo(statsParentCtx, beginInstant, 0)
+	execCtx.reqCtx, parseStatsInfo = installStatementStatsInfo(statsParentCtx, beginInstant, 0)
 	execCtx.input = input
 
 	proc.Base.SessionInfo.User = userNameOnly
@@ -539,7 +539,7 @@ func doComQueryInBack(
 		// ContextWithStatsInfo preserves the parent context, including its
 		// resource.Root, while allowing compile and execution to claim this
 		// statement's phase resource exactly once.
-		execCtx.reqCtx, _ = installBackExecStatsInfo(
+		execCtx.reqCtx, _ = installStatementStatsInfo(
 			statsParentCtx,
 			beginInstant,
 			time.Duration(ParseDuration.Nanoseconds()/int64(len(cws))),
