@@ -928,7 +928,10 @@ const (
 	// dispatch is gated by cluster protocol 131. Re-issued 616 -> 619 when
 	// main's #31020 claimed 616..618 first; every reference is by name, so
 	// renumbering is safe.
-	QUANTILE_EXACT_WEIGHTED = 619
+	QUANTILE_EXACT_WEIGHTED  = 619
+	TEMPORAL_DATETIME_BOUND  = 624
+	TEMPORAL_TIMESTAMP_BOUND = 625
+	TEMPORAL_BOUND_NOT_EMPTY = 626
 
 	// Unsigned DECIMAL domain admission (issue #30940/#30941). Plan-composed
 	// identity step evaluated on the raw source value before the assignment
@@ -949,13 +952,16 @@ const (
 	MO_INDEX_SUB_PART = 623
 
 	// Keep FUNCTION_END_NUMBER one past the highest allocated function id.
-	FUNCTION_END_NUMBER = 624
+	FUNCTION_END_NUMBER = 627
 )
 
 // functionIdRegister is what function we have registered already.
 var functionIdRegister = map[string]int32{
-	"timestampadd_second_interval": TIMESTAMPADD_SECOND_INTERVAL,
-	"_check_async_datalink_source": CHECK_ASYNC_DATALINK_SOURCE,
+	"__mo_temporal_datetime_bound":  TEMPORAL_DATETIME_BOUND,
+	"__mo_temporal_timestamp_bound": TEMPORAL_TIMESTAMP_BOUND,
+	"__mo_temporal_bound_not_empty": TEMPORAL_BOUND_NOT_EMPTY,
+	"timestampadd_second_interval":  TIMESTAMPADD_SECOND_INTERVAL,
+	"_check_async_datalink_source":  CHECK_ASYNC_DATALINK_SOURCE,
 
 	"format_bytes":            FORMAT_BYTES,
 	"format_pico_time":        FORMAT_PICO_TIME,
