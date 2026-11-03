@@ -1,0 +1,98 @@
+name: PR31979 independent performance diagnostic
+on:
+  push:
+    branches: [diagnostic/pr31979-perf-20261102]
+permissions:
+  contents: read
+env:
+  PYTHONOPTIMIZE: '0'
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  fixed-budget:
+    if: github.event_name == 'push' && github.event.created == true && github.run_attempt == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Initialize failure evidence before checkout
+        run: |
+          echo "CI_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+          python3 -B - <<'PY'
+          import json,os,time
+          from pathlib import Path
+          r=Path(os.environ['RUNNER_TEMP'])/'odku31979/results';r.mkdir(parents=True)
+          r.joinpath('bootstrap.json').write_text(json.dumps({'started':time.time(),'run_id':os.environ['GITHUB_RUN_ID'],'attempt':os.environ['GITHUB_RUN_ATTEMPT'],'commit':os.environ['GITHUB_SHA'],'ref':os.environ['GITHUB_REF'],'normal_user_uid':os.getuid()},indent=2)+'\n')
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: matrixorigin/matrixone
+          ref: 7a161fda57d53e0f15131b26372c71b67cc5db87
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: XuPeng-SH/matrixone
+          ref: 6c2d460de5b2a161cbec01229a6df6f322b87c55
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: XuPeng-SH/matrixone
+          ref: 6c2d460de5b2a161cbec01229a6df6f322b87c55
+          path: published-head
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.4'
+          cache: false
+      - name: Free only unused tools on this ephemeral VM
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet
+          df -h "$RUNNER_TEMP"
+      - name: Build and execute the preregistered finite experiment
+        run: python3 -B "$GITHUB_WORKSPACE/harness/perf/benchmark.py"
+      - name: Preserve infrastructure failure if controller did not seal evidence
+        if: always()
+        env:
+          CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -B - <<'PY'
+          import hashlib,json,os,time
+          from pathlib import Path
+          r=Path(os.environ['RUNNER_TEMP'])/'odku31979/results';r.mkdir(parents=True,exist_ok=True);p=r/'run-receipt.json'
+          if not p.exists():
+              now=time.time();boot=json.loads((r/'bootstrap.json').read_text()) if (r/'bootstrap.json').exists() else {}
+              record={'fallback':True,'status':'INCOMPLETE_EVIDENCE_FALLBACK' if (r/'controller-started.json').exists() else 'PRE_CONTROLLER_INFRASTRUCTURE_FAILURE','normal_user_uid':os.getuid(),'started':boot.get('started',now),'ended':now,'job_status':os.environ['CI_JOB_STATUS'],'run_id':os.environ['GITHUB_RUN_ID'],'attempt':os.environ['GITHUB_RUN_ATTEMPT'],'commit':os.environ['GITHUB_SHA'],'performance_gates_passed':False,'files':{str(x.relative_to(r)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sorted(r.rglob('*')) if x.is_file() and x!=p}}
+              p.write_text(json.dumps(record,indent=2)+'\n')
+          PY
+      - name: Verify sealed final receipts
+        if: always()
+        run: |
+          if test -f "$GITHUB_WORKSPACE/harness/perf/verify.py"; then
+            python3 -B "$GITHUB_WORKSPACE/harness/perf/verify.py" "$RUNNER_TEMP/odku31979/results"
+          else
+            python3 -B - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          r=Path(os.environ['RUNNER_TEMP'])/'odku31979/results';v=json.loads((r/'run-receipt.json').read_text())
+          if not v.get('fallback') or v.get('performance_gates_passed') is not False:raise SystemExit('Missing checked-out verifier; only incomplete fallback evidence allowed')
+          actual={str(p.relative_to(r)) for p in r.rglob('*') if p.is_file() and p!=r/'run-receipt.json'}
+          if actual!=set(v['files']):raise SystemExit('Fallback inventory differs')
+          for name,h in v['files'].items():
+              if hashlib.sha256((r/name).read_bytes()).hexdigest()!=h:raise SystemExit('Fallback hash mismatch')
+          print('Verified pre-controller infrastructure evidence; no performance gates passed')
+          PY
+          fi
+      - name: Preserve all outcomes and raw samples
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: odku31979-independent-results
+          path: ${{ runner.temp }}/odku31979/results
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 6

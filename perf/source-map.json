@@ -1,0 +1,326 @@
+{
+  "base": "7a161fda57d53e0f15131b26372c71b67cc5db87",
+  "published_head": "6c2d460de5b2a161cbec01229a6df6f322b87c55",
+  "local_commit": "91b56a97ede52c087e1a04b0c7796039a61e5ab3",
+  "previous_map_sha256": "78458ed246c2652ceef3b3b58e414549a84a1f456471850ae06b9f9577e3e4af",
+  "delta_from_previous": [
+    "pkg/sql/plan/odku_order.go"
+  ],
+  "paths": [
+    {
+      "path": "docs/design/ordered-odku-4.2.md",
+      "worktree_sha256": "2439428125b6fb57bdf6b097e37d4ca22878a92cc82cbeb40ca66723531de35f",
+      "worktree_blob": "d16375ab9e48fef97ca9e527a469ecf9fefa926b"
+    },
+    {
+      "path": "pkg/common/hashmap/iterator.go",
+      "worktree_sha256": "6fef013f03e087004e97b2688bc8353793985338b018597eac6c4399d6eea030",
+      "worktree_blob": "c912f32a010f3a933e6581036b2e5f14c2757cf1"
+    },
+    {
+      "path": "pkg/common/hashmap/iterator_reuse_test.go",
+      "worktree_sha256": "6eae33b932f5d10390eb4fab802a5e8d34c7b8ad40e3a459a5ce29fba7098566",
+      "worktree_blob": "ac14a508e6a1b7feafe0f657e202b50c2d963977"
+    },
+    {
+      "path": "pkg/defines/const.go",
+      "worktree_sha256": "687955f5603e4c5706cc5d122121360d20f0eb39a747a89080057d9e5fb0cc26",
+      "worktree_blob": "96ec23c9d6ad51a312808144d16c436cd4a3dc84"
+    },
+    {
+      "path": "pkg/pb/pipeline/pipeline.pb.go",
+      "worktree_sha256": "1af12c2895f44f34d05568de15faa5928704d4073ca9216c1e92a6890f4d8c82",
+      "worktree_blob": "29d44beefa9f81d302739c2f568ba73e11581ddd"
+    },
+    {
+      "path": "pkg/pb/plan/plan.pb.go",
+      "worktree_sha256": "ad9245d6a288c485a42512fb665d5b0fe3850ef4f3d0d06a9e8e8fce23ff0427",
+      "worktree_blob": "01a1ee0fd374fc834e7be3234e2a0141285d5d00"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/join.go",
+      "worktree_sha256": "39c4c2173a74ef854b30e2ab491082589f0515efac31996c8164d5c2ad082a5c",
+      "worktree_blob": "9e105e0d509b19333bb3f61130ae07c3e04d8f92"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/join_test.go",
+      "worktree_sha256": "29515d2979e2640490ca987fa9b4ba7194d1bbbadc328201f5398b773f4dc5e7",
+      "worktree_blob": "b2122ef874a98265e93e55a9e3de95a0b1b2cb8a"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/odku_checks.go",
+      "worktree_sha256": "c2ae9cd213949eaa4f58bd2a649d8b6619c835fa9c67b6f9af23da143f7b544a",
+      "worktree_blob": "a8f8d381961cb40318e847bee138ae435867b072"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/odku_checks_test.go",
+      "worktree_sha256": "05c76f7773b08593c56788fbf380dc5957dbe140169f9f96f2261e8b70af6ca8",
+      "worktree_blob": "5fee0506856a8cd3406c11f28de5ce20ae3034ac"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/odku_input_failure_test.go",
+      "worktree_sha256": "4c28bf3cf524a7ac6dd7d9bcde2b319852fef072566e13f7db08d902e5f96642",
+      "worktree_blob": "92b83cc1a53818ff09a7d34c0db41b64bd23d383"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/odku_inputs.go",
+      "worktree_sha256": "5aae26e48440fa206f5eb851cb533685b4d2e593362a6394a93f7a0453bb3b17",
+      "worktree_blob": "d90f296c2375fd1e2735e0c4bc4abe639ae7c6dc"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/odku_inputs_test.go",
+      "worktree_sha256": "d1189a5987640c7ec4750aa2669e08468624a2cfadb8e6b6f1016a8203d70991",
+      "worktree_blob": "c9568489416a373facb692cfcab6f47b6b33b405"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/odku_insert_run.go",
+      "worktree_sha256": "3d303df7bec8f16ae5318bc241526e55f0677654c660001faf7487bcb3b34ea6",
+      "worktree_blob": "cec66ffb985e08f8b2cc855f4bd08b2335b6c3f2"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/odku_insert_run_test.go",
+      "worktree_sha256": "d82e2085797e96c56ba8d0b2639d2f30f46ab0602bbc996122d58f1b97761e78",
+      "worktree_blob": "1b7250b3a262749602ccd455befe6e30ff74b222"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/ordered_odku.go",
+      "worktree_sha256": "590f47505694044b92e27ceb0d53815e1df6a8dea5eaeed551d13d45eeebdf58",
+      "worktree_blob": "13612d1d99db260c37c9c027c53c75fdf515a59c"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/ordered_odku_test.go",
+      "worktree_sha256": "70a8d3bdc5c7c4728a4b19afec6e0e50b3f4562c9d3f1057d01efcd30c66d4e9",
+      "worktree_blob": "39ccbb7de2afe9328462828891d1491485022f5a"
+    },
+    {
+      "path": "pkg/sql/colexec/dedupjoin/types.go",
+      "worktree_sha256": "e8b3ac90c4dec8df13432e186876886c7a31096a2adb899502b432d491c08301",
+      "worktree_blob": "5ede4a9ded074a5cec2c6a31e7dd28bc933f48e3"
+    },
+    {
+      "path": "pkg/sql/colexec/hashbuild/build.go",
+      "worktree_sha256": "409098f1a8cecef0c6a4476e6f12164476ba51a4821cc1b8799659ac9c29a598",
+      "worktree_blob": "1c092f13df3f560f52a254d875f022fe32422b21"
+    },
+    {
+      "path": "pkg/sql/colexec/hashbuild/hashmap.go",
+      "worktree_sha256": "38ead41d68ef6ab0593f1372e5e6056b58e8a72536c0fdfa345e94cddc66f89f",
+      "worktree_blob": "f07fcfa68d137d90cd809b0de065c4025c88f3b7"
+    },
+    {
+      "path": "pkg/sql/colexec/hashbuild/ordered_odku.go",
+      "worktree_sha256": "f3b5dedab389eb639639d3c59dc56a9566033c162f5665e7bde90b6d88a18969",
+      "worktree_blob": "1a57f601bd73531113f281ea02d883572a4d7208"
+    },
+    {
+      "path": "pkg/sql/colexec/hashbuild/ordered_odku_test.go",
+      "worktree_sha256": "7e86c2e3d0b03709ce0567f5f189d243654c32606ffb56ab6a643c6b2d576a68",
+      "worktree_blob": "89f87df628b48241f942b828a1971138f95ed724"
+    },
+    {
+      "path": "pkg/sql/colexec/hashbuild/types.go",
+      "worktree_sha256": "c7729d16c7ce413e8a483752c77c177916e0ea2de8ef275d097d28d9d94dffc8",
+      "worktree_blob": "ae6a14ef53a763ed9ae8ff7f361a158cf03e185b"
+    },
+    {
+      "path": "pkg/sql/colexec/preinsertunique/odku_history_failure_test.go",
+      "worktree_sha256": "b440969d948379a78131f61abf0b1cc1c2b3faace7dda22edfaa1c852bcd63ca",
+      "worktree_blob": "e4e6ad9bca08d90e6351791436c9c7f467b147f2"
+    },
+    {
+      "path": "pkg/sql/colexec/preinsertunique/odku_key_codec_test.go",
+      "worktree_sha256": "636f352945a6c15b475906c97e2fe45d8cda088d57b077807605e85ef5258285",
+      "worktree_blob": "d1c8946631898725098f20186e3aacbbad6002ec"
+    },
+    {
+      "path": "pkg/sql/colexec/preinsertunique/odku_key_failure_test.go",
+      "worktree_sha256": "2a1966726d9843100a6b88f10e20090b2f5606c356a0a2f6eb8d2985c2776aa9",
+      "worktree_blob": "cd906dc76766c990ef09cf04fc51e654201b8510"
+    },
+    {
+      "path": "pkg/sql/colexec/preinsertunique/odku_keys.go",
+      "worktree_sha256": "92972b400a36289b2e9aa8223c9f4177804c37fbedfe132eb896136aea9c3e0f",
+      "worktree_blob": "9de87e7e861f7455780687f81e07ed7c3a30f20b"
+    },
+    {
+      "path": "pkg/sql/colexec/preinsertunique/odku_keys_test.go",
+      "worktree_sha256": "f15b2b2eac13c0acac32bec28ffb735d77b6670d1e90b7b8e18a2bce3d60c301",
+      "worktree_blob": "abe4c86769499897f6e612f2bf3b049aecc7daca"
+    },
+    {
+      "path": "pkg/sql/colexec/preinsertunique/ordered_odku_test.go",
+      "worktree_sha256": "057f904cbfff21878ce6759d66ef9f9c22af33152da37c32d1a7ddfdba43c2ce",
+      "worktree_blob": "3492b8cfd881ad8a5cf9707a657a0ce53a15ee48"
+    },
+    {
+      "path": "pkg/sql/colexec/preinsertunique/preinsertunique.go",
+      "worktree_sha256": "f99185efcbbe06a53d5d41d5f0fb08ac8ee08fd4925873d8ce31e29ad2734d7c",
+      "worktree_blob": "dafb6caef11155dc274683fbf16928b3e84a28c5"
+    },
+    {
+      "path": "pkg/sql/colexec/preinsertunique/types.go",
+      "worktree_sha256": "822d0710d357f37b618fdc42894a054c20135199ab17a6c9a0a5eeb9e20c803a",
+      "worktree_blob": "cc2d006cace73b422346f928abc4c723a1e29296"
+    },
+    {
+      "path": "pkg/sql/colexec/spillutil/join_spill.go",
+      "worktree_sha256": "894db0f1e2ee9d4396244ab252f9131134304fa29ba046d57b6268e0517d5910",
+      "worktree_blob": "f5907b920216967ed7605b9ce3b79ff750b8dfdd"
+    },
+    {
+      "path": "pkg/sql/colexec/spillutil/join_spill_test.go",
+      "worktree_sha256": "83b3f061daa9fd30cd13339525f1c1ad470fcb24b1f0c141ce1cce1745830a8a",
+      "worktree_blob": "de6bd21adce898fcb06e442f4fcbeb8792f3926f"
+    },
+    {
+      "path": "pkg/sql/colexec/window/row_number.go",
+      "worktree_sha256": "b352d909e016d688e08edd3db7b1e84addb6cd731196666af231d06246c8b19f",
+      "worktree_blob": "82d963872e6dac8c0ecdf50eed1a9dbeb03ba670"
+    },
+    {
+      "path": "pkg/sql/colexec/window/row_number_test.go",
+      "worktree_sha256": "72e0e472d3eda61801192836f97b07c79ca28de14fbd29b56e887a6977b03687",
+      "worktree_blob": "26eac9486babdd0d94b1da448bf37dc1e868bee0"
+    },
+    {
+      "path": "pkg/sql/colexec/window/types.go",
+      "worktree_sha256": "60ccfaf3fadb6591e21ec34cfd22cdf6d412d0a1c223ad740014e53767986b01",
+      "worktree_blob": "af5c410b098a6d3b8187248ccc00755ba32a1fc9"
+    },
+    {
+      "path": "pkg/sql/colexec/window/window.go",
+      "worktree_sha256": "18a8957470bab0074c53554bd0f9fcd856f5ec32abd9ee8cb73c5944c99d24c3",
+      "worktree_blob": "5ea21ed50c8e515f80f108b75613b026ac69ac15"
+    },
+    {
+      "path": "pkg/sql/compile/compile.go",
+      "worktree_sha256": "ffa9fedf5809ea8d26b6157356d71858d1632deea890650d3893c7353ec0be5a",
+      "worktree_blob": "46d59d9e64fd133c2c84d13e4b2e1f12833b00a3"
+    },
+    {
+      "path": "pkg/sql/compile/odku_protocol.go",
+      "worktree_sha256": "748251ae96973f71b66a7d5219bfd4eae5db03c7899f7dd61e31d8da77dbaeb6",
+      "worktree_blob": "e446f4baa00ac4de9c19eecfa3cd2b16074f02c1"
+    },
+    {
+      "path": "pkg/sql/compile/odku_protocol_test.go",
+      "worktree_sha256": "caef148364fb9e6c1f523d9362e8c6b0d81d4a2d1a2f7a55a7b47749fe5bed4d",
+      "worktree_blob": "7a8a1f4c3ac7e5d9dec5ac185120807b35668a09"
+    },
+    {
+      "path": "pkg/sql/compile/operator.go",
+      "worktree_sha256": "3002dd5812208e5437cc91bbe24f5e4287716971eacc476fb967e95bbcf3aeb7",
+      "worktree_blob": "a5856e4b2b7128d30f949e45db1818f5456fd5d6"
+    },
+    {
+      "path": "pkg/sql/compile/remoterun.go",
+      "worktree_sha256": "2cafd10cb612ba7e5c084e665b426016eac1f7eaae1e619ae4e8bd2b384226e3",
+      "worktree_blob": "9dab9a1be445288aca27b68ce95dc6e4171529bc"
+    },
+    {
+      "path": "pkg/sql/compile/scope_test.go",
+      "worktree_sha256": "e50f566530c43cab1de64fbd4a9303c8fbcea2a6d3ccf979a8052ca32bdebc74",
+      "worktree_blob": "f2ff6ad9a2c0fd48c3d7213cee5bfa870efa139c"
+    },
+    {
+      "path": "pkg/sql/plan/bind_insert.go",
+      "worktree_sha256": "d94e1ff97c5e3190d5895294a32ab936a8644957b055f2a45ddb3f343970caae",
+      "worktree_blob": "dd072fe6fa7526cfce9703a30008f88e5da301f0"
+    },
+    {
+      "path": "pkg/sql/plan/bind_insert_test.go",
+      "worktree_sha256": "df0ad4d197985b2cd578fc85262b998840382dfd1df1f4b31c41554cfd05289a",
+      "worktree_blob": "5d2b969171bc468e520a1eccbee141f4b44df005"
+    },
+    {
+      "path": "pkg/sql/plan/build_constraint_util.go",
+      "worktree_sha256": "ab48a1b30067dec5fc47d493629a40896023daa14a7f81741eecd2edcd40f6c6",
+      "worktree_blob": "6ee6cc79189b2996287b6b3bb3da873ba18e3fa3"
+    },
+    {
+      "path": "pkg/sql/plan/build_util.go",
+      "worktree_sha256": "b5b52a0f8508b977180a3d2ac4ec709467c95d27cba6a8809ebad99e6281cd0f",
+      "worktree_blob": "43f5c2e025120a6439f94dbbb2503ca1d0de00e2"
+    },
+    {
+      "path": "pkg/sql/plan/build_util_test.go",
+      "worktree_sha256": "3611a71fd4d0c474e051b1e6b7b840a362864bb797ee8f4cb3743e33856471a3",
+      "worktree_blob": "c9247d76bf0b0002376a295a39e79be9ee79d796"
+    },
+    {
+      "path": "pkg/sql/plan/deepcopy.go",
+      "worktree_sha256": "8731d08b59d9e9d8daefc26418db80068e1222128888a34d675028e7b19d5def",
+      "worktree_blob": "0d91d931c830f3caee8ffa385997aee3c3e592bd"
+    },
+    {
+      "path": "pkg/sql/plan/index_table_dml_test.go",
+      "worktree_sha256": "403d84f959f6ba21cdd742e5cd6f590b9fc627b6e96e6fb0b0af14d4e18b3a81",
+      "worktree_blob": "57cb6d38cc0ce341f94f06968b43314dc20a7542"
+    },
+    {
+      "path": "pkg/sql/plan/odku_order.go",
+      "worktree_sha256": "e390d4037854400018a9204eaefc0a09049a8aaaa076f3033ef07d8beb91754b",
+      "worktree_blob": "24a34a1cd7e6ac2cecc4391eaf8a342c96fdc97c"
+    },
+    {
+      "path": "pkg/sql/plan/odku_order_test.go",
+      "worktree_sha256": "921c7ec79d98c526a1470aa1447bc5a342eca26fa3bdbb1eb1c3de35a544e779",
+      "worktree_blob": "6f7da43f0b7b76629f891854b13942c019179b20"
+    },
+    {
+      "path": "pkg/sql/plan/opt_misc.go",
+      "worktree_sha256": "3071c4cd44dbbf7c322a76d61997a9fc2e6957600e6106cffb605e946d9668ac",
+      "worktree_blob": "425f997782ee833aeca56d44f91689d83ece4924"
+    },
+    {
+      "path": "pkg/sql/plan/pushdown.go",
+      "worktree_sha256": "5df7db6baa5316c39b96a98225993f7b6dc6c5bf723cd50029ca8d76eb748a9d",
+      "worktree_blob": "e7dc43ce6e0cd20f91953e35052dc618ec7beb22"
+    },
+    {
+      "path": "pkg/sql/plan/pushdown_test.go",
+      "worktree_sha256": "a7ef78503599c4d857d5c2777b2bcb33bc036e63fad780689c0e7305f03263f8",
+      "worktree_blob": "fdf1432a426f6ef63d793a535eb652bbc8cef5a4"
+    },
+    {
+      "path": "pkg/sql/plan/query_builder.go",
+      "worktree_sha256": "9bd00b4856402b4cf2e642fd0f081a5651993ba70b105e19ee9a94c04087db8b",
+      "worktree_blob": "80db497ccda21b331f2687afee4530cd5906b62d"
+    },
+    {
+      "path": "pkg/sql/plan/visit_plan.go",
+      "worktree_sha256": "66dc5c651f3f91f8ef7e5f2a8c0dbc467d10e41dac9c89140fc87806803d73ff",
+      "worktree_blob": "94a7e6a72da4b45e2a047efd70d2cd4928fa59d2"
+    },
+    {
+      "path": "pkg/tests/dml/ordered_odku_benchmark_test.go",
+      "worktree_sha256": "1740d2ad61291fc712c6e26015fe0b49cb2046aa93d60ca4f4ced34c4d0fc4cf",
+      "worktree_blob": "98402c150bbac5cf2f36838f04689b61b52a8ae4"
+    },
+    {
+      "path": "pkg/tests/dml/ordered_odku_test.go",
+      "worktree_sha256": "5259155f45e68edf097f0d54416dd75724205edbd5611b8587bc847e08306ea9",
+      "worktree_blob": "7b397e33186276507f8f29811655d4bf5360a5ff"
+    },
+    {
+      "path": "proto/pipeline.proto",
+      "worktree_sha256": "8c67dffb4d2d61b2d10949972ce21974e1e2f04fb97c75e7322435c6670f5f08",
+      "worktree_blob": "eb892315db9f86d04d77f1138788c732ba0b3aeb"
+    },
+    {
+      "path": "proto/plan.proto",
+      "worktree_sha256": "dd0fc5b168dcc4d6744655d0c1756197b0967dc572573b5f6b99d1193cff3916",
+      "worktree_blob": "07a67cec626c6f2a4b33878b4dd1f97b6f7cd880"
+    },
+    {
+      "path": "test/distributed/cases/dml/insert/odku_nullable_defaults.result",
+      "worktree_sha256": "f87f825b5b0a9e048f545d63334f5f968e20ea0f03e6feeabae90c6686a6f168",
+      "worktree_blob": "3cc6a8f7ea679daf33c0dd800bdc653d1dfe98dc"
+    },
+    {
+      "path": "test/distributed/cases/dml/insert/odku_nullable_defaults.sql",
+      "worktree_sha256": "80e4659136db7dbfe88be9febf5cd808583c55085258dcbd3210171b5272e06a",
+      "worktree_blob": "2792fd54548e03c8daad87d6ee8f063a25d1970a"
+    }
+  ]
+}

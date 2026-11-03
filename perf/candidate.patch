@@ -1,0 +1,1511 @@
+diff --git a/docs/design/ordered-odku-4.2.md b/docs/design/ordered-odku-4.2.md
+index 0a5e9db9d2..d16375ab9e 100644
+--- a/docs/design/ordered-odku-4.2.md
++++ b/docs/design/ordered-odku-4.2.md
+@@ -104,8 +104,8 @@ Each RHS reads the current image produced by preceding assignments. Recompute ge
+ materialized columns without replaying a volatile explicit RHS. Preserve existing implicit OnUpdate
+ policy; dependency analysis still includes it for identity and validation safety.
+ 
+-Expression and VALUES vectors may be borrowed. Before advancing an action, copy mutable results into a
+-bounded stable bank disjoint from every live source vector. Select the bank before cleaning any slot;
++Expression and VALUES vectors may be borrowed. Before advancing an action whose mutable image remains
++live, copy its results into a bounded stable bank disjoint from every live source vector. Select the bank before cleaning any slot;
+ column-by-column cleaning or fixed bank parity is unsafe for aliases and varlen chains. Keep the original
+ stored deletion image separate. New groups start with the first INSERT image, then replay UPDATEs.
+ 
+@@ -165,8 +165,12 @@ No additional executor, action-wide SINK, background worker or full action-histo
+ Only the exact builtin NOT NULL assertion on a current-image column with a literal message uses a
+ direct null-bit check. Keep its position and message in the original check list; all other expressions
+ use the existing executors. A final UPDATE is copied directly into the owned output after its checks
+-and FK eligibility calculation. Only intermediate actions need stable mutable-column banks, allocated
+-lazily. No output borrows an executor or incoming vector.
++and FK eligibility calculation. Intermediate images normally use lazily allocated stable mutable-column
++banks. If every assignment directly reads the incoming row and there is no FK check or action-row
++output, the next action overwrites every mutable position before any check or publication can read it.
++That dead intermediate image needs no stable copy; all action evaluations and checks still run. Current-
++image references, functions, literals, FK checks and action output retain the existing stabilization.
++No output borrows an executor or incoming vector.
+ 
+ A source is statically at most one row only through the converted unary PROJECT/PRE_INSERT/FILTER
+ chain ending in a fully described, single-row VALUE_SCAN. Neither estimates nor a scan LIMIT prove
+@@ -244,6 +248,22 @@ gate 11 cannot silently run a remote ordered plan as legacy ODKU. Ordinary legac
+ This supports the 4.2 version-11 -> version-12 rollout domain, not cross-branch numeric-version equivalence.
+ No persistent catalog/disk format, TN dedup/merge protocol or S3 count-control format changes are required.
+ 
++The retained `skipDedup` UPDATE path keeps staged assignment evaluation below gate 12. At gate 12 it
++installs assignments in order, including generated-column dependencies, and stabilizes the current row
++between repeated actions. This changes dependent ordinary assignments to sequential evaluation as well.
++Promote the gate only after every executing CN has the patched binary and plans from old coordinators have
++been drained; an old compatibility plan does not carry an evaluation-mode marker. Its existing conflict
++selection and final-image constraint validation remain unchanged.
++New compatibility plans with affected generated columns or generated dependency chains require gate
++12, because staged evaluation can otherwise write inconsistent generated values. An unknown local
++protocol version fails closed. Keep the gate stable while a plan runs, and drain plans before promotion
++or rollback.
++
++INSERT materializes base/default expressions before dependent generated expressions so they share the
++same values. If independently invalid base and generated expressions occur in one input, the first
++reported error can therefore differ from the previous column-order evaluation. Each encountered error
++keeps its original type and the statement remains atomic.
++
+ Validation covers all six issue reproductions and counterexamples, real/fake/composite/prefix/ENUM/NULL
+ keys, earlier local INSERTs, assignment aliases, multi-batch/shuffle/spill order, constraints and rollback,
+ FK transient/final concurrency and no-op restoration, retry/reuse/cancel/budget cleanup, codec fences and
+diff --git a/pkg/sql/colexec/dedupjoin/join.go b/pkg/sql/colexec/dedupjoin/join.go
+index ae78118293..9e105e0d50 100644
+--- a/pkg/sql/colexec/dedupjoin/join.go
++++ b/pkg/sql/colexec/dedupjoin/join.go
+@@ -21,9 +21,11 @@ import (
+ 	"github.com/matrixorigin/matrixone/pkg/common/hashmap"
+ 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+ 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
++	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
+ 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+ 	"github.com/matrixorigin/matrixone/pkg/container/types"
+ 	"github.com/matrixorigin/matrixone/pkg/container/vector"
++	"github.com/matrixorigin/matrixone/pkg/defines"
+ 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+ 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
+ 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/hashbuild"
+@@ -610,6 +612,13 @@ func (ctr *container) finalize(ap *DedupJoin, proc *process.Process) error {
+ 	if ctr.matched == nil {
+ 		return nil
+ 	}
++	sequential := false
++	if ap.OnDuplicateAction == plan.Node_UPDATE {
++		sequential, err = sequentialCompatibilityODKU(proc)
++		if err != nil {
++			return err
++		}
++	}
+ 	if ap.OnDuplicateAction != plan.Node_UPDATE || ctr.mp.HashOnUnique() {
+ 		if ctr.matched.Count() == 0 {
+ 			// constructDedupJoin copies node.ProjectList into ap.Result without
+@@ -790,8 +799,10 @@ func (ctr *container) finalize(ap *DedupJoin, proc *process.Process) error {
+ 			}
+ 			ap.ctr.buf[batIdx].SetRowCount(batSize)
+ 			fillCnt += batSize
+-			batIdx++
+ 			rowIdx = batSize % colexec.DefaultBatchSize
++			if rowIdx == 0 {
++				batIdx++
++			}
+ 		}
+ 		if ctr.joinBat1 != nil {
+ 			ctr.joinBat1.Clean(proc.GetMPool())
+@@ -840,22 +851,24 @@ func (ctr *container) finalize(ap *DedupJoin, proc *process.Process) error {
+ 				if ctr.joinBat2 == nil {
+ 					ctr.joinBat2, ctr.cfs2 = colexec.NewJoinBatch(ctr.batches[0], proc.Mp())
+ 				}
+-				err = ctr.withRestoredJoinBat1Vectors(ap.UpdateColIdxList, func() error {
+-					for _, sel := range sels[1:] {
++				err = ctr.withCompatibilityODKUScratch(ap, proc, func(scratch *odkuReplay, rowTypes *[]types.Type) error {
++					for action, sel := range sels[1:] {
++						if sequential {
++							if err := context.Cause(proc.Ctx); err != nil {
++								return err
++							}
++							if action > 0 {
++								if err := ctr.stabilizeCompatibilityODKU(ap, proc, scratch, rowTypes); err != nil {
++									return err
++								}
++							}
++						}
+ 						idx1, idx2 = sel/colexec.DefaultBatchSize, sel%colexec.DefaultBatchSize
+ 						if err := colexec.SetJoinBatchValues(ctr.joinBat2, ctr.batches[idx1], int64(idx2), 1, ctr.cfs2); err != nil {
+ 							return err
+ 						}
+-						vecs := make([]*vector.Vector, len(ctr.exprExecs))
+-						for j, exprExec := range ctr.exprExecs {
+-							vec, err := exprExec.Eval(proc, []*batch.Batch{ctr.joinBat1, ctr.joinBat2}, nil)
+-							if err != nil {
+-								return err
+-							}
+-							vecs[j] = vec
+-						}
+-						for j, pos := range ap.UpdateColIdxList {
+-							ctr.joinBat1.Vecs[pos] = vecs[j]
++						if err := ctr.evalCompatibilityODKU(ap, proc, sequential); err != nil {
++							return err
+ 						}
+ 					}
+ 					for j, rp := range ap.Result {
+@@ -908,10 +921,92 @@ func (ctr *container) withRestoredJoinBat1Vectors(updateCols []int32, fn func()
+ 	return fn()
+ }
+ 
++// Legacy plans have no per-plan evaluation-mode marker. The existing v12
++// rollout gate is promoted only after old plans are drained and all CNs are
++// upgraded; before then retain their original staged evaluation.
++func sequentialCompatibilityODKU(proc *process.Process) (bool, error) {
++	if proc == nil {
++		return false, moerr.NewNotSupported(context.Background(), "compatibility ODKU requires a valid protocol version")
++	}
++	rt := moruntime.ServiceRuntime(proc.GetService())
++	if rt == nil {
++		return false, moerr.NewNotSupported(proc.Ctx, "compatibility ODKU requires a valid protocol version")
++	}
++	v, ok := rt.GetGlobalVariables(moruntime.MOProtocolVersion)
++	version, valid := v.(int64)
++	if !ok || !valid {
++		return false, moerr.NewNotSupported(proc.Ctx, "compatibility ODKU requires a valid protocol version")
++	}
++	return version >= defines.MORPCVersion12, nil
++}
++
++func (ctr *container) evalCompatibilityODKU(ap *DedupJoin, proc *process.Process, sequential bool) error {
++	if sequential {
++		for i, exec := range ctr.exprExecs {
++			v, err := exec.Eval(proc, []*batch.Batch{ctr.joinBat1, ctr.joinBat2}, nil)
++			if err != nil {
++				return err
++			}
++			ctr.joinBat1.Vecs[ap.UpdateColIdxList[i]] = v
++		}
++		return nil
++	}
++	vecs := make([]*vector.Vector, len(ctr.exprExecs))
++	for i, exec := range ctr.exprExecs {
++		v, err := exec.Eval(proc, []*batch.Batch{ctr.joinBat1, ctr.joinBat2}, nil)
++		if err != nil {
++			return err
++		}
++		vecs[i] = v
++	}
++	for i, pos := range ap.UpdateColIdxList {
++		ctr.joinBat1.Vecs[pos] = vecs[i]
++	}
++	return nil
++}
++
++// The wrapper has saved the batch-owned vectors before any assignment. Use
++// their physical types for scratch, including when finalize uses the build
++// side's layout instead of the probe side's layout.
++func (ctr *container) stabilizeCompatibilityODKU(ap *DedupJoin, proc *process.Process, scratch *odkuReplay, rowTypes *[]types.Type) error {
++	if scratch.image == nil {
++		scratch.image = ctr.joinBat1
++		seen := make([]bool, len(ctr.joinBat1.Vecs))
++		*rowTypes = make([]types.Type, len(ctr.joinBat1.Vecs))
++		for i, pos := range ap.UpdateColIdxList {
++			if !seen[pos] {
++				seen[pos] = true
++				scratch.mutable = append(scratch.mutable, pos)
++				(*rowTypes)[pos] = *ctr.savedVecs[i].GetType()
++			}
++		}
++	}
++	return scratch.stabilize(ap, *rowTypes, proc)
++}
++
++// Scratch must outlive the callback, but not its group. The restore wrapper
++// returns before this defer frees any vectors borrowed by joinBat1.
++func (ctr *container) withCompatibilityODKUScratch(ap *DedupJoin, proc *process.Process, fn func(*odkuReplay, *[]types.Type) error) error {
++	var scratch odkuReplay
++	var rowTypes []types.Type
++	defer scratch.freeBanks(proc)
++	return ctr.withRestoredJoinBat1Vectors(ap.UpdateColIdxList, func() error {
++		return fn(&scratch, &rowTypes)
++	})
++}
++
+ func (ctr *container) probe(bat *batch.Batch, ap *DedupJoin, proc *process.Process, analyzer process.Analyzer, result *vm.CallResult) error {
+ 	if ap.OrderedOdku {
+ 		return ctr.probeOrderedODKU(bat, ap, proc, result)
+ 	}
++	sequential := false
++	if ap.OnDuplicateAction == plan.Node_UPDATE {
++		var err error
++		sequential, err = sequentialCompatibilityODKU(proc)
++		if err != nil {
++			return err
++		}
++	}
+ 	if err := ap.resetRBat(); err != nil {
+ 		return err
+ 	}
+@@ -1017,41 +1112,40 @@ func (ctr *container) probe(bat *batch.Batch, ap *DedupJoin, proc *process.Proce
+ 				if err != nil {
+ 					return err
+ 				}
+-				err = ctr.withRestoredJoinBat1Vectors(ap.UpdateColIdxList, func() error {
++				err = ctr.withCompatibilityODKUScratch(ap, proc, func(scratch *odkuReplay, rowTypes *[]types.Type) error {
+ 					if ctr.mp.HashOnUnique() {
++						if sequential {
++							if err := context.Cause(proc.Ctx); err != nil {
++								return err
++							}
++						}
+ 						sel := vals[k] - 1
+ 						idx1, idx2 := sel/colexec.DefaultBatchSize, sel%colexec.DefaultBatchSize
+ 						if err := colexec.SetJoinBatchValues(ctr.joinBat2, ctr.batches[idx1], int64(idx2), 1, ctr.cfs2); err != nil {
+ 							return err
+ 						}
+-						vecs := make([]*vector.Vector, len(ctr.exprExecs))
+-						for j, exprExec := range ctr.exprExecs {
+-							vec, err := exprExec.Eval(proc, []*batch.Batch{ctr.joinBat1, ctr.joinBat2}, nil)
+-							if err != nil {
+-								return err
+-							}
+-							vecs[j] = vec
+-						}
+-						for j, pos := range ap.UpdateColIdxList {
+-							ctr.joinBat1.Vecs[pos] = vecs[j]
++						if err := ctr.evalCompatibilityODKU(ap, proc, sequential); err != nil {
++							return err
+ 						}
+ 					} else {
+ 						sels := ctr.mp.GetSels(vals[k])
+-						for _, sel := range sels {
++						for action, sel := range sels {
++							if sequential {
++								if err := context.Cause(proc.Ctx); err != nil {
++									return err
++								}
++								if action > 0 {
++									if err := ctr.stabilizeCompatibilityODKU(ap, proc, scratch, rowTypes); err != nil {
++										return err
++									}
++								}
++							}
+ 							idx1, idx2 := sel/colexec.DefaultBatchSize, sel%colexec.DefaultBatchSize
+ 							if err := colexec.SetJoinBatchValues(ctr.joinBat2, ctr.batches[idx1], int64(idx2), 1, ctr.cfs2); err != nil {
+ 								return err
+ 							}
+-							vecs := make([]*vector.Vector, len(ctr.exprExecs))
+-							for j, exprExec := range ctr.exprExecs {
+-								vec, err := exprExec.Eval(proc, []*batch.Batch{ctr.joinBat1, ctr.joinBat2}, nil)
+-								if err != nil {
+-									return err
+-								}
+-								vecs[j] = vec
+-							}
+-							for j, pos := range ap.UpdateColIdxList {
+-								ctr.joinBat1.Vecs[pos] = vecs[j]
++							if err := ctr.evalCompatibilityODKU(ap, proc, sequential); err != nil {
++								return err
+ 							}
+ 						}
+ 					}
+diff --git a/pkg/sql/colexec/dedupjoin/join_test.go b/pkg/sql/colexec/dedupjoin/join_test.go
+index 9d9ea49929..b2122ef874 100644
+--- a/pkg/sql/colexec/dedupjoin/join_test.go
++++ b/pkg/sql/colexec/dedupjoin/join_test.go
+@@ -28,9 +28,11 @@ import (
+ 	"github.com/matrixorigin/matrixone/pkg/common/bitmap"
+ 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+ 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
++	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
+ 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+ 	"github.com/matrixorigin/matrixone/pkg/container/types"
+ 	"github.com/matrixorigin/matrixone/pkg/container/vector"
++	"github.com/matrixorigin/matrixone/pkg/defines"
+ 	mock_frontend "github.com/matrixorigin/matrixone/pkg/frontend/test"
+ 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+ 	"github.com/matrixorigin/matrixone/pkg/pb/txn"
+@@ -135,6 +137,89 @@ func TestWithRestoredJoinBat1VectorsRestoresOwnerOnError(t *testing.T) {
+ 	proc.Free()
+ }
+ 
++func TestCompatibilityODKURolloutGate(t *testing.T) {
++	proc := testutil.NewProcessWithMPool(t, "", mpool.MustNewZero())
++	t.Cleanup(proc.Free)
++	rt := moruntime.ServiceRuntime(proc.GetService())
++	old, existed := rt.GetGlobalVariables(moruntime.MOProtocolVersion)
++	t.Cleanup(func() {
++		if existed {
++			rt.SetGlobalVariables(moruntime.MOProtocolVersion, old)
++		} else if current, ok := rt.GetGlobalVariables(moruntime.MOProtocolVersion); ok {
++			rt.CompareAndDeleteGlobalVariables(moruntime.MOProtocolVersion, current)
++		}
++	})
++	rt.SetGlobalVariables(moruntime.MOProtocolVersion, int64(defines.MORPCVersion11))
++	sequential, err := sequentialCompatibilityODKU(proc)
++	require.NoError(t, err)
++	require.False(t, sequential)
++	rt.SetGlobalVariables(moruntime.MOProtocolVersion, int64(defines.MORPCVersion12))
++	sequential, err = sequentialCompatibilityODKU(proc)
++	require.NoError(t, err)
++	require.True(t, sequential)
++	rt.SetGlobalVariables(moruntime.MOProtocolVersion, "invalid")
++	_, err = sequentialCompatibilityODKU(proc)
++	require.True(t, moerr.IsMoErrCode(err, moerr.ErrNotSupported))
++	require.True(t, rt.CompareAndDeleteGlobalVariables(moruntime.MOProtocolVersion, "invalid"))
++	_, err = sequentialCompatibilityODKU(proc)
++	require.True(t, moerr.IsMoErrCode(err, moerr.ErrNotSupported))
++	_, err = sequentialCompatibilityODKU(nil)
++	require.True(t, moerr.IsMoErrCode(err, moerr.ErrNotSupported))
++}
++
++func TestCompatibilityODKUScratchRestoresAfterFailure(t *testing.T) {
++	mp := mpool.MustNewZero()
++	proc := testutil.NewProcessWithMPool(t, "", mp)
++	arg := &DedupJoin{UpdateColIdxList: []int32{0, 1, 1}}
++	registry, err := mpool.NewAllocationAccountRegistry(1, 64)
++	require.NoError(t, err)
++	account, err := registry.Open(8192)
++	require.NoError(t, err)
++	require.NoError(t, arg.SetAllocationAccount(account))
++	arg.ctr.joinBat1 = batch.NewWithSize(2)
++	arg.ctr.joinBat1.Vecs[0] = vector.NewVec(types.T_int64.ToType())
++	arg.ctr.joinBat1.Vecs[1] = vector.NewVec(types.T_varchar.ToType())
++	borrowed := vector.NewVec(types.T_varchar.ToType())
++	t.Cleanup(func() {
++		arg.Reset(proc, false, nil)
++		arg.Free(proc, false, nil)
++		borrowed.Free(mp)
++		proc.Free()
++		require.Zero(t, account.Snapshot().Used)
++		require.Zero(t, mp.CurrNB())
++	})
++	require.NoError(t, vector.AppendFixed(arg.ctr.joinBat1.Vecs[0], int64(7), false, mp))
++	require.NoError(t, vector.AppendBytes(arg.ctr.joinBat1.Vecs[1], []byte("original"), false, mp))
++	arg.ctr.joinBat1.SetRowCount(1)
++	original := append([]*vector.Vector(nil), arg.ctr.joinBat1.Vecs...)
++	require.NoError(t, vector.AppendBytes(borrowed, bytes.Repeat([]byte("x"), 32768), false, mp))
++
++	err = arg.ctr.withCompatibilityODKUScratch(arg, proc, func(scratch *odkuReplay, rowTypes *[]types.Type) error {
++		arg.ctr.joinBat1.Vecs[1] = borrowed
++		return arg.ctr.stabilizeCompatibilityODKU(arg, proc, scratch, rowTypes)
++	})
++	require.ErrorIs(t, err, mpool.ErrAllocationAccountCapacity)
++	require.Same(t, original[0], arg.ctr.joinBat1.Vecs[0])
++	require.Same(t, original[1], arg.ctr.joinBat1.Vecs[1])
++	require.Equal(t, "original", arg.ctr.joinBat1.Vecs[1].GetStringAt(0))
++	require.Len(t, borrowed.GetBytesAt(0), 32768)
++	require.Zero(t, account.Snapshot().Used)
++
++	borrowed.CleanOnlyData()
++	require.NoError(t, vector.AppendBytes(borrowed, []byte("small"), false, mp))
++	wantErr := errors.New("injected expression error")
++	err = arg.ctr.withCompatibilityODKUScratch(arg, proc, func(scratch *odkuReplay, rowTypes *[]types.Type) error {
++		arg.ctr.joinBat1.Vecs[1] = borrowed
++		if err := arg.ctr.stabilizeCompatibilityODKU(arg, proc, scratch, rowTypes); err != nil {
++			return err
++		}
++		return wantErr
++	})
++	require.ErrorIs(t, err, wantErr)
++	require.Same(t, original[1], arg.ctr.joinBat1.Vecs[1])
++	require.Zero(t, account.Snapshot().Used)
++}
++
+ func writeDedupSpillBatch(t *testing.T, proc *process.Process, name string, value int32) *os.File {
+ 	spillfs, err := proc.GetSpillFileService()
+ 	require.NoError(t, err)
+diff --git a/pkg/sql/colexec/dedupjoin/ordered_odku.go b/pkg/sql/colexec/dedupjoin/ordered_odku.go
+index 8b872b0488..13612d1d99 100644
+--- a/pkg/sql/colexec/dedupjoin/ordered_odku.go
++++ b/pkg/sql/colexec/dedupjoin/ordered_odku.go
+@@ -79,6 +79,13 @@ func (o *odkuReplay) clearBucket(proc *process.Process) {
+ 			b.Clean(proc.Mp())
+ 		}
+ 	}
++	o.freeBanks(proc)
++	checksI, checksU, fkChecks, mapping := o.insertChecks, o.updateChecks, o.fkChecks, o.inputToImage
++	insertColumns, updateColumns := o.insertColumns, o.updateColumns
++	insertRunColumns := o.insertRunColumns
++	*o = odkuReplay{insertChecks: checksI, updateChecks: checksU, fkChecks: fkChecks, inputToImage: mapping, insertColumns: insertColumns, updateColumns: updateColumns, insertRunColumns: insertRunColumns}
++}
++func (o *odkuReplay) freeBanks(proc *process.Process) {
+ 	for _, bank := range o.banks {
+ 		for _, v := range bank {
+ 			if v != nil {
+@@ -86,10 +93,7 @@ func (o *odkuReplay) clearBucket(proc *process.Process) {
+ 			}
+ 		}
+ 	}
+-	checksI, checksU, fkChecks, mapping := o.insertChecks, o.updateChecks, o.fkChecks, o.inputToImage
+-	insertColumns, updateColumns := o.insertColumns, o.updateColumns
+-	insertRunColumns := o.insertRunColumns
+-	*o = odkuReplay{insertChecks: checksI, updateChecks: checksU, fkChecks: fkChecks, inputToImage: mapping, insertColumns: insertColumns, updateColumns: updateColumns, insertRunColumns: insertRunColumns}
++	o.banks = [2][]*vector.Vector{}
+ }
+ func (a *DedupJoin) prepareODKU(proc *process.Process) error {
+ 	if !a.OrderedOdku {
+@@ -315,13 +319,34 @@ func (o *odkuReplay) update(a *DedupJoin, final bool, proc *process.Process) err
+ 	if final {
+ 		return nil
+ 	}
++	if !a.EmitActionRows && len(a.ForeignKeyChecks) == 0 && len(a.UpdateColExprList) > 0 {
++		incomingOnly := true
++		for _, expr := range a.UpdateColExprList {
++			if expr == nil || expr.GetCol() == nil || expr.GetCol().RelPos != 1 {
++				incomingOnly = false
++				break
++			}
++		}
++		// The next action overwrites every mutable position before checks or
++		// publication. No reader needs this intermediate image to survive reuse
++		// of the incoming vectors; unmodified columns remain owned by base.
++		if incomingOnly {
++			return nil
++		}
++	}
++	return o.stabilize(a, a.LeftTypes, proc)
++}
++
++// stabilize copies a live image into a completely cold owned bank. rowTypes
++// describes the original image layout, which can differ between join sides.
++func (o *odkuReplay) stabilize(a *DedupJoin, rowTypes []types.Type, proc *process.Process) error {
+ 	for bank := range o.banks {
+ 		if len(o.banks[bank]) == 0 {
+ 			o.banks[bank] = make([]*vector.Vector, len(o.mutable))
+ 		}
+ 		for i, p := range o.mutable {
+ 			if o.banks[bank][i] == nil {
+-				v, e := a.newResultVector(a.LeftTypes[p])
++				v, e := a.newResultVector(rowTypes[p])
+ 				if e != nil {
+ 					return e
+ 				}
+@@ -332,22 +357,48 @@ func (o *odkuReplay) update(a *DedupJoin, final bool, proc *process.Process) err
+ 	// Select a completely cold bank before cleaning any destination. A column
+ 	// assignment can borrow another column's bank vector or a VALUES vector.
+ 	bank := -1
+-	for b := range o.banks {
+-		live := false
+-		for _, dst := range o.banks[b] {
+-			for _, src := range o.image.Vecs {
+-				if src == dst {
+-					live = true
++	if len(o.image.Vecs) <= 128 || len(o.mutable) <= 4 {
++		// A bounded dimension keeps the direct scan linear and avoids a map
++		// allocation for small rows or updates touching few columns.
++		for b := range o.banks {
++			live := false
++			for _, dst := range o.banks[b] {
++				for _, src := range o.image.Vecs {
++					if src == dst {
++						live = true
++						break
++					}
++				}
++				if live {
+ 					break
+ 				}
+ 			}
+-			if live {
++			if !live {
++				bank = b
+ 				break
+ 			}
+ 		}
+-		if !live {
+-			bank = b
+-			break
++	} else {
++		// Rebuild membership after every action: expression results may borrow
++		// any column's vector, so matching only the same position is unsafe.
++		owners := make(map[*vector.Vector]uint8, 2*len(o.mutable))
++		for b := range o.banks {
++			for _, dst := range o.banks[b] {
++				owners[dst] |= 1 << uint(b)
++			}
++		}
++		var live uint8
++		for _, src := range o.image.Vecs {
++			live |= owners[src]
++			if live == 3 {
++				break
++			}
++		}
++		for b := range o.banks {
++			if live&(1<<uint(b)) == 0 {
++				bank = b
++				break
++			}
+ 		}
+ 	}
+ 	if bank < 0 {
+diff --git a/pkg/sql/colexec/dedupjoin/ordered_odku_test.go b/pkg/sql/colexec/dedupjoin/ordered_odku_test.go
+index ac0840d1df..39ccbb7de2 100644
+--- a/pkg/sql/colexec/dedupjoin/ordered_odku_test.go
++++ b/pkg/sql/colexec/dedupjoin/ordered_odku_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+ 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+ 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+ 	"github.com/matrixorigin/matrixone/pkg/container/types"
+@@ -20,11 +21,142 @@ import (
+ 	"github.com/stretchr/testify/require"
+ )
+ 
++func TestODKUColdBankCrossColumnAliases(t *testing.T) {
++	for _, width := range []int{128, 129} {
++		t.Run(fmt.Sprintf("width=%d", width), func(t *testing.T) {
++			mp := mpool.MustNewZero()
++			proc := testutil.NewProcessWithMPool(t, "", mp)
++			typ := types.T_int64.ToType()
++			rowTypes := make([]types.Type, width)
++			for i := range rowTypes {
++				rowTypes[i] = typ
++			}
++			input := batch.NewWithSize(len(rowTypes))
++			arg := &DedupJoin{LeftTypes: rowTypes}
++			account := installTestAllocation(t, arg)
++			t.Cleanup(func() {
++				arg.Reset(proc, false, nil)
++				arg.Free(proc, false, nil)
++				input.Clean(mp)
++				proc.Free()
++				require.Zero(t, account.Snapshot().Used)
++				require.Zero(t, mp.CurrNB())
++			})
++			for i := range rowTypes {
++				input.Vecs[i] = vector.NewVec(typ)
++				require.NoError(t, vector.AppendFixed(input.Vecs[i], int64(1000+i), false, mp))
++			}
++			input.SetRowCount(1)
++			o := &arg.ctr.odku
++			o.image = batch.NewWithSize(len(rowTypes))
++			copy(o.image.Vecs, input.Vecs)
++			o.image.SetRowCount(1)
++			o.before = batch.NewWithSize(len(rowTypes))
++			o.before.SetRowCount(1)
++			// Bank slot 0 belongs to column 1, but its value is borrowed by column 0.
++			// Five mutable columns exercise both sides of the bounded-scan cutoff.
++			o.mutable = []int32{1, 0, 2, 3, 4}
++			for b := range o.banks {
++				o.banks[b] = make([]*vector.Vector, len(o.mutable))
++				for i := range o.banks[b] {
++					var err error
++					o.banks[b][i], err = arg.newResultVector(typ)
++					require.NoError(t, err)
++					require.NoError(t, vector.AppendFixed(o.banks[b][i], int64(2000+b*100+i), false, mp))
++				}
++			}
++			o.image.Vecs[0] = o.banks[0][0]
++			require.NoError(t, o.update(arg, false, proc))
++			require.Equal(t, int64(2000), vector.GetFixedAtNoTypeCheck[int64](o.image.Vecs[0], 0))
++			require.Equal(t, int64(1001), vector.GetFixedAtNoTypeCheck[int64](o.image.Vecs[1], 0))
++			require.Equal(t, int64(2000), vector.GetFixedAtNoTypeCheck[int64](o.banks[0][0], 0))
++			require.Same(t, o.banks[1][1], o.image.Vecs[0])
++
++			// The live set must be recomputed: bank 1 is now live and bank 0 is cold.
++			require.NoError(t, o.update(arg, false, proc))
++			require.Same(t, o.banks[0][1], o.image.Vecs[0])
++			require.Equal(t, int64(2000), vector.GetFixedAtNoTypeCheck[int64](o.image.Vecs[0], 0))
++
++			// A live vector from each bank, even in nonmutable columns, leaves no
++			// safe destination and must not change the image.
++			o.image.Vecs[10], o.image.Vecs[11] = o.banks[0][0], o.banks[1][0]
++			before := append([]*vector.Vector(nil), o.image.Vecs...)
++			err := o.update(arg, false, proc)
++			require.True(t, moerr.IsMoErrCode(err, moerr.ErrInternal), "%v", err)
++			for i := range before {
++				require.Same(t, before[i], o.image.Vecs[i])
++			}
++		})
++	}
++}
++
++func TestODKUColdBankCopyFailureDoesNotPublish(t *testing.T) {
++	mp := mpool.MustNewZero()
++	proc := testutil.NewProcessWithMPool(t, "", mp)
++	rowTypes := []types.Type{types.T_int64.ToType(), types.T_varchar.ToType()}
++	arg := &DedupJoin{LeftTypes: rowTypes}
++	registry, err := mpool.NewAllocationAccountRegistry(1, 64)
++	require.NoError(t, err)
++	account, err := registry.Open(8192)
++	require.NoError(t, err)
++	require.NoError(t, arg.SetAllocationAccount(account))
++	input := batch.NewWithSize(len(rowTypes))
++	t.Cleanup(func() {
++		arg.Reset(proc, false, nil)
++		arg.Free(proc, false, nil)
++		input.Clean(mp)
++		proc.Free()
++		require.Zero(t, account.Snapshot().Used)
++		require.Zero(t, mp.CurrNB())
++	})
++	for i, typ := range rowTypes {
++		input.Vecs[i] = vector.NewVec(typ)
++	}
++	require.NoError(t, vector.AppendFixed(input.Vecs[0], int64(7), false, mp))
++	large := strings.Repeat("wide", 8192)
++	require.NoError(t, vector.AppendBytes(input.Vecs[1], []byte(large), false, mp))
++	input.SetRowCount(1)
++	start := func() *odkuReplay {
++		o := &arg.ctr.odku
++		o.image = batch.NewWithSize(len(rowTypes))
++		copy(o.image.Vecs, input.Vecs)
++		o.image.SetRowCount(1)
++		o.before = batch.NewWithSize(len(rowTypes))
++		o.before.SetRowCount(1)
++		o.mutable = []int32{0, 1}
++		return o
++	}
++	o := start()
++	err = o.update(arg, false, proc)
++	require.ErrorIs(t, err, mpool.ErrAllocationAccountCapacity)
++	require.Equal(t, 1, o.banks[0][0].Length(), "the first column was copied before admission failed")
++	require.Same(t, input.Vecs[0], o.image.Vecs[0])
++	require.Same(t, input.Vecs[1], o.image.Vecs[1])
++	require.Equal(t, large, input.Vecs[1].GetStringAt(0))
++	arg.Reset(proc, true, err)
++	require.Zero(t, account.Snapshot().Used)
++
++	// Reuse the same owner after cleanup with a value that fits the budget.
++	input.Vecs[1].CleanOnlyData()
++	require.NoError(t, vector.AppendBytes(input.Vecs[1], []byte("small"), false, mp))
++	o = start()
++	require.NoError(t, o.update(arg, false, proc))
++	require.Equal(t, "small", o.image.Vecs[1].GetStringAt(0))
++}
++
+ // Executor results and VALUES vectors are borrowed. Both the final-action
+ // shortcut and an intermediate image must survive their owners being reused.
+ func TestODKUFinalImageOwnsVarlenOutput(t *testing.T) {
+-	for _, intermediate := range []bool{false, true} {
+-		t.Run(fmt.Sprintf("intermediate=%t", intermediate), func(t *testing.T) {
++	for _, tc := range []struct {
++		name                       string
++		intermediate, incomingOnly bool
++	}{
++		{name: "final expression"},
++		{name: "intermediate expression", intermediate: true},
++		{name: "final incoming", incomingOnly: true},
++		{name: "intermediate incoming", intermediate: true, incomingOnly: true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
+ 			mp := mpool.MustNewZero()
+ 			proc := testutil.NewProcessWithMPool(t, "", mp)
+ 			typ := types.T_varchar.ToType()
+@@ -34,7 +166,10 @@ func TestODKUFinalImageOwnsVarlenOutput(t *testing.T) {
+ 			fn, err := function.GetFunctionByName(proc.Ctx, "concat", []types.Type{typ, typ})
+ 			require.NoError(t, err)
+ 			expr := &plan.Expr{Typ: plan.Type{Id: int32(types.T_varchar)}, Expr: &plan.Expr_F{F: &plan.Function{Func: &plan.ObjectRef{Obj: fn.GetEncodedOverloadID(), ObjName: "concat"}, Args: []*plan.Expr{col(0), col(1)}}}}
+-			arg := &DedupJoin{LeftTypes: []types.Type{typ}, RightTypes: []types.Type{typ}, UpdateColIdxList: []int32{0}, Result: []colexec.ResultPos{{Rel: 1, Pos: 0}}}
++			if tc.incomingOnly {
++				expr = col(1)
++			}
++			arg := &DedupJoin{LeftTypes: []types.Type{typ}, RightTypes: []types.Type{typ}, UpdateColIdxList: []int32{0}, UpdateColExprList: []*plan.Expr{expr}, Result: []colexec.ResultPos{{Rel: 1, Pos: 0}}}
+ 			account := installTestAllocation(t, arg)
+ 			t.Cleanup(func() {
+ 				arg.Reset(proc, false, nil)
+@@ -67,13 +202,27 @@ func TestODKUFinalImageOwnsVarlenOutput(t *testing.T) {
+ 				value := strings.Repeat(prefix, 50)
+ 				o.incoming.Vecs[0].CleanOnlyData()
+ 				require.NoError(t, vector.AppendBytes(o.incoming.Vecs[0], []byte(value), false, mp))
+-				if intermediate {
++				if tc.intermediate {
+ 					require.NoError(t, o.update(arg, false, proc))
+-					prefix += value
++					if tc.incomingOnly {
++						o.incoming.Vecs[0].CleanOnlyData()
++						require.NoError(t, o.incoming.Vecs[0].UnionNull(mp))
++						require.NoError(t, o.update(arg, false, proc))
++						require.True(t, o.image.Vecs[0].IsNull(0))
++						o.incoming.Vecs[0].CleanOnlyData()
++						value = strings.Repeat(prefix+"replacement-", 30)
++						require.NoError(t, vector.AppendBytes(o.incoming.Vecs[0], []byte(value), false, mp))
++					} else {
++						prefix += value
++					}
+ 				}
+ 				require.NoError(t, o.update(arg, true, proc))
+ 				require.NoError(t, o.appendRow(arg, true, proc))
+-				expected = append(expected, prefix+value)
++				if tc.incomingOnly {
++					expected = append(expected, value)
++				} else {
++					expected = append(expected, prefix+value)
++				}
+ 				// Reuse every borrowed source after publication, including the
+ 				// expression executor on the next group.
+ 				clear(o.image.Vecs)
+@@ -84,7 +233,7 @@ func TestODKUFinalImageOwnsVarlenOutput(t *testing.T) {
+ 			for i, want := range expected {
+ 				require.Equal(t, want, arg.ctr.rbat.Vecs[0].GetStringAt(i))
+ 			}
+-			if !intermediate {
++			if !tc.intermediate || tc.incomingOnly {
+ 				require.Empty(t, o.banks[0])
+ 				require.Empty(t, o.banks[1])
+ 			}
+@@ -117,6 +266,7 @@ func TestODKUFinalAppendFailureReleasesBorrowedImage(t *testing.T) {
+ 		require.Zero(t, mp.CurrNB())
+ 	})
+ 	expr := &plan.Expr{Typ: plan.Type{Id: int32(types.T_varchar)}, Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: 1, ColPos: 1}}}
++	arg.UpdateColExprList = []*plan.Expr{expr}
+ 	arg.ctr.exprExecs, err = hashbuild.NewExpressionExecutors(proc, []*plan.Expr{expr}, account)
+ 	require.NoError(t, err)
+ 	o := &arg.ctr.odku
+@@ -131,6 +281,9 @@ func TestODKUFinalAppendFailureReleasesBorrowedImage(t *testing.T) {
+ 	o.inputToImage = []int32{0, 1}
+ 	t.Cleanup(func() { o.incoming = nil })
+ 	require.NoError(t, arg.resetRBat())
++	// An incoming-only intermediate action leaves a borrowed image, without
++	// allocating a bank. A later publication failure must detach it safely.
++	require.NoError(t, o.update(arg, false, proc))
+ 	require.NoError(t, o.update(arg, true, proc))
+ 	err = o.appendRow(arg, true, proc)
+ 	require.ErrorIs(t, err, mpool.ErrAllocationAccountCapacity)
+diff --git a/pkg/sql/compile/compile.go b/pkg/sql/compile/compile.go
+index 3003e69174..46d59d9e64 100644
+--- a/pkg/sql/compile/compile.go
++++ b/pkg/sql/compile/compile.go
+@@ -5864,7 +5864,13 @@ func (c *Compile) compileMultiUpdate(node *plan.Node, ss []*Scope) ([]*Scope, er
+ 
+ func (c *Compile) compilePreInsertUk(node *plan.Node, ss []*Scope) []*Scope {
+ 	if node.PreInsertUkCtx != nil && node.PreInsertUkCtx.OdkuTargetArbitration {
+-		ss = []*Scope{c.newMergeScope(ss)}
++		if len(ss) == 1 && c.canInlineODKUArbiter(ss[0]) {
++			// Keep concurrent dependency scheduling even though this single
++			// local stream needs no additional merge/connector boundary.
++			c.hasMergeOp = true
++		} else {
++			ss = []*Scope{c.newMergeScope(ss)}
++		}
+ 	}
+ 	currentFirstFlag := c.anal.isFirst
+ 	for i := range ss {
+@@ -5876,6 +5882,14 @@ func (c *Compile) compilePreInsertUk(node *plan.Node, ss []*Scope) []*Scope {
+ 	return ss
+ }
+ 
++func (c *Compile) canInlineODKUArbiter(s *Scope) bool {
++	return s != nil && s.RootOp != nil && s.Proc != nil && s.Proc.Base != nil &&
++		c.proc != nil && c.proc.Base != nil && s.Proc.Base == c.proc.Base &&
++		s.NodeInfo.Addr != "" && c.addr != "" && sameExecutionAddr(s.NodeInfo.Addr, c.addr) &&
++		s.NodeInfo.Mcpu == 1 && (s.Magic == Merge || s.Magic == Remote) &&
++		!s.IsRemote && !s.IsEnd && !s.IsLoad && !s.IsTbFunc && !s.VectorQueryScope
++}
++
+ func (c *Compile) compilePreInsertSK(node *plan.Node, ss []*Scope) []*Scope {
+ 	currentFirstFlag := c.anal.isFirst
+ 	for i := range ss {
+@@ -6155,8 +6169,9 @@ func (c *Compile) newMergeScope(ss []*Scope) *Scope {
+ 	ss = c.groupRemoteRunDependenciesByCNIfNeeded(ss, rs.NodeInfo)
+ 	rs.PreScopes = ss
+ 
+-	rs.Proc = c.proc.NewNoContextChildProc(len(ss))
++	rs.Proc = c.proc.NewNoContextChildProc(0)
+ 	if len(ss) > 0 {
++		rs.Proc.Reg.MergeReceivers = make([]*process.WaitRegister, len(ss))
+ 		rs.Proc.Base.LoadTag = ss[0].Proc.Base.LoadTag
+ 	}
+ 
+@@ -6173,7 +6188,7 @@ func (c *Compile) newMergeScope(ss []*Scope) *Scope {
+ 		if sameExecutionNode(rs.NodeInfo, ss[i].NodeInfo) {
+ 			nilBatchCnt = ss[i].NodeInfo.Mcpu
+ 		}
+-		rs.Proc.Reg.MergeReceivers[j].ResetForReuse(mergeReceiverChannelBufferSize(ss[i]), nilBatchCnt)
++		rs.Proc.Reg.MergeReceivers[j] = process.NewPipelineEdge(mergeReceiverChannelBufferSize(ss[i]), nilBatchCnt)
+ 		// waring: `connector` operator is not used as an input/output analyze,
+ 		// and `connector` operator cannot play the role of IsFirst/IsLast
+ 		connArg := connector.NewArgument().WithReg(rs.Proc.Reg.MergeReceivers[j])
+diff --git a/pkg/sql/compile/scope_test.go b/pkg/sql/compile/scope_test.go
+index 6c0d2fc618..f2ff6ad9a2 100644
+--- a/pkg/sql/compile/scope_test.go
++++ b/pkg/sql/compile/scope_test.go
+@@ -54,6 +54,7 @@ import (
+ 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/merge"
+ 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/mergetop"
+ 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/offset"
++	"github.com/matrixorigin/matrixone/pkg/sql/colexec/preinsertunique"
+ 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/projection"
+ 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/shuffle"
+ 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/table_scan"
+@@ -912,26 +913,99 @@ func TestConstructLocalDispatchFromScopesRejectsRemoteTarget(t *testing.T) {
+ }
+ 
+ func TestNewMergeScopeLimitsLoadReceiverChannelBuffer(t *testing.T) {
+-	testCompile := NewMockCompile(t)
+-	testCompile.anal = &AnalyzeModule{qry: &plan.Query{}}
+-
+-	normalScope := &Scope{
+-		NodeInfo: engine.Node{Addr: "cn1:6001", Mcpu: 8},
+-		Proc:     testCompile.proc.NewNoContextChildProc(0),
+-	}
+-	normalMerge := testCompile.newMergeScope([]*Scope{normalScope})
+-	_, normalCap := process.WaitRegisterChannelState(normalMerge.Proc.Reg.MergeReceivers[0])
+-	require.Equal(t, 8, normalCap)
+-
+-	loadProc := testCompile.proc.NewNoContextChildProc(0)
+-	loadProc.Base.LoadTag = true
+-	loadScope := &Scope{
+-		NodeInfo: engine.Node{Addr: "cn1:6001", Mcpu: 8},
+-		Proc:     loadProc,
++	tests := []struct {
++		name                           string
++		address                        string
++		mcpu, capacity, nilCount, ends int
++		load, empty                    bool
++	}{
++		{name: "normal", address: "cn1:6001", mcpu: 8, capacity: 8, nilCount: 8, ends: 8},
++		{name: "load", address: "cn1:6001", mcpu: 8, capacity: loadMergeReceiverChannelBufferSize, nilCount: 8, ends: 8, load: true},
++		{name: "remote", address: "cn2:6001", mcpu: 8, capacity: 8, nilCount: 1, ends: 1},
++		{name: "default end count", address: "cn1:6001", capacity: 1, ends: 1},
++		{name: "empty", empty: true},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			c := NewMockCompile(t)
++			c.addr = "cn1:6001"
++			c.anal = &AnalyzeModule{qry: &plan.Query{}}
++			c.proc.Base.LoadTag = tc.load
++			mp := c.proc.Mp()
++			t.Cleanup(func() { c.proc.Free(); require.Zero(t, mp.CurrNB()) })
++			var inputs []*Scope
++			if !tc.empty {
++				input := newScope(Remote)
++				input.NodeInfo = engine.Node{Addr: tc.address, Mcpu: tc.mcpu}
++				input.Proc = c.proc.NewNoContextChildProc(0)
++				input.RootOp = projection.NewArgument()
++				inputs = []*Scope{input}
++			}
++			merged := c.newMergeScope(inputs)
++			t.Cleanup(merged.release)
++			require.Equal(t, inputs, merged.PreScopes)
++			require.Same(t, c.proc.Base, merged.Proc.Base)
++			require.Equal(t, tc.load, merged.Proc.Base.LoadTag)
++			if tc.empty {
++				require.Nil(t, merged.Proc.Reg.MergeReceivers)
++				return
++			}
++			require.Len(t, merged.Proc.Reg.MergeReceivers, 1)
++			reg := merged.Proc.Reg.MergeReceivers[0]
++			require.Same(t, reg, inputs[0].RootOp.(*connector.Connector).Reg)
++			checkFresh := func() {
++				require.Equal(t, tc.capacity, cap(reg.Ch2))
++				require.Empty(t, reg.Ch2)
++				require.Equal(t, tc.nilCount, reg.NilBatchCnt)
++				require.NoError(t, reg.Err())
++				select {
++				case <-reg.Done():
++					t.Fatal("fresh receiver is done")
++				default:
++				}
++				select {
++				case <-reg.Aborted():
++					t.Fatal("fresh receiver is aborted")
++				default:
++				}
++			}
++			checkFresh()
++			for sent := 0; sent < tc.ends; sent++ {
++				require.True(t, reg.SendEnd())
++				<-reg.Ch2
++				if sent+1 < tc.ends {
++					select {
++					case <-reg.Done():
++						t.Fatal("receiver ended before all senders")
++					default:
++					}
++				}
++			}
++			select {
++			case <-reg.Done():
++			default:
++				t.Fatal("receiver did not complete")
++			}
++			reg.ResetForReuse(tc.capacity, tc.nilCount)
++			checkFresh()
++			failure := moerr.NewInternalErrorNoCtx("merge receiver failure")
++			// A bounded LOAD buffer may not hold every sender's notification;
++			// the fatal state must retain the cause even when enqueue is partial.
++			require.Equal(t, tc.capacity >= tc.ends, reg.SendError(failure))
++			require.Same(t, failure, reg.Err())
++			reg.ResetTerminalStateForReuse()
++			checkFresh()
++			require.Equal(t, tc.capacity >= tc.ends, reg.Abort(context.Canceled))
++			require.ErrorIs(t, reg.Err(), context.Canceled)
++			select {
++			case <-reg.Aborted():
++			default:
++				t.Fatal("receiver did not abort")
++			}
++			reg.ResetForReuse(tc.capacity, tc.nilCount)
++			checkFresh()
++		})
+ 	}
+-	loadMerge := testCompile.newMergeScope([]*Scope{loadScope})
+-	_, loadCap := process.WaitRegisterChannelState(loadMerge.Proc.Reg.MergeReceivers[0])
+-	require.Equal(t, loadMergeReceiverChannelBufferSize, loadCap)
+ }
+ 
+ func TestConstructLocalDispatchFromScopesRejectsInvalidInputs(t *testing.T) {
+@@ -2989,3 +3063,88 @@ func TestRetainedExternalSourceRechecksRole(t *testing.T) {
+ 	_, err = c.getExternParam(c.proc, scan, string(encoded))
+ 	require.ErrorContains(t, err, "only the sys account moadmin role")
+ }
++
++func TestCompileODKUArbiterPreservesSingleLocalOwner(t *testing.T) {
++	for _, tc := range []struct {
++		name                       string
++		change                     func(*Compile, *Scope)
++		inline, ordinary, multiple bool
++	}{
++		{name: "local remote scope", inline: true},
++		{name: "existing merge dependencies", inline: true, change: func(c *Compile, s *Scope) {
++			s.Magic = Merge
++			s.RootOp.Release()
++			s.RootOp = merge.NewArgument()
++			s.Proc.Reg.MergeReceivers = []*process.WaitRegister{process.NewPipelineEdge(1, 1)}
++			child := newScope(Remote)
++			child.NodeInfo = engine.Node{Addr: c.addr, Mcpu: 3}
++			child.Proc = c.proc.NewNoContextChildProc(0)
++			child.RootOp = projection.NewArgument()
++			s.PreScopes = []*Scope{child}
++		}},
++		{name: "remote placement", change: func(_ *Compile, s *Scope) { s.NodeInfo.Addr = "cn2:6001" }},
++		{name: "unknown placement", change: func(_ *Compile, s *Scope) { s.NodeInfo.Addr = "" }},
++		{name: "parallel input", change: func(_ *Compile, s *Scope) { s.NodeInfo.Mcpu = 2 }},
++		{name: "remote execution", change: func(_ *Compile, s *Scope) { s.IsRemote = true }},
++		{name: "ended input", change: func(_ *Compile, s *Scope) { s.IsEnd = true }},
++		{name: "load input", change: func(_ *Compile, s *Scope) { s.IsLoad = true }},
++		{name: "table function", change: func(_ *Compile, s *Scope) { s.IsTbFunc = true }},
++		{name: "vector execution", change: func(_ *Compile, s *Scope) { s.VectorQueryScope = true }},
++		{name: "unsupported scope kind", change: func(_ *Compile, s *Scope) { s.Magic = Normal }},
++		{name: "multiple streams", multiple: true},
++		{name: "ordinary unique insert", ordinary: true, inline: true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			c := NewMockCompile(t)
++			c.addr = "cn1:6001"
++			c.anal = &AnalyzeModule{qry: &plan.Query{}}
++			mp := c.proc.Mp()
++			t.Cleanup(func() { c.proc.Free(); require.Zero(t, mp.CurrNB()) })
++			input := newScope(Remote)
++			input.NodeInfo = engine.Node{Addr: c.addr, Mcpu: 1}
++			input.Proc = c.proc.NewNoContextChildProc(0)
++			input.RootOp = projection.NewArgument()
++			if tc.change != nil {
++				tc.change(c, input)
++			}
++			childOp := input.RootOp
++			dependencies := append([]*Scope(nil), input.PreScopes...)
++			receivers := append([]*process.WaitRegister(nil), input.Proc.Reg.MergeReceivers...)
++			inputs := []*Scope{input}
++			if tc.multiple {
++				other := newScope(Remote)
++				other.NodeInfo = input.NodeInfo
++				other.Proc = c.proc.NewNoContextChildProc(0)
++				other.RootOp = projection.NewArgument()
++				inputs = append(inputs, other)
++			}
++			node := &plan.Node{PreInsertUkCtx: &plan.PreInsertUkCtx{OdkuTargetArbitration: !tc.ordinary}}
++			result := c.compilePreInsertUk(node, inputs)
++			require.Len(t, result, 1)
++			t.Cleanup(func() { ReleaseScopes(result) })
++			arbiter, ok := result[0].RootOp.(*preinsertunique.PreInsertUnique)
++			require.True(t, ok)
++			require.Same(t, node.PreInsertUkCtx, arbiter.PreInsertCtx)
++			require.Equal(t, !tc.ordinary, c.hasMergeOp)
++			if tc.inline {
++				require.Same(t, input, result[0])
++				require.Same(t, childOp, arbiter.GetChildren(0))
++				require.Equal(t, dependencies, result[0].PreScopes)
++				require.Equal(t, receivers, result[0].Proc.Reg.MergeReceivers)
++			} else {
++				require.NotSame(t, input, result[0])
++				require.Equal(t, Merge, result[0].Magic)
++				require.Equal(t, 1, result[0].NodeInfo.Mcpu)
++				require.Equal(t, inputs, result[0].PreScopes)
++				require.Len(t, result[0].Proc.Reg.MergeReceivers, len(inputs))
++				for i, s := range inputs {
++					if s.IsEnd {
++						require.Same(t, childOp, s.RootOp, "ended scopes retain their existing terminal operator")
++					} else {
++						require.Same(t, result[0].Proc.Reg.MergeReceivers[i], s.RootOp.(*connector.Connector).Reg)
++					}
++				}
++			}
++		})
++	}
++}
+diff --git a/pkg/sql/plan/bind_insert.go b/pkg/sql/plan/bind_insert.go
+index 8ad1515233..dd072fe6fa 100644
+--- a/pkg/sql/plan/bind_insert.go
++++ b/pkg/sql/plan/bind_insert.go
+@@ -1916,6 +1916,38 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindInsert(
+ 	// than erroring. The resolved target_pk re-keys the main DEDUP-update join
+ 	// below; the per-unique-key FAIL dedup is kept as in-batch duplicate protection.
+ 	useTargetPk := onDupAction == plan.Node_UPDATE && !builder.canSkipDedup(tableDef)
++	if onDupAction == plan.Node_UPDATE && !useTargetPk {
++		// The legacy evaluator stages every RHS. It cannot safely consume the
++		// current-image references used by affected generated columns, or by a
++		// generated chain whose stored input may already be inconsistent.
++		needsV12 := false
++		for _, col := range tableDef.Cols {
++			if col.GeneratedCol == nil {
++				continue
++			}
++			if affectedCols[col.Name] {
++				needsV12 = true
++				break
++			}
++			for _, pos := range collectRefColPos(col.GeneratedCol.Expr) {
++				if pos >= 0 && int(pos) < len(tableDef.Cols) && tableDef.Cols[pos].GeneratedCol != nil {
++					needsV12 = true
++					break
++				}
++			}
++			if needsV12 {
++				break
++			}
++		}
++		if needsV12 {
++			if builder.compCtx.GetProcess() == nil {
++				return 0, moerr.NewNotSupported(builder.GetContext(), "ordered ODKU requires all CNs to support protocol version 12")
++			}
++			if err := builder.requireOrderedODKUProtocol(); err != nil {
++				return 0, err
++			}
++		}
++	}
+ 	targetPkPos := int32(-1)
+ 	effectivePkPos := int32(-1)
+ 	var actionFKs []*plan.OdkuForeignKeyCheck
+@@ -3496,6 +3528,7 @@ func (builder *QueryBuilder) appendNodesForInsertStmt(
+ 	genColIdxToProj1Pos := make(map[int]int)
+ 	genColIdxToProj2Pos := make(map[int]int)
+ 	generatedColIdxs := make([]int, 0)
++	tmpCtx := NewBindContext(builder, bindCtx)
+ 
+ 	for i, col := range tableDef.Cols {
+ 		if oldExpr, exists := insertColToExpr[col.Name]; exists {
+@@ -3590,6 +3623,43 @@ func (builder *QueryBuilder) appendNodesForInsertStmt(
+ 		}
+ 	}
+ 
++	// Generated expressions share the materialized base/default values. A
++	// copied volatile default must not be evaluated independently for each
++	// generated column and for the stored base column.
++	materialize := false
++	if len(generatedColIdxs) > 0 {
++		for _, expr := range projList1 {
++			if expr != nil && expr.GetCol() == nil && expr.GetLit() == nil {
++				materialize = true
++				break
++			}
++		}
++	}
++	if materialize {
++		childTag := builder.genNewBindTag()
++		childExprs := make([]*plan.Expr, 0, len(projList1)-len(generatedColIdxs))
++		for pos, expr := range projList1 {
++			if expr == nil {
++				continue
++			}
++			childPos := int32(len(childExprs))
++			childExprs = append(childExprs, expr)
++			projList1[pos] = &plan.Expr{
++				Typ: expr.Typ,
++				Expr: &plan.Expr_Col{Col: &plan.ColRef{
++					RelPos: childTag,
++					ColPos: childPos,
++				}},
++			}
++		}
++		lastNodeID = builder.appendNode(&plan.Node{
++			NodeType:    plan.Node_PROJECT,
++			ProjectList: childExprs,
++			Children:    []int32{lastNodeID},
++			BindingTags: []int32{childTag},
++		}, tmpCtx)
++	}
++
+ 	for _, i := range generatedColIdxs {
+ 		col := tableDef.Cols[i]
+ 		genExpr := builder.applyGeneratedColumnAssignmentCast(
+@@ -3634,7 +3704,6 @@ func (builder *QueryBuilder) appendNodesForInsertStmt(
+ 		}
+ 	}
+ 
+-	tmpCtx := NewBindContext(builder, bindCtx)
+ 	lastNodeID = builder.appendNode(&plan.Node{
+ 		NodeType:    plan.Node_PROJECT,
+ 		ProjectList: projList1,
+diff --git a/pkg/sql/plan/odku_order.go b/pkg/sql/plan/odku_order.go
+index 646cd6c7b5..24a34a1cd7 100644
+--- a/pkg/sql/plan/odku_order.go
++++ b/pkg/sql/plan/odku_order.go
+@@ -42,7 +42,16 @@ func dedupODKUExpressions(c *plan.DedupJoinCtx) []*plan.Expr {
+ 	if c == nil {
+ 		return nil
+ 	}
+-	r := append([]*plan.Expr{}, c.UpdateColExprList...)
++	n := len(c.UpdateColExprList) + len(c.InputColumns) +
++		len(c.InsertActionChecks) + len(c.UpdateActionChecks) + len(c.ForeignKeyChecks)
++	if c.SourceOrdinal != nil {
++		n++
++	}
++	if c.ActionFinal != nil {
++		n++
++	}
++	r := make([]*plan.Expr, 0, n)
++	r = append(r, c.UpdateColExprList...)
+ 	r = append(r, c.InputColumns...)
+ 	r = append(r, c.InsertActionChecks...)
+ 	r = append(r, c.UpdateActionChecks...)
+diff --git a/pkg/sql/plan/pushdown.go b/pkg/sql/plan/pushdown.go
+index 6288ac3fa3..e7dc43ce6e 100644
+--- a/pkg/sql/plan/pushdown.go
++++ b/pkg/sql/plan/pushdown.go
+@@ -535,6 +535,21 @@ func (builder *QueryBuilder) pushdownFilters(nodeID int32, filters []*plan.Expr,
+ 		node.Children[1] = childID
+ 
+ 	case plan.Node_PROJECT:
++		// Substituting a non-removable projection into a filter would evaluate
++		// it again, possibly producing a different value or repeating a side
++		// effect. Keep the filter above the materialization boundary.
++		if len(filters) > 0 {
++			for _, expr := range node.ProjectList {
++				if expr == nil || !exprCanRemoveProject(expr) {
++					childID, residual := builder.pushdownFilters(node.Children[0], nil, separateNonEquiConds)
++					if len(residual) > 0 {
++						childID = builder.appendNode(&plan.Node{NodeType: plan.Node_FILTER, Children: []int32{childID}, FilterList: residual}, nil)
++					}
++					node.Children[0] = childID
++					return originalNodeID, filters
++				}
++			}
++		}
+ 		child := builder.qry.Nodes[node.Children[0]]
+ 		if (child.NodeType == plan.Node_VALUE_SCAN || child.NodeType == plan.Node_EXTERNAL_SCAN) && child.RowsetData == nil {
+ 			cantPushdown = filters
+diff --git a/pkg/sql/plan/pushdown_test.go b/pkg/sql/plan/pushdown_test.go
+index 69c6a65e4c..fdf1432a42 100644
+--- a/pkg/sql/plan/pushdown_test.go
++++ b/pkg/sql/plan/pushdown_test.go
+@@ -773,6 +773,36 @@ func TestFunctionScanDoesNotDropMixedTagFilter(t *testing.T) {
+ 	require.Empty(t, builder.qry.Nodes[1].FilterList)
+ }
+ 
++func TestPushdownKeepsVolatileProjectBoundary(t *testing.T) {
++	for _, volatile := range []bool{false, true} {
++		t.Run(fmt.Sprintf("volatile=%t", volatile), func(t *testing.T) {
++			ctx := NewMockCompilerContext(true)
++			builder := NewQueryBuilder(plan.Query_SELECT, ctx, false, false)
++			scanTag, projectTag := builder.GenNewBindTag(), builder.GenNewBindTag()
++			expr := GetColExpr(Type{Id: int32(types.T_int64)}, scanTag, 0)
++			if volatile {
++				var err error
++				expr, err = BindFuncExprImplByPlanExpr(ctx.GetContext(), "uuid", nil)
++				require.NoError(t, err)
++			}
++			filter, err := BindFuncExprImplByPlanExpr(ctx.GetContext(), "isnotnull", []*plan.Expr{GetColExpr(expr.Typ, projectTag, 0)})
++			require.NoError(t, err)
++			builder.qry.Nodes = []*plan.Node{
++				{NodeType: plan.Node_TABLE_SCAN, BindingTags: []int32{scanTag}},
++				{NodeType: plan.Node_PROJECT, BindingTags: []int32{projectTag}, Children: []int32{0}, ProjectList: []*plan.Expr{expr}},
++			}
++			_, remaining := builder.pushdownFilters(1, []*plan.Expr{filter}, false)
++			if volatile {
++				require.Equal(t, []*plan.Expr{filter}, remaining)
++				require.Empty(t, builder.qry.Nodes[0].FilterList)
++			} else {
++				require.Empty(t, remaining)
++				require.Len(t, builder.qry.Nodes[0].FilterList, 1)
++			}
++		})
++	}
++}
++
+ func makeVectorTopPushdownBuilder(limit uint64) (*QueryBuilder, *plan.Node, *plan.Node) {
+ 	builder := NewQueryBuilder(plan.Query_SELECT, NewMockCompilerContext(true), false, true)
+ 	scanTag := builder.GenNewBindTag()
+diff --git a/pkg/tests/dml/ordered_odku_benchmark_test.go b/pkg/tests/dml/ordered_odku_benchmark_test.go
+index e70ffa99bd..98402c150b 100644
+--- a/pkg/tests/dml/ordered_odku_benchmark_test.go
++++ b/pkg/tests/dml/ordered_odku_benchmark_test.go
+@@ -30,7 +30,7 @@ import (
+ // Copy this exact file to both the clean base and the fix. Run through the
+ // public MySQL frontend; no internal SQL executor or production testing hook.
+ //
+-// Each iteration starts with TRUNCATE plus the same seed, outside the timer.
++// Each iteration starts with TRUNCATE plus the same seed, outside Exec timing.
+ // Only the autocommit ExecContext is timed. Setup, reset, result validation,
+ // SQL construction, connection acquisition and teardown are excluded. The
+ // TRUNCATE means this measures a warm engine with a freshly reset relation;
+@@ -46,10 +46,14 @@ import (
+ //
+ //	-test.run=^$ -test.bench=^BenchmarkOrderedODKU -test.benchtime=7x -test.count=7
+ //
+-// There are three untimed warm-up Execs per benchmark invocation. Each result
++// Three warm-up Execs per invocation are excluded from the samples. Each result
+ // also logs the individual timed Exec durations and reports median/p90. Use
+ // separate base/fix processes, alternate their execution order, and keep the
+ // environment/configuration and benchmark file identical.
++// Use fixed iteration counts for comparisons. The framework timer includes
++// warmups, resets and verification only to calibrate duration-based runs. Avoid
++// toggling it per Exec: reading memory statistics pauses the embedded server.
++// Report Exec samples explicitly; process-wide allocations are not query costs.
+ func BenchmarkOrderedODKU(b *testing.B) {
+ 	embed.RunBaseClusterTests(b, func(cluster embed.Cluster) {
+ 		cn, err := cluster.GetCNService(0)
+@@ -156,33 +160,36 @@ func BenchmarkOrderedODKU(b *testing.B) {
+ 					}
+ 				}
+ 
++				elapsed := make([]time.Duration, 0, b.N)
++				b.ResetTimer()
++				b.StartTimer()
++				defer b.StopTimer()
+ 				for range 3 {
+ 					reset()
+ 					orderedODKUBenchExec(b, ctx, conn, statement)
+ 					verify()
+ 				}
+-				elapsed := make([]time.Duration, 0, b.N)
+-				b.ReportAllocs()
+-				b.ResetTimer() // Remains stopped: all setup above is excluded.
+ 				for range b.N {
+ 					reset()
+-					b.StartTimer()
+ 					start := time.Now()
+ 					_, err := conn.ExecContext(ctx, statement)
+ 					duration := time.Since(start)
+-					b.StopTimer()
+ 					if err != nil {
+ 						b.Fatalf("timed ODKU Exec: %v", err)
+ 					}
+ 					elapsed = append(elapsed, duration)
+ 					verify()
+ 				}
++				b.StopTimer()
+ 				// Report individual samples before sorting: -test.v retains their
+ 				// distribution rather than only the benchmark framework's mean.
+ 				rawNS := make([]int64, len(elapsed))
++				var totalNS int64
+ 				for i, duration := range elapsed {
+ 					rawNS[i] = duration.Nanoseconds()
++					totalNS += rawNS[i]
+ 				}
++				b.ReportMetric(float64(totalNS)/float64(b.N), "ns/op")
+ 				b.Logf("timed_exec_ns=%v actions_per_exec=%d final_rows=%d payload_bytes=%d warmups=3", rawNS, tc.actions, tc.outputRows, len(payload))
+ 				sort.Slice(elapsed, func(i, j int) bool { return elapsed[i] < elapsed[j] })
+ 				median := elapsed[len(elapsed)/2]
+diff --git a/pkg/tests/dml/ordered_odku_test.go b/pkg/tests/dml/ordered_odku_test.go
+index 189f6d44f5..7b397e3318 100644
+--- a/pkg/tests/dml/ordered_odku_test.go
++++ b/pkg/tests/dml/ordered_odku_test.go
+@@ -6,6 +6,8 @@ import (
+ 	"context"
+ 	"database/sql"
+ 	"fmt"
++	"os"
++	"path/filepath"
+ 	"strings"
+ 	"sync"
+ 	"sync/atomic"
+@@ -18,6 +20,7 @@ import (
+ 	"github.com/matrixorigin/matrixone/pkg/clusterservice"
+ 	"github.com/matrixorigin/matrixone/pkg/cnservice"
+ 	moruntime "github.com/matrixorigin/matrixone/pkg/common/runtime"
++	"github.com/matrixorigin/matrixone/pkg/defines"
+ 	"github.com/matrixorigin/matrixone/pkg/embed"
+ 	"github.com/matrixorigin/matrixone/pkg/logutil"
+ 	"github.com/matrixorigin/matrixone/pkg/sql/plan"
+@@ -200,7 +203,7 @@ func TestODKUSystematicSQL(t *testing.T) {
+ 			require.Equal(t, []string{"1|abcd-one|2"}, rows(t, "select * from prefix_keys"))
+ 		})
+ 		t.Run("prepared reuse and rollback", func(t *testing.T) {
+-			exec(t, "create table prepared_rows (id int primary key,u int unique,v int)")
++			exec(t, "create table prepared_rows (id int primary key,u int unique,v int,constraint prepared_positive check(v>=0))")
+ 			stmt, e := conn.PrepareContext(ctx, "insert into prepared_rows(id,u,v) values (?,?,?),(?,?,?) on duplicate key update v=v+values(v)")
+ 			require.NoError(t, e)
+ 			defer stmt.Close()
+@@ -219,12 +222,32 @@ func TestODKUSystematicSQL(t *testing.T) {
+ 			_, e = stmt.ExecContext(ctx, 31, 10, 5, 32, 10, 6)
+ 			require.NoError(t, e)
+ 			require.Equal(t, []string{"21|10|18"}, rows(t, "select * from prepared_rows"))
++			incoming, e := conn.PrepareContext(ctx, "insert into prepared_rows(id,u,v) values (?,?,?),(?,?,?) on duplicate key update v=values(v)")
++			require.NoError(t, e)
++			defer incoming.Close()
++			_, e = incoming.ExecContext(ctx, 41, 10, -1, 42, 10, 4)
++			constraintError(t, e, moerr.ER_CHECK_CONSTRAINT_VIOLATED, "Check constraint 'prepared_positive' is violated")
++			require.Equal(t, []string{"21|10|18"}, rows(t, "select * from prepared_rows"))
++			for _, value := range []int{4, 6} {
++				_, e = incoming.ExecContext(ctx, 41, 10, value-1, 42, 10, value)
++				require.NoError(t, e)
++				require.Equal(t, []string{fmt.Sprintf("21|10|%d", value)}, rows(t, "select * from prepared_rows"))
++			}
+ 		})
+ 		t.Run("insert select preserves explicit source order", func(t *testing.T) {
+-			exec(t, "create table ordered_select (id int primary key,u int unique,v int)")
+-			exec(t, "insert into ordered_select values (1,10,0)")
+-			exec(t, "insert into ordered_select select result+10,10,result from generate_series(1,8193) g order by result on duplicate key update v=values(v)")
+-			require.Equal(t, []string{"1|10|8193"}, rows(t, "select * from ordered_select"))
++			exec(t, "create table ordered_select (id int primary key,u int unique,v int,payload varchar(64),mirror varchar(64))")
++			for _, existing := range []bool{true, false} {
++				exec(t, "truncate table ordered_select")
++				firstID := 11
++				if existing {
++					exec(t, "insert into ordered_select values (1,10,0,'seed','seed')")
++					firstID = 1
++				}
++				// Shared incoming vectors, NULLs and distinct varlen values must
++				// remain correct across the build-batch boundary and group reuse.
++				exec(t, "insert into ordered_select select result+10,10,result,if(result%2=0,null,concat('row-',result)),'unused' from generate_series(1,8193) g order by result on duplicate key update v=values(v),payload=values(payload),mirror=values(payload)")
++				require.Equal(t, []string{fmt.Sprintf("%d|10|8193|row-8193|row-8193", firstID)}, rows(t, "select * from ordered_select"))
++			}
+ 		})
+ 		t.Run("generated images use materialized assignments", func(t *testing.T) {
+ 			exec(t, "create table generated_values (id int primary key,u int unique,a bigint,g bigint generated always as (a*2) stored)")
+@@ -250,6 +273,160 @@ func TestODKUSystematicSQL(t *testing.T) {
+ 			require.ErrorContains(t, e, "update unique key on duplicate")
+ 			require.Equal(t, []string{"1|1|7|2"}, rows(t, "select * from generated_identity"))
+ 		})
++		t.Run("generated assignment modes", func(t *testing.T) {
++			rt := moruntime.ServiceRuntime(cn.ServiceID())
++			oldHints, hadHints := rt.GetGlobalVariables("optimizer_hints")
++			exec(t, "set @odku_saved_hints = @@session.optimizer_hints")
++			t.Cleanup(func() {
++				_, _ = conn.ExecContext(context.Background(), "set session optimizer_hints = @odku_saved_hints")
++				if hadHints {
++					rt.SetGlobalVariables("optimizer_hints", oldHints)
++				} else if current, ok := rt.GetGlobalVariables("optimizer_hints"); ok {
++					rt.CompareAndDeleteGlobalVariables("optimizer_hints", current)
++				}
++			})
++			for _, mode := range []struct{ name, hint string }{{"ordered", ""}, {"compat", "skipDedup=1"}} {
++				t.Run(mode.name, func(t *testing.T) {
++					exec(t, "set session optimizer_hints = '"+mode.hint+"'")
++					table := "generated_mode_" + mode.name
++					exec(t, "create table "+table+" (id int primary key,a int,b int,g int generated always as(a*10+b) stored,h int generated always as(g+1) stored)")
++					exec(t, "insert into "+table+"(id,a,b) values(1,1,0)")
++					exec(t, "insert into "+table+"(id,a,b) values(1,8,8) on duplicate key update a=a+1,b=a")
++					require.Equal(t, []string{"2|2|22|23"}, rows(t, "select a,b,g,h from "+table))
++					exec(t, "insert into "+table+"(id,a,b) values(1,8,8),(1,8,8) on duplicate key update a=a+1,b=a")
++					require.Equal(t, []string{"4|4|44|45"}, rows(t, "select a,b,g,h from "+table))
++					exec(t, "insert into "+table+"(id,a,b) values(1,8,8) on duplicate key update a=a+1,a=a+1,b=a")
++					require.Equal(t, []string{"6|6|66|67"}, rows(t, "select a,b,g,h from "+table))
++					exec(t, "insert into "+table+"(id,a,b) values(1,9,0) on duplicate key update a=values(a),b=a")
++					require.Equal(t, []string{"9|9|99|100"}, rows(t, "select a,b,g,h from "+table))
++					stmt, e := conn.PrepareContext(ctx, "insert into "+table+"(id,a,b) values (?,?,?) on duplicate key update a=?,b=a")
++					require.NoError(t, e)
++					t.Cleanup(func() { require.NoError(t, stmt.Close()) })
++					_, e = stmt.ExecContext(ctx, 1, 0, 0, 7)
++					require.NoError(t, e)
++					require.Equal(t, []string{"7|7|77|78"}, rows(t, "select a,b,g,h from "+table))
++					exec(t, "create table "+table+"_source (v int)")
++					exec(t, "insert into "+table+"_source values (11)")
++					exec(t, "insert into "+table+"(id,a,b) values(1,0,0) on duplicate key update a=(select max(v) from "+table+"_source),b=a")
++					require.Equal(t, []string{"11|11|121|122"}, rows(t, "select a,b,g,h from "+table))
++
++					fresh := table + "_fresh"
++					exec(t, "create table "+fresh+" (id int primary key,a int,b int,g int generated always as(a*10+b) stored,h int generated always as(g+1) stored)")
++					exec(t, "insert into "+fresh+"(id,a,b) values(2,1,0),(2,0,0),(2,0,0) on duplicate key update a=a+1,b=a")
++					require.Equal(t, []string{"3|3|33|34"}, rows(t, "select a,b,g,h from "+fresh))
++
++					volatile := table + "_volatile"
++					exec(t, "create table "+volatile+" (id int primary key,a varchar(64),g varchar(100) generated always as(concat(a,'/g')) stored,h varchar(120) generated always as(concat(g,'/h')) stored)")
++					exec(t, "insert into "+volatile+"(id,a) values(1,'seed')")
++					exec(t, "insert into "+volatile+"(id,a) values(1,'unused') on duplicate key update a=uuid()")
++					require.Equal(t, []string{"1|1|1"}, rows(t, "select a<>'seed',g=concat(a,'/g'),h=concat(g,'/h') from "+volatile))
++
++					defaulted := table + "_defaulted"
++					exec(t, "create table "+defaulted+" (id int primary key,a varchar(64) default (uuid()),b int,g varchar(100) generated always as(concat(a,'/g')) stored,h varchar(120) generated always as(concat(g,'/h')) stored,constraint generated_consistent check(g=concat(a,'/g') and h=concat(g,'/h')))")
++					exec(t, "insert into "+defaulted+"(id,b) values (1,0),(2,0) on duplicate key update b=b+1")
++					exec(t, "insert ignore into "+defaulted+"(id,b) values (3,0),(4,0)")
++					exec(t, "insert into "+defaulted+"(id,b) select result,0 from generate_series(5,6) g on duplicate key update b=b+1")
++					require.Equal(t, []string{"6|6|6"}, rows(t, "select count(*),count(distinct a),sum(if(g=concat(a,'/g') and h=concat(g,'/h'),1,0)) from "+defaulted))
++					defaultStmt, e := conn.PrepareContext(ctx, "insert into "+defaulted+"(id,b) values (?,?) on duplicate key update a=values(a),b=values(b)")
++					require.NoError(t, e)
++					t.Cleanup(func() { require.NoError(t, defaultStmt.Close()) })
++					_, e = defaultStmt.ExecContext(ctx, 1, 7)
++					require.NoError(t, e)
++					require.Equal(t, []string{"7|1|1"}, rows(t, "select b,g=concat(a,'/g'),h=concat(g,'/h') from "+defaulted+" where id=1"))
++					exec(t, "insert into "+defaulted+"(id,a,b) values (7,null,0) on duplicate key update a=values(a)")
++					require.Equal(t, []string{"1|1|1"}, rows(t, "select a is null,g is null,h is null from "+defaulted+" where id=7"))
++					if mode.name == "ordered" {
++						path := filepath.Join(t.TempDir(), "generated-defaults.csv")
++						require.NoError(t, os.WriteFile(path, []byte("8,0\n9,0\n"), 0600))
++						exec(t, "load data infile '"+strings.ReplaceAll(path, "'", "''")+"' into table "+defaulted+" fields terminated by ',' lines terminated by '\\n' (id,b)")
++						require.Equal(t, []string{"2|2"}, rows(t, "select count(*),sum(if(g=concat(a,'/g') and h=concat(g,'/h'),1,0)) from "+defaulted+" where id in (8,9)"))
++					}
++
++					layout := table + "_layout"
++					exec(t, "create table "+layout+" (id bigint auto_increment primary key,shade enum('red','blue'),a varchar(64) default (uuid()),g varchar(100) generated always as(concat(a,'/g')) stored)")
++					exec(t, "insert into "+layout+"(shade) values ('red'),('blue') on duplicate key update shade=values(shade)")
++					require.Equal(t, []string{"2|2|2|2"}, rows(t, "select count(*),count(distinct id),count(distinct shade),sum(if(g=concat(a,'/g'),1,0)) from "+layout))
++					composite := table + "_composite"
++					exec(t, "create table "+composite+" (p int,q int,a varchar(64) default (uuid()),g varchar(100) generated always as(concat(a,'/g')) stored,primary key(p,q))")
++					exec(t, "insert into "+composite+"(p,q) values (1,1),(1,2) on duplicate key update a=values(a)")
++					require.Equal(t, []string{"2|2"}, rows(t, "select count(*),sum(if(g=concat(a,'/g'),1,0)) from "+composite))
++
++					failing := table + "_error"
++					exec(t, "create table "+failing+" (id int primary key,a bigint,b bigint,g bigint generated always as(a*2) stored)")
++					exec(t, "insert into "+failing+"(id,a,b) values (1,1,0)")
++					_, e = conn.ExecContext(ctx, "insert into "+failing+"(id,a,b) values (1,0,1),(1,0,0) on duplicate key update a=if(values(b)=1,a+9223372036854775807,1)")
++					constraintError(t, e, moerr.ER_DATA_OUT_OF_RANGE, "out of range")
++					require.Equal(t, []string{"1|1|0|2"}, rows(t, "select * from "+failing))
++					insertErrors := table + "_insert_errors"
++					exec(t, "create table "+insertErrors+" (id int primary key,a varchar(64) default (uuid()),g varchar(1) generated always as(if(b=1,concat(a,'/g'),'x')) stored,b tinyint)")
++					_, e = conn.ExecContext(ctx, "insert into "+insertErrors+"(id,b) select result,1 from generate_series(1,1) g on duplicate key update b=values(b)")
++					constraintError(t, e, moerr.ER_DATA_TOO_LONG, "larger than Dest length")
++					require.Empty(t, rows(t, "select * from "+insertErrors))
++					_, e = conn.ExecContext(ctx, "insert into "+insertErrors+"(id,b) select result,result*1000 from generate_series(1,1) g on duplicate key update b=values(b)")
++					constraintError(t, e, moerr.ER_DATA_OUT_OF_RANGE, "out of range")
++					require.Empty(t, rows(t, "select * from "+insertErrors))
++
++					nullable := table + "_nullable"
++					exec(t, "create table "+nullable+" (u int unique,a int,g int generated always as(a*2) stored)")
++					exec(t, "insert into "+nullable+"(u,a) values(null,1),(null,2),(7,3) on duplicate key update a=a+1")
++					require.Equal(t, []string{"1|2", "2|4", "3|6"}, rows(t, "select a,g from "+nullable+" order by a"))
++					if mode.name == "compat" {
++						for _, n := range []int{8192, 8193} {
++							exec(t, "truncate table "+nullable)
++							exec(t, fmt.Sprintf("insert into %s(u,a) select if(result<=%d,null,7),result from generate_series(1,%d) g on duplicate key update a=a+1", nullable, n, n+1))
++							require.Equal(t, []string{fmt.Sprintf("%d|%d|%d", n+1, n+1, n)}, rows(t, "select count(*),sum(if(g=2*a,1,0)),sum(if(u is null,1,0)) from "+nullable))
++						}
++						conflict := table + "_secondary"
++						exec(t, "create table "+conflict+" (id int primary key,u int unique,a int,g int generated always as(a*2) stored)")
++						exec(t, "insert into "+conflict+"(id,u,a) values (1,10,1)")
++						_, e = conn.ExecContext(ctx, "insert into "+conflict+"(id,u,a) values (2,10,2) on duplicate key update a=a+1")
++						constraintError(t, e, moerr.ER_DUP_ENTRY, "Duplicate entry")
++						require.Equal(t, []string{"1|10|1|2"}, rows(t, "select * from "+conflict))
++					}
++				})
++			}
++			t.Run("legacy gate preserves staged assignments", func(t *testing.T) {
++				exec(t, "set session optimizer_hints = 'skipDedup=1'")
++				exec(t, "create table generated_gate (id int primary key,a int,b int)")
++				exec(t, "insert into generated_gate values (1,1,0)")
++				oldVersion, hadVersion := rt.GetGlobalVariables(moruntime.MOProtocolVersion)
++				t.Cleanup(func() {
++					if hadVersion {
++						rt.SetGlobalVariables(moruntime.MOProtocolVersion, oldVersion)
++					} else if current, ok := rt.GetGlobalVariables(moruntime.MOProtocolVersion); ok {
++						rt.CompareAndDeleteGlobalVariables(moruntime.MOProtocolVersion, current)
++					}
++				})
++				rt.SetGlobalVariables(moruntime.MOProtocolVersion, int64(defines.MORPCVersion11))
++				exec(t, "insert into generated_gate values (1,0,0) on duplicate key update a=a+1,b=a")
++				require.Equal(t, []string{"2|1"}, rows(t, "select a,b from generated_gate"))
++
++				exec(t, "create table generated_gate_single (id int primary key,a int,b int,g int generated always as(a*2) stored)")
++				exec(t, "insert into generated_gate_single(id,a,b) values (1,1,0)")
++				exec(t, "insert into generated_gate_single(id,a,b) values (1,0,1) on duplicate key update b=values(b)")
++				require.Equal(t, []string{"1|1|2"}, rows(t, "select a,b,g from generated_gate_single"))
++				_, e := conn.ExecContext(ctx, "insert into generated_gate_single(id,a,b) values (1,0,0) on duplicate key update a=a+1")
++				constraintError(t, e, moerr.ErrNotSupported, "protocol version 12")
++				require.Equal(t, []string{"1|1|2"}, rows(t, "select a,b,g from generated_gate_single"))
++
++				exec(t, "create table generated_gate_chain (id int primary key,a int,b int,g int generated always as(a*2) stored,h int generated always as(g+3) stored)")
++				exec(t, "insert into generated_gate_chain(id,a,b) values (1,1,0)")
++				_, e = conn.ExecContext(ctx, "insert into generated_gate_chain(id,a,b) values (1,0,1) on duplicate key update b=values(b)")
++				constraintError(t, e, moerr.ErrNotSupported, "protocol version 12")
++				_, e = conn.ExecContext(ctx, "insert into generated_gate_chain(id,a,b) values (2,0,1) on duplicate key update b=values(b)")
++				constraintError(t, e, moerr.ErrNotSupported, "protocol version 12")
++				require.Equal(t, []string{"1|1|0|2|5"}, rows(t, "select * from generated_gate_chain"))
++
++				rt.SetGlobalVariables(moruntime.MOProtocolVersion, int64(defines.MORPCVersion12))
++				exec(t, "update generated_gate set a=1,b=0 where id=1")
++				exec(t, "insert into generated_gate values (1,0,0) on duplicate key update a=a+1,b=a")
++				require.Equal(t, []string{"2|2"}, rows(t, "select a,b from generated_gate"))
++				exec(t, "insert into generated_gate_single(id,a,b) values (1,0,0) on duplicate key update a=a+1")
++				require.Equal(t, []string{"2|1|4"}, rows(t, "select a,b,g from generated_gate_single"))
++				exec(t, "insert into generated_gate_chain(id,a,b) values (1,0,1) on duplicate key update b=values(b)")
++				require.Equal(t, []string{"1|1|1|2|5"}, rows(t, "select * from generated_gate_chain"))
++			})
++		})
+ 		t.Run("varlen assignment aliases remain stable", func(t *testing.T) {
+ 			exec(t, "create table aliases (id int primary key,u int unique,a varchar(128),b varchar(128),suffix varchar(32))")
+ 			exec(t, "insert into aliases values (1,10,'A','B','seed')")

@@ -1,0 +1,636 @@
+{
+  "schema": 1,
+  "purpose": "ONEindependentGitHub-hostedVM replication of current531source; localE117FAILED+AAINCONCLUSIVE/E119INCONCLUSIVEretained; NOTlocalretry; no guaranteedstable/exclusivehost",
+  "source_map_sha256": "531eff3a6afd8e6b74976c29b0d5c6e05bac34df6d09953138d1153dae3fb08a",
+  "source_package_sha256": "f70dfd5f0b91a34f92e60100c718650d21665cfba5c1ced5467bf800c5351f86",
+  "candidate_tree": "3b19772870fadbd0383ae8d7e1b16c58dab812a0",
+  "baseline": "7a161fda57d53e0f15131b26372c71b67cc5db87",
+  "published_head": "6c2d460de5b2a161cbec01229a6df6f322b87c55",
+  "normal_fixture_sha256": "1740d2ad61291fc712c6e26015fe0b49cb2046aa93d60ca4f4ced34c4d0fc4cf",
+  "generated_fixture_sha256": "46698c01ef894c184552375be21ca169bdc738b19e8b34820f2fca14d1c53079",
+  "patch_sha256": "62f2808494ccbef00ac0dce4928445fb2fb014206c452401d9a3c8a2ad0fa9d0",
+  "order_seed": 31979115,
+  "studies": [
+    {
+      "name": "noop",
+      "count": 501,
+      "bench": "^BenchmarkOrderedODKU$/^single_noop$",
+      "cases": [
+        "single_noop"
+      ],
+      "processes": 24,
+      "pairs": [
+        {
+          "id": "aa-1",
+          "kind": "aa",
+          "block": 0,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-2",
+          "kind": "main",
+          "block": 0,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "fix"
+            },
+            {
+              "role": "control",
+              "binary": "base"
+            }
+          ]
+        },
+        {
+          "id": "main-1",
+          "kind": "main",
+          "block": 0,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "base"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "aa-2",
+          "kind": "aa",
+          "block": 0,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-3",
+          "kind": "main",
+          "block": 1,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "base"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "aa-4",
+          "kind": "aa",
+          "block": 1,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-4",
+          "kind": "main",
+          "block": 1,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "fix"
+            },
+            {
+              "role": "control",
+              "binary": "base"
+            }
+          ]
+        },
+        {
+          "id": "aa-3",
+          "kind": "aa",
+          "block": 1,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "aa-5",
+          "kind": "aa",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-5",
+          "kind": "main",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "base"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "aa-6",
+          "kind": "aa",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-6",
+          "kind": "main",
+          "block": 2,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "fix"
+            },
+            {
+              "role": "control",
+              "binary": "base"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "original",
+      "count": 21,
+      "bench": "^BenchmarkOrderedODKU$",
+      "cases": [
+        "single_insert",
+        "single_conflict",
+        "single_noop",
+        "bulk_insert_8192",
+        "bulk_existing_8192",
+        "bulk_hot_8192_100keys",
+        "bulk_noop_8192",
+        "varlen512_insert_8192",
+        "varlen512_existing_8192",
+        "varlen512_hot_8192_100keys"
+      ],
+      "processes": 24,
+      "pairs": [
+        {
+          "id": "main-1",
+          "kind": "main",
+          "block": 0,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "base"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "aa-2",
+          "kind": "aa",
+          "block": 0,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "fix"
+            },
+            {
+              "role": "control",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "aa-1",
+          "kind": "aa",
+          "block": 0,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-2",
+          "kind": "main",
+          "block": 0,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "fix"
+            },
+            {
+              "role": "control",
+              "binary": "base"
+            }
+          ]
+        },
+        {
+          "id": "main-4",
+          "kind": "main",
+          "block": 1,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "fix"
+            },
+            {
+              "role": "control",
+              "binary": "base"
+            }
+          ]
+        },
+        {
+          "id": "aa-4",
+          "kind": "aa",
+          "block": 1,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "fix"
+            },
+            {
+              "role": "control",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "aa-3",
+          "kind": "aa",
+          "block": 1,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-3",
+          "kind": "main",
+          "block": 1,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "base"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "aa-6",
+          "kind": "aa",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-6",
+          "kind": "main",
+          "block": 2,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "fix"
+            },
+            {
+              "role": "control",
+              "binary": "base"
+            }
+          ]
+        },
+        {
+          "id": "aa-5",
+          "kind": "aa",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "fix"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        },
+        {
+          "id": "main-5",
+          "kind": "main",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "base"
+            },
+            {
+              "role": "fix",
+              "binary": "fix"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "generated",
+      "count": 21,
+      "bench": "^BenchmarkGeneratedDefault$",
+      "cases": [
+        "single",
+        "bulk"
+      ],
+      "processes": 24,
+      "pairs": [
+        {
+          "id": "aa-2",
+          "kind": "aa",
+          "block": 0,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "genfix"
+            },
+            {
+              "role": "control",
+              "binary": "genfix"
+            }
+          ]
+        },
+        {
+          "id": "main-1",
+          "kind": "main",
+          "block": 0,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "genhead"
+            },
+            {
+              "role": "fix",
+              "binary": "genfix"
+            }
+          ]
+        },
+        {
+          "id": "main-2",
+          "kind": "main",
+          "block": 0,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "genfix"
+            },
+            {
+              "role": "control",
+              "binary": "genhead"
+            }
+          ]
+        },
+        {
+          "id": "aa-1",
+          "kind": "aa",
+          "block": 0,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "genfix"
+            },
+            {
+              "role": "fix",
+              "binary": "genfix"
+            }
+          ]
+        },
+        {
+          "id": "aa-3",
+          "kind": "aa",
+          "block": 1,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "genfix"
+            },
+            {
+              "role": "control",
+              "binary": "genfix"
+            }
+          ]
+        },
+        {
+          "id": "main-4",
+          "kind": "main",
+          "block": 1,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "genfix"
+            },
+            {
+              "role": "control",
+              "binary": "genhead"
+            }
+          ]
+        },
+        {
+          "id": "main-3",
+          "kind": "main",
+          "block": 1,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "genhead"
+            },
+            {
+              "role": "fix",
+              "binary": "genfix"
+            }
+          ]
+        },
+        {
+          "id": "aa-4",
+          "kind": "aa",
+          "block": 1,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "genfix"
+            },
+            {
+              "role": "fix",
+              "binary": "genfix"
+            }
+          ]
+        },
+        {
+          "id": "main-6",
+          "kind": "main",
+          "block": 2,
+          "runs": [
+            {
+              "role": "fix",
+              "binary": "genfix"
+            },
+            {
+              "role": "control",
+              "binary": "genhead"
+            }
+          ]
+        },
+        {
+          "id": "aa-5",
+          "kind": "aa",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "genfix"
+            },
+            {
+              "role": "fix",
+              "binary": "genfix"
+            }
+          ]
+        },
+        {
+          "id": "main-5",
+          "kind": "main",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "genhead"
+            },
+            {
+              "role": "fix",
+              "binary": "genfix"
+            }
+          ]
+        },
+        {
+          "id": "aa-6",
+          "kind": "aa",
+          "block": 2,
+          "runs": [
+            {
+              "role": "control",
+              "binary": "genfix"
+            },
+            {
+              "role": "fix",
+              "binary": "genfix"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "statistics": "Originalpooledmedianfix/control-1; 20000WHOLEmatchedprocesspairbootstrap draws6pairswithreplacement, seed31979116 +stageIndex*100+caseIndex, central95percentile bounds[499,19499]. Neverresamplequeryindices, keepall501or21samples/intraProcessorder. Reportperprocessmedians/orderedageprofiles and rawarrays. Sixpairratiosuppermax is supplementary98.4%conditionalupperboundformedianpairratio, NOTpooledestimand. A/A minmaxconditional96.9%medianpairinterval. Independence/comparabilityconditionalonrecordedhost+freshprocesses, notuniversal",
+  "limits": "single5%/batch10%unchanged. Everymainpairratio ANDpooledpoint ANDupper95CI<=limit. EachAApairinBOTHdirectionswithinlimit; reportAApooledpoint/95CIwithoutmisrepresentingqueryindependence. Nohalfdrift/lag32gateforNEWcomplete-trajectoryunit; reportageprofiles. Sameoriginalfixtures/noresetonce/nofilteredtail",
+  "bootstrap_seed": 31979116,
+  "budget": "ONEbenchmark-bearingVMrun; stagesNoop501/original10x21/generated2x21;24processes/stage/72MAX. STOPafterfirstfailed/inconclusivestage. No repeatmeasuredstage/no optionalstopping/sampletrimming/seedchanges. Ifpre-measureinfra failsfixONLYconcretecause; measuredsourcecannotbererun-to-green",
+  "runner": "ubuntu-24.04 standardpublicVM; SAMEVMallversions/stages; normalrunnerUID!=0; selectedTWOallowedvCPUs preferdistinctREPORTEDcoreIDs, physicalexclusivityNOTproved; GOMAX2OMP2/runtimeGOMEMLIMIT+GODEBUGunset. NoCPU-policywrites",
+  "build": "Go1.26.4 GOAMD64v3 GOEXPERIMENTsimd; CPUIDx86-64-v3+OSXSAVE/XCR0checksperselectedCPU; GOMAX4/GOMEMLIMIT3GiB/-p2 commonGOCACHE; nativeoncefromidenticalcgo/thirdparties trees/copyidenticaloutputs; pinnedONNXprebuiltdependencyrecorded, notallsourcenativeclaim; ALL4Go buildsbeforetiming",
+  "host_validity": {
+    "abort_before_measure": [
+      "missingv3/OSfeatures/less2allowedvCPUs/rootUID/nativeorGo/sourceprovenancefailure",
+      "beforebuildfreeSSD<30GiB afteronlyallowlistedAndroid+dotnetcleanup",
+      "anyobservableancestryCPUquota<2CPUs"
+    ],
+    "inconclusive_after_measure": [
+      "anyobservedbinaryleaderaffinitydifferentfromselectedset",
+      "anyobservablecgroupCPUancestrynr_throttledincrease",
+      "anyswapin/outorOOMmemoryeventincrease",
+      "anymemoryPSIfull.totalincrease orsome.totalincrease>100000us",
+      "selectedCPUsteal>1%ofaccountedticksperprocesswhenavailable",
+      "source/binary/native/fixture/receipt/oracle/count/orderfailure or incomplete/interruptedstage"
+    ],
+    "descriptive": [
+      "CPUandIOpressure includeownworkload; recordall, no automaticpassfromabsences",
+      "optionalcpufreq/stealunavailablemarkedunavailable; noexclusivehypervisorclaim",
+      "AApassdoesnotproveindependence; finalcomparabilityreviewstillrequired"
+    ]
+  },
+  "timeouts": {
+    "job_minutes": 180,
+    "internal_cutoff_minutes": 165,
+    "per_process_seconds": 900,
+    "cleanup_kill_grace_seconds": 10,
+    "artifact_retention_days": 1
+  },
+  "provenance": "All63maphashes/completecandidateTREE/unexpectedtrackedandGo-filechecks; exactcommitcheckouts; fixture/sourcepatch+nativeinput+binaryhashes; sourcecodepatchpublicONLYdiagnosticbranch/finalrepairPRuntouched. ReceiptssealedONCEaftercleanup; parserstageandfinalhashverify; allraw+host+timing+order+RSSsaved;artifactZIPcompressAFTERmeasurement thenrootdownloadverifydurable",
+  "oracles": "EveryExecsuccess plusoriginalcount/distinctID/minmaxID/v/payload oracle; u1/u2NOTasserted. Generatedcount/derivedg/h oracle. Exactrawcount/allnormalUID/hash/source/native/policystate/restorevalid mandatory; failuresSTOP",
+  "design_sha256": "4194128ace09620d3253fa68c373cfb0008c14c60ffea593ab037c2d6b21566e",
+  "counter_availability": "Swap pswpin/out and memoryPSI some/full.total required atALLsnapshots. For every exposed cgroup cpu.max requirecpu.stat.nr_throttled; everymemory.max requirememory.events(oom/oom_kill/high/max). Missingnonrootcontrolinterfaces/counters=>INCONCLUSIVE. Guestrootwithoutlimitinterfaces recordedNOTAPPLICABLE, neverzero; hiddenouterhypervisorlimitsunknown. Frequency/stealoptional, explicitunavailable.",
+  "ci_attempt_guard": "Only branchcreationpush and GITHUB_RUN_ATTEMPT1; ordinaryupdates/rerunsskipped, controlleralsoassertsevent.created. DeliberateinfraexceptionrequiresdurablepriorproofZEROmeasuredsamplesandconcretefixbeforeownbranchrecreation; NEVERaftermeasurement."
+}

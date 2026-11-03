@@ -1,0 +1,25 @@
+{
+  "candidate_tree": "3b19772870fadbd0383ae8d7e1b16c58dab812a0",
+  "published_head": "6c2d460de5b2a161cbec01229a6df6f322b87c55",
+  "comparison_base": "7a161fda57d53e0f15131b26372c71b67cc5db87",
+  "patch_sha256": "62f2808494ccbef00ac0dce4928445fb2fb014206c452401d9a3c8a2ad0fa9d0",
+  "whole_map_sha256": "531eff3a6afd8e6b74976c29b0d5c6e05bac34df6d09953138d1153dae3fb08a",
+  "all_63_paths_exact": true,
+  "intended_patch_paths": [
+    "docs/design/ordered-odku-4.2.md",
+    "pkg/sql/colexec/dedupjoin/join.go",
+    "pkg/sql/colexec/dedupjoin/join_test.go",
+    "pkg/sql/colexec/dedupjoin/ordered_odku.go",
+    "pkg/sql/colexec/dedupjoin/ordered_odku_test.go",
+    "pkg/sql/compile/compile.go",
+    "pkg/sql/compile/scope_test.go",
+    "pkg/sql/plan/bind_insert.go",
+    "pkg/sql/plan/odku_order.go",
+    "pkg/sql/plan/pushdown.go",
+    "pkg/sql/plan/pushdown_test.go",
+    "pkg/tests/dml/ordered_odku_benchmark_test.go",
+    "pkg/tests/dml/ordered_odku_test.go"
+  ],
+  "patch_bytes": 70790,
+  "no_ref_or_original_index_change": true
+}
