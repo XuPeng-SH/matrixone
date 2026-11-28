@@ -24,9 +24,12 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/matrixorigin/matrixone/pkg/clusterservice"
+	"github.com/matrixorigin/matrixone/pkg/cnservice"
 	"github.com/matrixorigin/matrixone/pkg/embed"
 	"github.com/matrixorigin/matrixone/pkg/lockservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
+	"github.com/matrixorigin/matrixone/pkg/tests/testutils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -102,6 +105,25 @@ func TestAlterPublicationExplicitTargetLockScope(t *testing.T) {
 	left, leftID := openAccountLockSQL(t, cluster, 0)
 	right, rightID := openAccountLockSQL(t, cluster, 1)
 	ctx := t.Context()
+
+	// The lock views on CN0 query the CNs in its local discovery snapshot.
+	inventory := clusterservice.GetMOCluster(leftID)
+	refresher, ok := inventory.(clusterservice.AuthoritativeRefresher)
+	require.True(t, ok)
+	require.NoError(t, refresher.Refresh(ctx))
+	var visibleCNs []string
+	inventory.GetCNService(clusterservice.NewSelector(), func(cn metadata.CNService) bool {
+		visibleCNs = append(visibleCNs, cn.ServiceID)
+		return true
+	})
+	require.ElementsMatch(t, []string{leftID, rightID}, visibleCNs)
+
+	writer, err := cluster.GetCNService(0)
+	require.NoError(t, err)
+	reader, err := cluster.GetCNService(1)
+	require.NoError(t, err)
+	writerTxnClient := writer.RawService().(cnservice.Service).GetTxnClient()
+
 	exec := func(t *testing.T, stmt string) {
 		t.Helper()
 		_, err := left.ExecContext(ctx, stmt)
@@ -145,9 +167,9 @@ func TestAlterPublicationExplicitTargetLockScope(t *testing.T) {
 			deletedID := number(t, accountID, target)
 			exec(t, "create publication "+pub+" database scope_db account scope_first")
 			// ALTER runs on the other CN and must see the committed publication.
-			var synced string
-			require.NoError(t, left.QueryRowContext(t.Context(), "select mo_ctl('cn','syncCommit','')").Scan(&synced))
-			require.Contains(t, synced, "sync 2 cn services")
+			commit := writerTxnClient.GetLatestCommitTS()
+			require.False(t, commit.IsEmpty())
+			testutils.WaitLogtailApplied(t, commit, reader)
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			var wg sync.WaitGroup
 			defer wg.Wait()
