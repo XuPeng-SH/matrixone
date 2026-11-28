@@ -215,18 +215,21 @@ new_case() {
 }
 
 new_case cache-hit
-cp "$fixture" "$MO_DOWNLOAD_MOCK_STATE/result"
-chmod 0600 "$MO_DOWNLOAD_MOCK_STATE/result"
+cached="$MO_DOWNLOAD_MOCK_STATE/result"
+cp "$fixture" "$cached"
 MO_DOWNLOAD_MOCK_MODE=always-fail
 export MO_DOWNLOAD_MOCK_MODE
-"$download_script" https://example.invalid/dependency "$expected_sha256" "$MO_DOWNLOAD_MOCK_STATE/result"
-assert_count 0
-cmp "$fixture" "$MO_DOWNLOAD_MOCK_STATE/result" || fail "cache hit changed destination"
-assert_publicly_readable "$MO_DOWNLOAD_MOCK_STATE/result"
+for mode in 0600 0664 0646 4755; do
+	chmod "$mode" "$cached"
+	"$download_script" https://example.invalid/dependency "$expected_sha256" "$cached"
+	assert_count 0
+	cmp "$fixture" "$cached" || fail "cache hit changed destination"
+	assert_publicly_readable "$cached"
+done
 
 new_case cache-hit-without-chmod-or-curl
-cp "$fixture" "$MO_DOWNLOAD_MOCK_STATE/result"
-chmod 0644 "$MO_DOWNLOAD_MOCK_STATE/result"
+cached="$MO_DOWNLOAD_MOCK_STATE/result"
+cp "$fixture" "$cached"
 cat > "$MO_DOWNLOAD_MOCK_STATE/chmod" <<'EOF'
 #!/bin/sh
 echo "unexpected chmod on a verified cache hit" >&2
@@ -235,11 +238,14 @@ EOF
 chmod +x "$MO_DOWNLOAD_MOCK_STATE/chmod"
 MO_DOWNLOAD_CURL_BIN="$MO_DOWNLOAD_MOCK_STATE/missing-curl"
 export MO_DOWNLOAD_CURL_BIN
-PATH="$MO_DOWNLOAD_MOCK_STATE:$PATH" \
-	"$download_script" https://example.invalid/dependency "$expected_sha256" "$MO_DOWNLOAD_MOCK_STATE/result"
-assert_count 0
-cmp "$fixture" "$MO_DOWNLOAD_MOCK_STATE/result" || fail "curl-free cache hit changed destination"
-assert_publicly_readable "$MO_DOWNLOAD_MOCK_STATE/result"
+for mode in 0444 0644 0755; do
+	chmod "$mode" "$cached"
+	PATH="$MO_DOWNLOAD_MOCK_STATE:$PATH" \
+		"$download_script" https://example.invalid/dependency "$expected_sha256" "$cached"
+	assert_count 0
+	cmp "$fixture" "$cached" || fail "curl-free cache hit changed destination"
+	[ "$(file_mode "$cached")" = "${mode#0}" ] || fail "cache hit changed mode $mode"
+done
 
 new_case prebuilt-hit
 ln -s "$fixture" "$MO_DOWNLOAD_MOCK_STATE/prebuilt"
