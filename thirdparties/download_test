@@ -233,6 +233,29 @@ for mode in 0444 0644 0755; do
 	[ "$(file_mode "$cached")" = "${mode#0}" ] || fail "cache hit changed mode $mode"
 done
 
+new_case cache-hit-reinstall
+cached="$MO_DOWNLOAD_MOCK_STATE/result"
+cp "$fixture" "$cached"
+chmod 0664 "$cached"
+ln "$cached" "$MO_DOWNLOAD_MOCK_STATE/original"
+cat > "$MO_DOWNLOAD_MOCK_STATE/chmod" <<'EOF'
+#!/bin/sh
+if [ "$2" = "$MO_DOWNLOAD_MOCK_STATE/result" ]; then
+	echo "chmod denied on the original cache entry" >&2
+	exit 1
+fi
+exec "$MO_DOWNLOAD_REAL_CHMOD" "$@"
+EOF
+chmod +x "$MO_DOWNLOAD_MOCK_STATE/chmod"
+MO_DOWNLOAD_REAL_CHMOD="$(command -v chmod)" PATH="$MO_DOWNLOAD_MOCK_STATE:$PATH" \
+	MO_DOWNLOAD_CURL_BIN="$MO_DOWNLOAD_MOCK_STATE/missing-curl" \
+	"$download_script" https://example.invalid/dependency "$expected_sha256" "$cached"
+assert_count 0
+cmp "$fixture" "$cached" || fail "cache reinstall changed payload"
+assert_publicly_readable "$cached"
+[ "$(file_mode "$MO_DOWNLOAD_MOCK_STATE/original")" = 664 ] || fail "cache reinstall modified the original inode"
+assert_no_temp_files "$MO_DOWNLOAD_MOCK_STATE"
+
 new_case prebuilt-hit
 ln -s "$fixture" "$MO_DOWNLOAD_MOCK_STATE/prebuilt"
 MO_DOWNLOAD_PREBUILT_FILE="$MO_DOWNLOAD_MOCK_STATE/prebuilt" MO_DOWNLOAD_CURL_BIN="$MO_DOWNLOAD_MOCK_STATE/missing-curl" \
