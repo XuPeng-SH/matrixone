@@ -3254,15 +3254,6 @@ func queryContainsExpr(query *Query, accept func(*plan.Expr) bool) bool {
 	return false
 }
 
-func nodeContainsStringLiteral(node *Node, value string) bool {
-	for _, expr := range node.ProjectList {
-		if exprContainsStringLiteral(expr, value) {
-			return true
-		}
-	}
-	return false
-}
-
 func assertFallbackUpdateProjectLength(t *testing.T, query *Query, projectLen int) {
 	for _, node := range query.Nodes {
 		if node.NodeType != plan.Node_PROJECT || len(node.ProjectList) != projectLen || len(node.Children) != 1 {

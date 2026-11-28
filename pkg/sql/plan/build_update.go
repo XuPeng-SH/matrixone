@@ -590,7 +590,7 @@ func appendGeneratedOutgoingFKChecks(
 	table *TableDef, generated, rowPositions []int,
 ) (int32, error) {
 	var projection []*Expr
-	var assertions []*Expr
+	assertions := make([]*Expr, 0, len(table.Fkeys))
 	ctx := builder.GetContext()
 	for _, fk := range table.Fkeys {
 		generatedName := updatedGeneratedFKColumn(table, fk, generated, rowPositions)
