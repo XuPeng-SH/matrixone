@@ -36,8 +36,7 @@ max_bytes=${MO_DOWNLOAD_MAX_BYTES:-134217728}
 retry_delay=${MO_DOWNLOAD_RETRY_DELAY_SECONDS:-1}
 retry_rounds=${MO_DOWNLOAD_RETRY_ROUNDS:-2}
 fallback_url=${MO_DOWNLOAD_FALLBACK_URL:-}
-local_source=${MO_DOWNLOAD_PREBUILT_FILE:-}
-local_message="using verified prebuilt dependency"
+prebuilt_file=${MO_DOWNLOAD_PREBUILT_FILE:-}
 curl_bin=${MO_DOWNLOAD_CURL_BIN:-curl}
 
 require_https_url() {
@@ -124,18 +123,11 @@ verify_file() {
 	return 0
 }
 
-if [ -f "$destination" ] && verify_file "$destination"; then
-	local_message="using verified cached download"
-	# A verified cache entry may belong to the image or another build user.
-	# Keep public read access without group/other writes or special mode bits.
-	if [ -n "$(find -L "$destination" -prune -perm -0444 \
-		! \( -perm -0020 -o -perm -0002 -o -perm -4000 -o -perm -2000 -o -perm -1000 \) -print)" ] ||
-		chmod 0644 "$destination" 2>/dev/null; then
-		echo "$local_message: $destination"
-		exit 0
-	fi
-	# The build user can replace an unowned file in a writable directory.
-	local_source=$destination
+# Reusing an installed artifact only requires read access.
+# The permissions of newly installed files are set at publication.
+if [ -f "$destination" ] && [ -r "$destination" ] && verify_file "$destination"; then
+	echo "using verified cached download: $destination"
+	exit 0
 fi
 
 destination_dir=$(dirname "$destination")
@@ -190,10 +182,9 @@ publish_verified() {
 	echo "$1: $destination"
 }
 
-if [ -f "$local_source" ] && [ -r "$local_source" ]; then
-	# Verify the local bytes again after copying into an owned temporary file.
-	(limit_file_size; cat < "$local_source" > "$tmp")
-	publish_verified "$local_message"
+if [ -f "$prebuilt_file" ] && [ -r "$prebuilt_file" ]; then
+	(limit_file_size; cat < "$prebuilt_file" > "$tmp")
+	publish_verified "using verified prebuilt dependency"
 	exit 0
 fi
 
