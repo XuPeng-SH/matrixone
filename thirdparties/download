@@ -119,7 +119,10 @@ verify_file() {
 }
 
 if [ -f "$destination" ] && verify_file "$destination"; then
-	chmod 0644 "$destination"
+	# A verified cache entry may belong to the image or another build user.
+	if [ -z "$(find -L "$destination" -prune -perm 0644 -print)" ]; then
+		chmod 0644 "$destination"
+	fi
 	echo "using verified cached download: $destination"
 	exit 0
 fi

@@ -210,11 +210,19 @@ assert_count 0
 cmp "$fixture" "$MO_DOWNLOAD_MOCK_STATE/result" || fail "cache hit changed destination"
 assert_publicly_readable "$MO_DOWNLOAD_MOCK_STATE/result"
 
-new_case cache-hit-without-curl
+new_case cache-hit-without-chmod-or-curl
 cp "$fixture" "$MO_DOWNLOAD_MOCK_STATE/result"
+chmod 0644 "$MO_DOWNLOAD_MOCK_STATE/result"
+cat > "$MO_DOWNLOAD_MOCK_STATE/chmod" <<'EOF'
+#!/bin/sh
+echo "unexpected chmod on a verified cache hit" >&2
+exit 1
+EOF
+chmod +x "$MO_DOWNLOAD_MOCK_STATE/chmod"
 MO_DOWNLOAD_CURL_BIN="$MO_DOWNLOAD_MOCK_STATE/missing-curl"
 export MO_DOWNLOAD_CURL_BIN
-"$download_script" https://example.invalid/dependency "$expected_sha256" "$MO_DOWNLOAD_MOCK_STATE/result"
+PATH="$MO_DOWNLOAD_MOCK_STATE:$PATH" \
+	"$download_script" https://example.invalid/dependency "$expected_sha256" "$MO_DOWNLOAD_MOCK_STATE/result"
 assert_count 0
 cmp "$fixture" "$MO_DOWNLOAD_MOCK_STATE/result" || fail "curl-free cache hit changed destination"
 assert_publicly_readable "$MO_DOWNLOAD_MOCK_STATE/result"
