@@ -120,7 +120,9 @@ verify_file() {
 
 if [ -f "$destination" ] && verify_file "$destination"; then
 	# A verified cache entry may belong to the image or another build user.
-	if [ -z "$(find -L "$destination" -prune -perm 0644 -print)" ]; then
+	# Keep public read access without group/other writes or special mode bits.
+	if [ -z "$(find -L "$destination" -prune -perm -0444 \
+		! \( -perm -0020 -o -perm -0002 -o -perm -4000 -o -perm -2000 -o -perm -1000 \) -print)" ]; then
 		chmod 0644 "$destination"
 	fi
 	echo "using verified cached download: $destination"
