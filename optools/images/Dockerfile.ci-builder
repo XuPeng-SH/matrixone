@@ -147,6 +147,8 @@ ENV GOFLAGS=-modcacherw
 ARG GOPROXY="https://proxy.golang.org,direct"
 ENV GOPROXY=${GOPROXY}
 
+# The registry cache importer validates the order of the final six layers.
+COPY --from=warm /mo-prebuilt/onnxruntime /opt/matrixone/onnxruntime
 COPY --from=warm /home/runner/go/pkg/mod /go/pkg/mod
 COPY --from=warm /root/.cache/go-build /root/.cache/go-build
 # Seeded into the PR tree before make build; the prerequisite-less file
@@ -154,7 +156,6 @@ COPY --from=warm /root/.cache/go-build /root/.cache/go-build
 # Consumers must verify thirdparties.fingerprint matches their checkout
 # before restoring the install tree.
 COPY --from=warm /home/runner/_work/matrixone/matrixone/thirdparties/install /mo-prebuilt/thirdparties/install
-COPY --from=warm /mo-prebuilt/onnxruntime /opt/matrixone/onnxruntime
 COPY --from=warm /mo-prebuilt/thirdparties.fingerprint /mo-prebuilt/thirdparties.fingerprint
 COPY --from=warm /mo-prebuilt/warm-status /mo-prebuilt/warm-status
 COPY --from=warm /mo-prebuilt/go-cache-manifest.json /mo-prebuilt/go-cache-manifest.json

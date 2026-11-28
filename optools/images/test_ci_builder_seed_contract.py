@@ -145,12 +145,17 @@ class SeedContractTests(unittest.TestCase):
             self.assertTrue(all(i > relocation for i, line in enumerate(warm)
                                 if fragment in line))
         self.assertFalse(any(line.startswith(("WORKDIR ", "ENV GOMODCACHE=")) for line in final))
-        for source, destination in (
-                (MODULES, "/go/pkg/mod"),
-                ("/root/.cache/go-build", "/root/.cache/go-build"),
-                (CHECKOUT + "/thirdparties/install", "/mo-prebuilt/thirdparties/install"),
-                ("/mo-prebuilt/go-cache-manifest.json", "/mo-prebuilt/go-cache-manifest.json")):
-            self.assertIn(f"COPY --from=warm {source} {destination}", final)
+        # CI's registry transport matches these trailing filesystem layers in order.
+        cache_exports = [
+            f"COPY --from=warm {MODULES} /go/pkg/mod",
+            "COPY --from=warm /root/.cache/go-build /root/.cache/go-build",
+            f"COPY --from=warm {CHECKOUT}/thirdparties/install /mo-prebuilt/thirdparties/install",
+            "COPY --from=warm /mo-prebuilt/thirdparties.fingerprint /mo-prebuilt/thirdparties.fingerprint",
+            "COPY --from=warm /mo-prebuilt/warm-status /mo-prebuilt/warm-status",
+            "COPY --from=warm /mo-prebuilt/go-cache-manifest.json /mo-prebuilt/go-cache-manifest.json",
+        ]
+        layers = [line for line in final if line.startswith(("ADD ", "COPY ", "RUN "))]
+        self.assertEqual(layers[-len(cache_exports):], cache_exports)
         self.assertFalse(any("-trimpath" in line for line in self.lines))
 
     def test_warm_flavors_and_manifest_execute_with_real_shell(self):
